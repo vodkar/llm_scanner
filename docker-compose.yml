@@ -1,0 +1,27 @@
+version: "3.9"
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: llm-scanner-neo4j
+    restart: unless-stopped
+    environment:
+      - NEO4J_AUTH=neo4j/test
+      - NEO4J_server_memory_pagecache_size=512M
+      - NEO4J_server_memory_heap_initial__size=512M
+      - NEO4J_server_memory_heap_max__size=512M
+      - NEO4JLABS_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_auth__enabled=true
+      - NEO4J_dbms_security_auth__minimum__password__length=2
+    ports:
+      - "7474:7474" # HTTP
+      - "7687:7687" # Bolt
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_import:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+volumes:
+  neo4j_data: {}
+  neo4j_logs: {}
+  neo4j_import: {}
+  neo4j_plugins: {}

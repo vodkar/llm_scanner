@@ -1,0 +1,23 @@
+[project]
+name = "llm-scanner"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "neo4j>=5.23.1",
+    "pydantic>=2.7.0",
+    "pydantic>=2.11.7",
+]
+
+[dependency-groups]
+dev = [
+    "black>=25.1.0",
+    "mypy>=1.17.1",
+    "pytest>=8.4.1",
+]
+
+[project.scripts]
+llm-scanner-cpg = "llm_scanner.cpg_parser:main"
+llm-scanner-load-sample = "entrypoints.load_sample_to_neo4j:main"
+llm-scanner-load-all = "entrypoints.load_all_samples_to_neo4j:main"
