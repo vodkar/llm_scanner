@@ -4,11 +4,11 @@ from enum import StrEnum
 from pydantic import BaseModel, Field, field_serializer
 
 
-
 class NodeType(StrEnum):
     FUNCTION = "Function"
     CLASS = "Class"
     MODULE = "Module"
+
 
 class Node(BaseModel):
     id: str

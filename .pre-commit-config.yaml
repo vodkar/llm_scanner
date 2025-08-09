@@ -1,0 +1,23 @@
+repos:
+  - repo: local
+    hooks:
+      - id: black
+        name: black (uv)
+        entry: uv run black llm_scanner
+        language: system
+        pass_filenames: false
+      - id: mypy
+        name: mypy (uv)
+        entry: bash -lc 'PYTHONPATH=llm_scanner uv run mypy llm_scanner'
+        language: system
+        pass_filenames: false
+      - id: deadcode
+        name: deadcode (uv)
+        entry: uv run deadcode llm_scanner
+        language: system
+        pass_filenames: false
+      - id: pytest
+        name: pytest (uv)
+        entry: bash -lc 'PYTHONPATH=llm_scanner uv run pytest -q'
+        language: system
+        pass_filenames: false

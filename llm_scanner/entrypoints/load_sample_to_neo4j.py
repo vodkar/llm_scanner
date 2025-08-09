@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from clients.neo4j_client import Neo4jClient
+from clients.neo4j import Neo4jClient
 from entrypoints.base import parse_file_to_cpg
 from services.graph_loader import GraphLoader
 

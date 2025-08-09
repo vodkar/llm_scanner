@@ -1,6 +1,5 @@
-
 import ast
-from functools import singledispatch, singledispatchmethod
+from functools import singledispatchmethod
 from pathlib import Path
 from typing import Optional, Iterable
 
@@ -9,6 +8,7 @@ from models.node import Node, NodeType
 
 
 # ------------- Parser -----------------
+
 
 class CPGBuilder(ast.NodeVisitor):
     """Build a lightweight code property graph (functions/classes only).
@@ -40,7 +40,9 @@ class CPGBuilder(ast.NodeVisitor):
         self.scope_qual: list[str] = []  # list of name parts for qualname
         self.func_index: dict[str, str] = {}  # qualname -> node_id
         self.class_index: dict[str, str] = {}
-        self.module_imports: dict[str, str] = {}  # bound name -> module or module.symbol
+        self.module_imports: dict[str, str] = (
+            {}
+        )  # bound name -> module or module.symbol
 
         # helper: map ast node to its code
         self._lines = source.splitlines()
@@ -49,11 +51,13 @@ class CPGBuilder(ast.NodeVisitor):
 
     def _snippet(self, node: ast.AST) -> str:
         # Use lineno/end_lineno (1-based, inclusive)
-        start = getattr(node, 'lineno', 1)
-        end = getattr(node, 'end_lineno', start)
-        return "\n".join(self._lines[start-1:end])
+        start = getattr(node, "lineno", 1)
+        end = getattr(node, "end_lineno", start)
+        return "\n".join(self._lines[start - 1 : end])
 
-    def _new_node(self, type_: NodeType, name: str, qualname: str, node: ast.AST) -> str:
+    def _new_node(
+        self, type_: NodeType, name: str, qualname: str, node: ast.AST
+    ) -> str:
         node_id = f"{type_.lower()}:{qualname}@{self.file}:{getattr(node,'lineno',0)}"
         n = Node(
             id=node_id,
@@ -61,8 +65,8 @@ class CPGBuilder(ast.NodeVisitor):
             name=name,
             qualname=qualname,
             file=self.file,
-            lineno=getattr(node, 'lineno', 0),
-            end_lineno=getattr(node, 'end_lineno', getattr(node, 'lineno', 0)),
+            lineno=getattr(node, "lineno", 0),
+            end_lineno=getattr(node, "end_lineno", getattr(node, "lineno", 0)),
             code=self._snippet(node),
         )
         self.nodes[node_id] = n
@@ -86,12 +90,14 @@ class CPGBuilder(ast.NodeVisitor):
 
     def __check_if_magic(self, name: str) -> bool:
         return self.ignore_magic and name.startswith("__") and name.endswith("__")
-    
+
     # ------------ visit -------------
 
     def build(self) -> tuple[dict[str, Node], list[Edge]]:
         # module node
-        mod_id = self._new_node(NodeType.MODULE, Path(self.file).stem, Path(self.file).stem, self.module)
+        mod_id = self._new_node(
+            NodeType.MODULE, Path(self.file).stem, Path(self.file).stem, self.module
+        )
         self._push(mod_id, Path(self.file).stem)
         self.generic_visit(self.module)
         self._pop()
@@ -124,7 +130,6 @@ class CPGBuilder(ast.NodeVisitor):
                 self.module_imports[bound] = value
         self.generic_visit(node)
 
-
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         if self.__check_if_magic(node.name):
             return
@@ -133,7 +138,9 @@ class CPGBuilder(ast.NodeVisitor):
         self.class_index[qual] = node_id
         # contains edge
         if self.current_stack:
-            self.edges.append(Edge(src=self.current_stack[-1], dst=node_id, type=EdgeType.CONTAINS))
+            self.edges.append(
+                Edge(src=self.current_stack[-1], dst=node_id, type=EdgeType.CONTAINS)
+            )
         self._push(node_id, node.name)
         self.generic_visit(node)
         self._pop()
@@ -148,13 +155,17 @@ class CPGBuilder(ast.NodeVisitor):
             return
         self._handle_functionlike(node)
 
-    def _handle_functionlike(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+    def _handle_functionlike(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
         name: str = node.name  # type: ignore[attr-defined]
         qual = self._qual(name)
         node_id = self._new_node(NodeType.FUNCTION, name, qual, node)
         self.func_index[qual] = node_id
         if self.current_stack:
-            self.edges.append(Edge(src=self.current_stack[-1], dst=node_id, type=EdgeType.CONTAINS))
+            self.edges.append(
+                Edge(src=self.current_stack[-1], dst=node_id, type=EdgeType.CONTAINS)
+            )
         # collect args as locals
         cur = self.nodes[node_id]
         args: list[str] = []
@@ -186,9 +197,11 @@ class CPGBuilder(ast.NodeVisitor):
             nm = stmt.id
             if nm in self.module_imports and nm not in cur.locals:
                 cur.imports.add(self.module_imports[nm])
-    
+
     @_process_stmt.register
-    def _process_assignment(self, stmt: ast.Assign | ast.AnnAssign | ast.AugAssign, cur: Node) -> None:
+    def _process_assignment(
+        self, stmt: ast.Assign | ast.AnnAssign | ast.AugAssign, cur: Node
+    ) -> None:
         targets: Iterable[ast.AST]
         if isinstance(stmt, ast.Assign):
             targets = stmt.targets
@@ -197,7 +210,7 @@ class CPGBuilder(ast.NodeVisitor):
         for t in targets:
             for name in self._extract_target_names(t):
                 cur.locals.add(name)
-                
+
     @_process_stmt.register
     def _process_global(self, stmt: ast.Global, cur: Node) -> None:
         for name in stmt.names:
@@ -221,15 +234,9 @@ class CPGBuilder(ast.NodeVisitor):
         if callee:
             # create CALLS edge if known
             if callee in self.func_index:
-                self.edges.append(Edge(src=cur.id, dst=self.func_index[callee], type=EdgeType.CALLS))
-                
-    @_process_stmt.register
-    def _process_name_and_load(self, stmt: ast.Name | ast.Load, cur: Node) -> None:
-        # attribute module import usage to this function/method
-        nm = child.id
-        if nm in self.module_imports and nm not in cur.locals:
-            cur.imports.add(self.module_imports[nm])
-                    
+                self.edges.append(
+                    Edge(src=cur.id, dst=self.func_index[callee], type=EdgeType.CALLS)
+                )
 
     def _extract_target_names(self, t: ast.AST) -> Iterable[str]:
         if isinstance(t, ast.Name):
@@ -244,7 +251,7 @@ class CPGBuilder(ast.NodeVisitor):
     @singledispatchmethod
     def _resolve_call(self, _func: ast.AST) -> str | None:
         return None  # default case, unsupported type
-    
+
     @_resolve_call.register
     def _resolve_call_name(self, func: ast.Name) -> str | None:
         # Best-effort: Name -> qual within scope; Attribute -> maybe method/qualified
@@ -262,10 +269,8 @@ class CPGBuilder(ast.NodeVisitor):
         # attr of object; if object is 'self' and we're inside a class, resolve method
         # current class is scope_qual[-2] when inside a function in class
         if len(self.scope_qual) >= 2:
-                class_qual = ".".join(self.scope_qual[:-1])
-                qual = f"{class_qual}.{func.attr}"
-                return qual if qual in self.func_index else None
+            class_qual = ".".join(self.scope_qual[:-1])
+            qual = f"{class_qual}.{func.attr}"
+            return qual if qual in self.func_index else None
         # Fallback: module-level attr call won't be resolved (external)
         return None
-
-

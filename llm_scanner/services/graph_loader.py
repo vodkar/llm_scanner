@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-from clients.neo4j_client import Neo4jClient
+from clients.neo4j import Neo4jClient
 from services.cpg_parser import Node
 from models.edge import Edge
 
@@ -13,9 +13,7 @@ class GraphLoader:
 
     def _ensure_indexes(self) -> None:
         # Basic indexes to speed up merges
-        self.client.run_write(
-            "CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.id)"
-        )
+        self.client.run_write("CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.id)")
 
     def load(self, nodes: dict[str, Node], edges: list[Edge]) -> None:
         # MERGE nodes
@@ -26,10 +24,7 @@ class GraphLoader:
             "lineno:r.lineno, end_lineno:r.end_lineno, code:r.code, "
             "imports:r.imports, globals:r.globals, locals:r.locals}"
         )
-        node_rows = [
-            n.model_dump()
-            for n in nodes.values()
-        ]
+        node_rows = [n.model_dump() for n in nodes.values()]
         self.client.run_write(query_nodes, {"rows": node_rows})
 
         # MERGE edges
@@ -39,8 +34,7 @@ class GraphLoader:
             "MERGE (s)-[e:REL {type:r.type}]->(d)"
         )
         edge_rows: list[dict[str, str]] = [
-            {"src": e.src, "dst": e.dst, "type": e.type}
-            for e in edges
+            {"src": e.src, "dst": e.dst, "type": e.type} for e in edges
         ]
         if edge_rows:
             self.client.run_write(query_edges, {"rows": edge_rows})

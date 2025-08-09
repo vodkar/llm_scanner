@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 
-def parse_file_to_cpg(path: Path, ignore_magic: bool = True) -> Tuple[Dict[str, Node], List[Edge]]:
+def parse_file_to_cpg(
+    path: Path, ignore_magic: bool = True
+) -> Tuple[Dict[str, Node], List[Edge]]:
     raw = Path(path).read_text(encoding="utf-8")
     src = make_parseable_source(raw)
     builder = CPGBuilder(src, str(path), ignore_magic=ignore_magic)
