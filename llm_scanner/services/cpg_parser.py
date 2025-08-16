@@ -7,9 +7,6 @@ from models.edge import Edge, EdgeType
 from models.node import Node, NodeType
 
 
-# ------------- Parser -----------------
-
-
 class CPGBuilder(ast.NodeVisitor):
     """Build a lightweight code property graph (functions/classes only).
 
@@ -26,14 +23,25 @@ class CPGBuilder(ast.NodeVisitor):
     - Simple variable collection (Assign, AnnAssign, AugAssign, arguments)
     """
 
-    def __init__(self, source: str, file: str, ignore_magic: bool = True) -> None:
+    def __init__(
+        self,
+        source: str,
+        file: str,
+        ignore_magic: bool = True,
+        module_name: str | None = None,
+    ) -> None:
         self.source = source
         self.file = file
         self.module = ast.parse(source)
         self.ignore_magic = ignore_magic
+        # optional fully qualified module name (e.g. pkg.sub.mod)
+        # if not provided, fallback to file stem for backward compatibility
+        self.module_name = module_name or Path(file).stem
 
         self.nodes: dict[str, Node] = {}
         self.edges: list[Edge] = []
+        # pending cross-file calls (src function node id -> callee qualname)
+        self.pending_calls: list[tuple[str, str]] = []
 
         # symbol tables for resolution within module
         self.current_stack: list[str] = []  # list of node ids
@@ -96,9 +104,12 @@ class CPGBuilder(ast.NodeVisitor):
     def build(self) -> tuple[dict[str, Node], list[Edge]]:
         # module node
         mod_id = self._new_node(
-            NodeType.MODULE, Path(self.file).stem, Path(self.file).stem, self.module
+            NodeType.MODULE,
+            self.module_name.split(".")[-1],
+            self.module_name,
+            self.module,
         )
-        self._push(mod_id, Path(self.file).stem)
+        self._push(mod_id, self.module_name)
         self.generic_visit(self.module)
         self._pop()
         return self.nodes, self.edges
@@ -117,16 +128,18 @@ class CPGBuilder(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        # Resolve possibly relative module path
+        mod_full = self._resolve_from_module(
+            node.module, getattr(node, "level", 0) or 0
+        )
         for alias in node.names:
             name = alias.asname or alias.name
             cur = self._current()
             if cur:
-                mod = node.module or ""
-                cur.imports.add(f"{mod}.{name}" if mod else name)
+                cur.imports.add(f"{mod_full}.{name}" if mod_full else name)
             if cur and cur.type == NodeType.MODULE:
-                mod = node.module or ""
                 bound = name
-                value = f"{mod}.{alias.name}" if mod else alias.name
+                value = f"{mod_full}.{alias.name}" if mod_full else alias.name
                 self.module_imports[bound] = value
         self.generic_visit(node)
 
@@ -230,13 +243,18 @@ class CPGBuilder(ast.NodeVisitor):
 
     @_process_stmt.register
     def _process_call(self, stmt: ast.Call, cur: Node) -> None:
-        callee = self._resolve_call(stmt.func)
-        if callee:
-            # create CALLS edge if known
-            if callee in self.func_index:
-                self.edges.append(
-                    Edge(src=cur.id, dst=self.func_index[callee], type=EdgeType.CALLS)
-                )
+        # try resolve to local or project-qualified target
+        callee_qual = self._resolve_call_qualname(stmt.func)
+        if not callee_qual:
+            return
+        # local file resolution
+        if callee_qual in self.func_index:
+            self.edges.append(
+                Edge(src=cur.id, dst=self.func_index[callee_qual], type=EdgeType.CALLS)
+            )
+        else:
+            # project-level resolution can be done by ProjectCPGBuilder
+            self.pending_calls.append((cur.id, callee_qual))
 
     def _extract_target_names(self, t: ast.AST) -> Iterable[str]:
         if isinstance(t, ast.Name):
@@ -274,3 +292,127 @@ class CPGBuilder(ast.NodeVisitor):
             return qual if qual in self.func_index else None
         # Fallback: module-level attr call won't be resolved (external)
         return None
+
+    def _resolve_call_qualname(self, func: ast.AST) -> str | None:
+        """Return a best-effort fully qualified target name.
+
+        Strategy:
+        - Local resolution via existing _resolve_call.
+        - Name imported via `from x.y import z as a` => module_imports[a] == 'x.y.z'.
+        - Attribute where base is a module alias imported via `import x.y as a` =>
+          module_imports[a] == 'x.y' and qual becomes 'x.y.attr'.
+        - Methods via `self.m()` are handled by local resolution already (class scope).
+        """
+        # 1) Try local resolution
+        local = self._resolve_call(func)
+        if local:
+            return local
+
+        # 2) Try imported symbols and module aliases
+        if isinstance(func, ast.Name):
+            nm = func.id
+            bound = self.module_imports.get(nm)
+            if bound:
+                # bound could be 'pkg.mod' or 'pkg.mod.symbol'
+                return bound
+            # else unknown
+            return None
+
+        if isinstance(func, ast.Attribute):
+            # base.attr
+            base = func.value
+            if isinstance(base, ast.Name):
+                alias = base.id
+                mod = self.module_imports.get(alias)
+                if mod:
+                    return f"{mod}.{func.attr}"
+            # try dotted attribute path like a.b.c(); we only handle simple alias
+            return None
+
+        return None
+
+    def _resolve_from_module(self, module: str | None, level: int) -> str:
+        """Resolve a possibly-relative import module to an absolute dotted path.
+
+        level=0 means absolute import. level>0 means relative to current module's package.
+        """
+        if (level or 0) <= 0:
+            return module or ""
+        # derive base package from current module_name
+        parts = self.module_name.split(".") if self.module_name else []
+        # remove the current module name to get its package
+        # In 'pkg.sub.mod', from .x import y (level=1) -> base 'pkg.sub'
+        base_pkg = parts[:-1]
+        # climb additional levels if level>1
+        up = max(level - 1, 0)
+        if up > 0:
+            base_pkg = base_pkg[:-up] if up <= len(base_pkg) else []
+        if module:
+            return ".".join([*(p for p in base_pkg if p), module])
+        return ".".join(p for p in base_pkg if p)
+
+
+class ProjectCPGBuilder:
+    """Build a CPG for a multi-file Python project directory.
+
+    - Walks Python files under root.
+    - Computes module names relative to root (packages respected via __init__.py name collapsing).
+    - Builds per-file graphs and resolves cross-file CALLS using fully qualified names.
+    """
+
+    def __init__(self, root: str | Path, ignore_magic: bool = True) -> None:
+        self.root = Path(root)
+        self.ignore_magic = ignore_magic
+
+    def _module_name_for(self, file: Path) -> str:
+        rel = file.relative_to(self.root)
+        parts = list(rel.parts)
+        if parts[-1] == "__init__.py":
+            parts = parts[:-1]
+        else:
+            parts[-1] = parts[-1].removesuffix(".py")
+        # if parts are empty (root-level __init__.py), use the root directory name
+        if not parts:
+            return self.root.name
+        return ".".join(p for p in parts if p)
+
+    def iter_python_files(self) -> Iterable[Path]:
+        for p in self.root.rglob("*.py"):
+            if "__pycache__" in p.parts:
+                continue
+            yield p
+
+    def build(self) -> tuple[dict[str, Node], list[Edge]]:
+        all_nodes: dict[str, Node] = {}
+        all_edges: list[Edge] = []
+        builders: list[CPGBuilder] = []
+
+        # First pass: build each file graph, collect indexes
+        for pyfile in self.iter_python_files():
+            src = pyfile.read_text(encoding="utf-8")
+            # keep as-is; assume already parseable or upstream formatting exists
+            module_name = self._module_name_for(pyfile)
+            b = CPGBuilder(
+                src,
+                str(pyfile),
+                ignore_magic=self.ignore_magic,
+                module_name=module_name,
+            )
+            nodes, edges = b.build()
+            all_nodes.update(nodes)
+            all_edges.extend(edges)
+            builders.append(b)
+
+        # Global index of functions by qualname -> node_id
+        global_func_index: dict[str, str] = {}
+        for b in builders:
+            global_func_index.update(b.func_index)
+
+        # Second pass: resolve pending cross-file calls
+        for b in builders:
+            for src_id, qual in b.pending_calls:
+                dst_id = global_func_index.get(qual)
+                if dst_id:
+                    all_edges.append(Edge(src=src_id, dst=dst_id, type=EdgeType.CALLS))
+
+        return all_nodes, all_edges

@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from entrypoints.base import parse_file_to_cpg
 from clients.neo4j import Neo4jClient
-from services.graph_loader import GraphLoader
+from entrypoints.base import parse_file_to_cpg
+from services.yaml_loader import YamlLoader
 
 
 def main() -> int:
@@ -16,15 +16,19 @@ def main() -> int:
     )
 
     client = Neo4jClient()
-    loader = GraphLoader(client)
+    loader = YamlLoader("output.yaml")
 
     total_nodes = 0
     total_edges = 0
+    result_nodes, result_edges = {}, []
     for path in files:
         nodes, edges = parse_file_to_cpg(path)
-        loader.load(nodes, edges)
+        result_edges.extend(edges)
+        result_nodes.update(nodes)
         total_nodes += len(nodes)
         total_edges += len(edges)
+
+    loader.load(result_nodes, result_edges)
 
     client.close()
     print(f"Loaded {total_nodes} nodes and {total_edges} edges from {len(files)} files")
@@ -32,4 +36,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
