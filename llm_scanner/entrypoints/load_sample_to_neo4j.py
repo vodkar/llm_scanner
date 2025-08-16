@@ -4,7 +4,7 @@ from pathlib import Path
 
 from clients.neo4j import Neo4jClient
 from entrypoints.base import parse_file_to_cpg
-from services.graph_loader import GraphLoader
+from loaders.graph_loader import GraphLoader
 
 
 def main() -> int:

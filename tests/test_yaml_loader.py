@@ -3,7 +3,7 @@ from typing import Any, List, TypedDict, cast
 
 import yaml
 from entrypoints.base import parse_file_to_cpg
-from services.yaml_loader import YamlLoader
+from loaders.yaml_loader import YamlLoader
 
 
 def test_yaml_loader_writes_file(tmp_path: Path):

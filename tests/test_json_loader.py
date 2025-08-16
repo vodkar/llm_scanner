@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, List, TypedDict, cast
 
 from entrypoints.base import parse_file_to_cpg
-from services.json_loader import JsonLoader
+from loaders.json_loader import JsonLoader
 
 
 def test_json_loader_writes_file(tmp_path: Path):

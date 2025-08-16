@@ -5,7 +5,7 @@ from typing import List
 
 from clients.neo4j import Neo4jClient
 from entrypoints.base import parse_file_to_cpg
-from services.yaml_loader import YamlLoader
+from loaders.yaml_loader import YamlLoader
 
 
 def main() -> int:
