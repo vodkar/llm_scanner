@@ -1,13 +1,13 @@
 import ast
 from functools import singledispatchmethod
 from pathlib import Path
-from typing import Optional, Iterable
+from typing import Iterable, Optional
 
 from models.edge import Edge, EdgeType
 from models.node import Node, NodeType
 
 
-class CPGBuilder(ast.NodeVisitor):
+class CPGBuilderService(ast.NodeVisitor):
     """Build a lightweight code property graph (functions/classes only).
 
     - Nodes: Module, ClassDef, FunctionDef/AsyncFunctionDef
@@ -66,7 +66,7 @@ class CPGBuilder(ast.NodeVisitor):
     def _new_node(
         self, type_: NodeType, name: str, qualname: str, node: ast.AST
     ) -> str:
-        node_id = f"{type_.lower()}:{qualname}@{self.file}:{getattr(node,'lineno',0)}"
+        node_id = f"{type_.lower()}:{qualname}@{self.file}:{getattr(node, 'lineno', 0)}"
         n = Node(
             id=node_id,
             type=type_,
@@ -385,14 +385,14 @@ class ProjectCPGBuilder:
     def build(self) -> tuple[dict[str, Node], list[Edge]]:
         all_nodes: dict[str, Node] = {}
         all_edges: list[Edge] = []
-        builders: list[CPGBuilder] = []
+        builders: list[CPGBuilderService] = []
 
         # First pass: build each file graph, collect indexes
         for pyfile in self.iter_python_files():
             src = pyfile.read_text(encoding="utf-8")
             # keep as-is; assume already parseable or upstream formatting exists
             module_name = self._module_name_for(pyfile)
-            b = CPGBuilder(
+            b = CPGBuilderService(
                 src,
                 str(pyfile),
                 ignore_magic=self.ignore_magic,

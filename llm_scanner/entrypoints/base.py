@@ -1,11 +1,10 @@
-from models.edge import Edge
-from models.node import Node
-from services.cpg_parser import CPGBuilder, ProjectCPGBuilder
-from utils.make_parseable_source import make_parseable_source
-
-
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+from models.edge import Edge
+from models.node import Node
+from services.cpg_parser import CPGBuilderService, ProjectCPGBuilder
+from utils.make_parseable_source import make_parseable_source
 
 
 def parse_file_to_cpg(
@@ -13,7 +12,7 @@ def parse_file_to_cpg(
 ) -> Tuple[Dict[str, Node], List[Edge]]:
     raw = Path(path).read_text(encoding="utf-8")
     src = make_parseable_source(raw)
-    builder = CPGBuilder(src, str(path), ignore_magic=ignore_magic)
+    builder = CPGBuilderService(src, str(path), ignore_magic=ignore_magic)
     return builder.build()
 
 
