@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 from models.edge import Edge
 from models.node import Node
@@ -9,7 +8,7 @@ from utils.make_parseable_source import make_parseable_source
 
 def parse_file_to_cpg(
     path: Path, ignore_magic: bool = True
-) -> Tuple[Dict[str, Node], List[Edge]]:
+) -> tuple[dict[str, Node], list[Edge]]:
     raw = Path(path).read_text(encoding="utf-8")
     src = make_parseable_source(raw)
     builder = CPGBuilderService(src, str(path), ignore_magic=ignore_magic)
@@ -18,7 +17,7 @@ def parse_file_to_cpg(
 
 def parse_project_to_cpg(
     root: Path, ignore_magic: bool = True
-) -> Tuple[Dict[str, Node], List[Edge]]:
+) -> tuple[dict[str, Node], list[Edge]]:
     """Parse a multi-file project folder into a single CPG.
 
     root: directory path containing a Python package or project.

@@ -9,4 +9,4 @@ class DeadCodeService(BaseModel):
 
     def remove(self):
         # Runs dead code detection on the source code
-        subprocess.run(["deadcode", str(self.src)])
+        subprocess.run(["deadcode", str(self.src), "--fix"])

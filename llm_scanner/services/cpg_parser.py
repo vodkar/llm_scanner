@@ -57,6 +57,10 @@ class CPGBuilderService(ast.NodeVisitor):
 
     # ------------ utilities -------------
 
+    @staticmethod
+    def generate_id(type_: NodeType, name: str, file: str, lineno: int) -> str:
+        return f"{type_.lower()}:{name}@{file}:{lineno}"
+
     def _snippet(self, node: ast.AST) -> str:
         # Use lineno/end_lineno (1-based, inclusive)
         start = getattr(node, "lineno", 1)

@@ -4,7 +4,9 @@ from clients.neo4j import Neo4jClient
 from entrypoints.base import parse_project_to_cpg
 from loaders.graph_loader import GraphLoader
 from pydantic import BaseModel
+from services.bandit_scanner import BanditScanner
 from services.deadcode import DeadCodeService
+from services.dlint_scanner import DlintScanner
 from services.formatting import FormattingService
 from services.remove_comments import RemoveCommentsService
 
@@ -16,6 +18,8 @@ class GeneralPipeline(BaseModel):
         deadcode_remover = DeadCodeService(src=self.src)
         formatter = FormattingService(src=self.src)
         comments_remover = RemoveCommentsService(src=self.src)
+        bandit_scanner = BanditScanner(src=self.src)
+        dlint_scanner = DlintScanner(src=self.src)
         client = Neo4jClient()
         graph_loader = GraphLoader(client=client)
 
@@ -24,5 +28,9 @@ class GeneralPipeline(BaseModel):
         formatter.format()
 
         nodes, edges = parse_project_to_cpg(self.src)
+        bandit_report = bandit_scanner.run_scanner()
+        dlint_report = dlint_scanner.run_scanner()
 
         graph_loader.load(nodes, edges)
+        graph_loader.load_bandit_report(bandit_report)
+        graph_loader.load_dlint_report(dlint_report)
