@@ -4,11 +4,11 @@ from typing import Any, List, TypedDict, cast
 import yaml
 from entrypoints.base import parse_file_to_cpg
 from loaders.yaml_loader import YamlLoader
+from tests.consts import SAMPLE_FILE
 
 
 def test_yaml_loader_writes_file(tmp_path: Path):
-    sample = Path(__file__).with_name("sample.py")
-    nodes, edges = parse_file_to_cpg(sample)
+    nodes, edges = parse_file_to_cpg(SAMPLE_FILE)
 
     out = tmp_path / "graph.yaml"
     loader = YamlLoader(out)

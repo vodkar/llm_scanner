@@ -36,6 +36,8 @@ llm-scanner = "llm_scanner.entrypoints.cli:app"
 [tool.mypy]
 explicit_package_bases = true
 mypy_path = "llm_scanner/"
+exclude = "tests/.*"
+
 
 [tool.pytest.ini_options]
 pythonpath = "llm_scanner"

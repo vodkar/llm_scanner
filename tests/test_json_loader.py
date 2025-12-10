@@ -4,11 +4,11 @@ from typing import Any, List, TypedDict, cast
 
 from entrypoints.base import parse_file_to_cpg
 from loaders.json_loader import JsonLoader
+from tests.consts import SAMPLE_FILE
 
 
 def test_json_loader_writes_file(tmp_path: Path):
-    sample = Path(__file__).with_name("sample.py")
-    nodes, edges = parse_file_to_cpg(sample)
+    nodes, edges = parse_file_to_cpg(SAMPLE_FILE)
 
     out = tmp_path / "graph.json"
     loader = JsonLoader(out)

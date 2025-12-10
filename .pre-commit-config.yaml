@@ -3,12 +3,12 @@ repos:
     hooks:
       - id: black
         name: black (uv)
-        entry: uv run black llm_scanner
+        entry: uv run black .
         language: system
         pass_filenames: false
       - id: mypy
         name: mypy (uv)
-        entry: bash -lc 'PYTHONPATH=llm_scanner uv run mypy llm_scanner'
+        entry: uv run mypy .
         language: system
         pass_filenames: false
       - id: deadcode
@@ -18,6 +18,6 @@ repos:
         pass_filenames: false
       - id: pytest
         name: pytest (uv)
-        entry: bash -lc 'PYTHONPATH=llm_scanner uv run pytest -q'
+        entry: uv run pytest tests/
         language: system
         pass_filenames: false
