@@ -1,14 +1,9 @@
-"""Compatibility shim exposing node entity models from the nodes package."""
-
-from .nodes import (
-    CallSiteNode,
-    CodeBlockNode,
-    CodeBlockType,
-    FindingNode,
-    FindingSeverity,
-    FindingTool,
-    FunctionNode,
-    ModuleNode,
+from .base import Node, NodeType
+from .call_site import CallSiteNode
+from .code import CodeBlockNode, CodeBlockType, FunctionNode
+from .finding import FindingNode, FindingSeverity, FindingTool
+from .module_node import ModuleNode
+from .taint import (
     SanitizerEffectiveness,
     SanitizerNode,
     SanitizerType,
@@ -17,18 +12,19 @@ from .nodes import (
     TaintSinkType,
     TaintSourceNode,
     TaintSourceType,
-    VariableNode,
-    VariableScope,
 )
+from .variable import VariableNode, VariableScope
 
 __all__ = [
+    "Node",
+    "NodeType",
     "CallSiteNode",
     "CodeBlockNode",
     "CodeBlockType",
+    "FunctionNode",
     "FindingNode",
     "FindingSeverity",
     "FindingTool",
-    "FunctionNode",
     "ModuleNode",
     "SanitizerEffectiveness",
     "SanitizerNode",

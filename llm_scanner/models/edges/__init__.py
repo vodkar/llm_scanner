@@ -1,26 +1,29 @@
-"""Compatibility layer exposing edge models from the edges package."""
-
-from .edges import (
+from .analysis import (
     AnalysisConflictsWith,
     AnalysisRelationshipType,
     AnalysisReports,
     AnalysisSuggestsVulnerability,
-    BranchType,
+)
+from .base import RelationshipBase
+from .call_graph import (
     CallGraphCalledBy,
     CallGraphCalls,
     CallGraphRelationshipType,
+)
+from .control_flow import (
+    BranchType,
     ControlFlowContains,
     ControlFlowNext,
     ControlFlowRelationshipType,
+)
+from .core import Edge, EdgeType
+from .data_flow import (
     DataFlowDefinedBy,
     DataFlowFlowsTo,
     DataFlowRelationshipType,
     DataFlowSanitizedBy,
     DataFlowUsedBy,
     DefinitionOperation,
-    Edge,
-    EdgeType,
-    RelationshipBase,
 )
 
 __all__ = [

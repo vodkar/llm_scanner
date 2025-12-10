@@ -3,7 +3,7 @@ from functools import singledispatchmethod
 from pathlib import Path
 from typing import Iterable, Optional
 
-from models.edge import Edge, EdgeType
+from models.edges import Edge, EdgeType
 from models.node import Node, NodeType
 
 
