@@ -4,6 +4,8 @@ import pytest
 from entrypoints.base import parse_file_to_cpg, parse_project_to_cpg, ParserType
 from models.edge import EdgeType
 from models.node import NodeType
+from services.cpg_parser.cpg_parser_interface import CPGParserProtocol
+from services.cpg_parser.tree_sitter_cpg_parser import TreeSitterCPGParser
 
 
 @pytest.mark.parametrize("parser_type", [ParserType.AST, ParserType.TREE_SITTER])
@@ -83,9 +85,7 @@ def test_parse_project_both_parsers(tmp_path: Path, parser_type: ParserType):
 
 def test_parser_compatibility():
     """Test that both parsers implement the same interface."""
-    from services.ast_cpg_parser import AstCPGParser
-    from services.tree_sitter_cpg_parser import TreeSitterCPGParser
-    from services.cpg_parser_interface import CPGParserProtocol
+    from services.cpg_parser.ast_cpg_parser import AstCPGParser
     
     # AST parser should always be available
     ast_parser = AstCPGParser()

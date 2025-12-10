@@ -2,12 +2,12 @@ from pathlib import Path
 
 from models.edge import Edge
 from models.node import Node
-from services.cpg_parser import CPGBuilderService, ProjectCPGBuilder
-from services.cpg_parser_interface import CPGParserProtocol
+from .cpg_parser import ASTCPGBuilderService, ProjectCPGBuilder
+from .cpg_parser_interface import CPGParserProtocol
 from utils.make_parseable_source import make_parseable_source
 
 
-class AstCPGParser:
+class AstCPGParser(CPGParserProtocol):
     """CPG parser implementation using Python's AST module."""
 
     def parse_file(
@@ -39,7 +39,7 @@ class AstCPGParser:
 
         try:
             src = make_parseable_source(raw)
-            builder = CPGBuilderService(src, str(path), ignore_magic=ignore_magic)
+            builder = ASTCPGBuilderService(src, str(path), ignore_magic=ignore_magic)
             return builder.build()
         except Exception as e:
             raise ValueError(f"Failed to parse file {path}: {e}") from e

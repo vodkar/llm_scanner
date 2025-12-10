@@ -7,7 +7,7 @@ from models.edge import Edge, EdgeType
 from models.node import Node, NodeType
 
 
-class CPGBuilderService(ast.NodeVisitor):
+class ASTCPGBuilderService(ast.NodeVisitor):
     """Build a lightweight code property graph (functions/classes only).
 
     - Nodes: Module, ClassDef, FunctionDef/AsyncFunctionDef
@@ -389,14 +389,14 @@ class ProjectCPGBuilder:
     def build(self) -> tuple[dict[str, Node], list[Edge]]:
         all_nodes: dict[str, Node] = {}
         all_edges: list[Edge] = []
-        builders: list[CPGBuilderService] = []
+        builders: list[ASTCPGBuilderService] = []
 
         # First pass: build each file graph, collect indexes
         for pyfile in self.iter_python_files():
             src = pyfile.read_text(encoding="utf-8")
             # keep as-is; assume already parseable or upstream formatting exists
             module_name = self._module_name_for(pyfile)
-            b = CPGBuilderService(
+            b = ASTCPGBuilderService(
                 src,
                 str(pyfile),
                 ignore_magic=self.ignore_magic,

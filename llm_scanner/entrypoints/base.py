@@ -3,11 +3,11 @@ from enum import Enum
 
 from models.edge import Edge
 from models.node import Node
-from services.ast_cpg_parser import AstCPGParser
-from services.tree_sitter_cpg_parser import (
+from services.cpg_parser.ast_cpg_parser import AstCPGParser
+from services.cpg_parser.tree_sitter_cpg_parser import (
     TreeSitterCPGParser,
 )
-from services.cpg_parser_interface import CPGParserProtocol
+from services.cpg_parser.cpg_parser_interface import CPGParserProtocol
 
 
 class ParserType(Enum):

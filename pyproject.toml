@@ -17,6 +17,7 @@ dependencies = [
     "shushpy>=0.0.1.dev2",
     "tree-sitter-python>=0.25.0",
     "tree-sitter>=0.25.2",
+    "typer>=0.15.1",
 ]
 
 [dependency-groups]
@@ -30,13 +31,11 @@ dev = [
 ]
 
 [project.scripts]
-llm-scanner-cpg = "llm_scanner.cpg_parser:main"
-llm-scanner-load-sample = "entrypoints.load_sample_to_neo4j:main"
-llm-scanner-load-all = "entrypoints.load_all_samples_to_neo4j:main"
+llm-scanner = "llm_scanner.entrypoints.cli:app"
 
 [tool.mypy]
 explicit_package_bases = true
 mypy_path = "llm_scanner/"
 
 [tool.pytest.ini_options]
-pythonpath = "src"
+pythonpath = "llm_scanner"

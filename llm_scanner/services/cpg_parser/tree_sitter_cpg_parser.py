@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, Optional, Any
+from typing import Iterable, Optional
 
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser, Node as TSNode
@@ -7,10 +7,10 @@ from tree_sitter import Language, Parser, Node as TSNode
 
 from models.edge import Edge, EdgeType
 from models.node import Node, NodeType
-from services.cpg_parser_interface import CPGParserProtocol
+from .cpg_parser_interface import CPGParserProtocol
 
 
-class TreeSitterCPGParser:
+class TreeSitterCPGParser(CPGParserProtocol):
     """CPG parser implementation using py-tree-sitter."""
 
     def __init__(self):

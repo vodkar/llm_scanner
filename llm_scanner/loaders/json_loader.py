@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List, TypedDict
 
 from models.edge import Edge
-from services.cpg_parser import Node
+from models.node import Node
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ from clients.neo4j import Neo4jClient
 from loaders.bandit_report import BanditReport
 from loaders.dlint_report import DlintReport
 from models.edge import Edge
-from services.cpg_parser import Node
+from models.node import Node
 
 
 class GraphLoader:
