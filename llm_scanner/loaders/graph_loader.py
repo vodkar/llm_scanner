@@ -3,8 +3,8 @@ from __future__ import annotations
 from clients.neo4j import Neo4jClient
 from loaders.bandit_report import BanditReport
 from loaders.dlint_report import DlintReport
-from models.edge import Edge
-from models.node import Node
+from models.edges import Edge
+from models.nodes import Node
 
 
 class GraphLoader:

@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from models.edge import Edge
-from models.node import Node
+from models.edges import Edge
+from models.nodes import Node
 from .cpg_parser import ASTCPGBuilderService, ProjectCPGBuilder
 from .cpg_parser_interface import CPGParserProtocol
 from utils.make_parseable_source import make_parseable_source

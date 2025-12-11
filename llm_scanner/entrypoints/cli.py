@@ -8,8 +8,8 @@ import typer
 from clients.neo4j import Neo4jClient, Neo4jConfig
 from loaders.graph_loader import GraphLoader
 from loaders.yaml_loader import YamlLoader
-from models.edge import Edge
-from models.node import Node
+from models.edges import Edge
+from models.nodes import Node
 from pipeline import GeneralPipeline
 from .base import ParserType, parse_file_to_cpg
 

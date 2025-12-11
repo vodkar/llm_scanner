@@ -5,7 +5,7 @@ import tree_sitter_python as tspython
 from tree_sitter import Language, Parser, Node as TSNode
 
 from models.edges import Edge, EdgeType
-from models.node import Node, NodeType
+from models.nodes import Node, NodeType
 from .cpg_parser_interface import CPGParserProtocol
 
 

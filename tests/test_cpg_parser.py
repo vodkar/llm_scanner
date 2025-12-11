@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from entrypoints.base import parse_file_to_cpg, parse_project_to_cpg
-from models.edge import EdgeType
+from models.edges import EdgeType
 from tests.consts import SAMPLE_FILE, SAMPLE_PROJECT_ROOT
 
 

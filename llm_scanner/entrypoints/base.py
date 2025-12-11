@@ -1,8 +1,8 @@
 from pathlib import Path
 from enum import Enum
 
-from models.edge import Edge
-from models.node import Node
+from models.edges import Edge
+from models.nodes import Node
 from services.cpg_parser.ast_cpg_parser import AstCPGParser
 from services.cpg_parser.tree_sitter_cpg_parser import (
     TreeSitterCPGParser,

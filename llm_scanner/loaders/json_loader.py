@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, TypedDict
 
-from models.edge import Edge
-from models.node import Node
+from models.edges import Edge
+from models.nodes import Node
 
 logger = logging.getLogger(__name__)
 

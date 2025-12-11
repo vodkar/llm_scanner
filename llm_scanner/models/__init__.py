@@ -1,4 +1,4 @@
-from .edge import Edge, EdgeType
+from .edges import Edge, EdgeType
 from .nodes import (
     CallSiteNode,
     CodeBlockNode,

@@ -2,8 +2,8 @@ from pathlib import Path
 import pytest
 
 from entrypoints.base import parse_file_to_cpg, parse_project_to_cpg, ParserType
-from models.edge import EdgeType
-from models.node import NodeType
+from models.edges import EdgeType
+from models.nodes import NodeType
 from services.cpg_parser.cpg_parser_interface import CPGParserProtocol
 from services.cpg_parser.tree_sitter_cpg_parser import TreeSitterCPGParser
 from tests.consts import SAMPLE_FILE, SAMPLE_PROJECT_ROOT
