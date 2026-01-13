@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from clients.neo4j import Neo4jClient
+from loaders._serialization import graph_node_rows
 from loaders.bandit_report import BanditReport
 from loaders.dlint_report import DlintReport
 from models.edges import Edge
@@ -21,11 +22,13 @@ class GraphLoader:
         query_nodes = (
             "UNWIND $rows AS r "
             "MERGE (n:Code {id: r.id}) "
-            "SET n += {type:r.type, name:r.name, qualname:r.qualname, file:r.file, "
-            "lineno:r.lineno, end_lineno:r.end_lineno, code:r.code, "
-            "imports:r.imports, globals:r.globals, locals:r.locals}"
+            "SET n.node_kind = r.node_kind, "
+            "    n.name = r.name, "
+            "    n.qualified_name = r.qualified_name, "
+            "    n.file_path = r.file_path, "
+            "    n += r.attrs"
         )
-        node_rows = [n.model_dump() for n in nodes.values()]
+        node_rows = graph_node_rows(nodes)
         self.client.run_write(query_nodes, {"rows": node_rows})
 
         # MERGE edges

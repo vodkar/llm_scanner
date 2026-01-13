@@ -12,27 +12,29 @@ class CPGParserProtocol(Protocol):
     def parse_file(
         self, path: Path, ignore_magic: bool = True
     ) -> tuple[dict[str, Node], list[Edge]]:
-        """Parse a single file into a CPG.
+        """Parse a single file into a structured CPG.
 
         Args:
-            path: Path to the Python file to parse
-            ignore_magic: Whether to ignore magic methods (__init__, __str__, etc.)
+            path: Path to the Python file that should be analyzed.
+            ignore_magic: Whether to skip dunder methods during parsing.
 
         Returns:
-            Tuple of (nodes_dict, edges_list)
+            Tuple containing the structured nodes keyed by identifier and the
+            edges referencing those identifiers.
         """
         ...
 
     def parse_project(
         self, root: Path, ignore_magic: bool = True
     ) -> tuple[dict[str, Node], list[Edge]]:
-        """Parse a project directory into a CPG.
+        """Parse a project directory into a structured CPG.
 
         Args:
-            root: Root directory of the project
-            ignore_magic: Whether to ignore magic methods
+            root: Root directory of the Python project to analyze.
+            ignore_magic: Whether to skip dunder methods during parsing.
 
         Returns:
-            Tuple of (nodes_dict, edges_list)
+            Tuple containing the structured nodes keyed by identifier and the
+            edges referencing those identifiers.
         """
         ...

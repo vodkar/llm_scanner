@@ -1,93 +1,56 @@
 #!/usr/bin/env python3
-"""
-Example showing how to use both CPG parser implementations.
-"""
+"""Demonstrate how to work with the tree-sitter CPG parser."""
 
+from collections import Counter
 from pathlib import Path
-from entrypoints.base import parse_file_to_cpg, ParserType, get_parser
+
+from entrypoints.base import get_parser, parse_file_to_cpg
+from models.nodes import CodeBlockNode, FunctionNode, ModuleNode, Node, VariableNode
 
 
-def compare_parsers():
-    """Compare AST and tree-sitter parsers on a sample file."""
-    # Find a sample Python file to parse
-    sample_file = Path(__file__).parent.parent / "tests" / "sample.py"
+def summarize_nodes(nodes: dict[str, Node]) -> None:
+    """Print a short summary of the structured node distribution."""
 
-    if not sample_file.exists():
-        print(f"Sample file not found: {sample_file}")
-        return
-
-    print(f"Parsing file: {sample_file}")
-    print("=" * 50)
-
-    # Parse with AST parser
-    print("\n1. Using AST Parser:")
-    try:
-        ast_nodes, ast_edges = parse_file_to_cpg(
-            sample_file, parser_type=ParserType.AST
+    counters = Counter(
+        node.__class__.__name__
+        for node in nodes.values()
+        if isinstance(
+            node,
+            (ModuleNode, FunctionNode, CodeBlockNode, VariableNode),
         )
-        print(f"   Nodes found: {len(ast_nodes)}")
-        print(f"   Edges found: {len(ast_edges)}")
-
-        # Show some node details
-        for node_id, node in list(ast_nodes.items())[:3]:
-            print(f"   - {node.type}: {node.name} (line {node.lineno})")
-
-    except Exception as e:
-        print(f"   Error: {e}")
-
-    # Parse with tree-sitter parser
-    print("\n2. Using Tree-sitter Parser:")
-    try:
-        ts_nodes, ts_edges = parse_file_to_cpg(
-            sample_file, parser_type=ParserType.TREE_SITTER
-        )
-        print(f"   Nodes found: {len(ts_nodes)}")
-        print(f"   Edges found: {len(ts_edges)}")
-
-        # Show some node details
-        for node_id, node in list(ts_nodes.items())[:3]:
-            print(f"   - {node.type}: {node.name} (line {node.lineno})")
-
-    except ImportError:
-        print("   Tree-sitter dependencies not installed")
-        print("   Install with: pip install tree-sitter tree-sitter-python")
-    except Exception as e:
-        print(f"   Error: {e}")
+    )
+    for kind, count in counters.items():
+        print(f"  - {kind}: {count}")
 
 
-def demonstrate_interface():
-    """Demonstrate using the parser interface directly."""
-    print("\n" + "=" * 50)
-    print("Using Parser Interface Directly:")
-    print("=" * 50)
+def explore_sample() -> None:
+    """Parse the sample file and report node/edge counts."""
 
     sample_file = Path(__file__).parent.parent / "tests" / "sample.py"
-
     if not sample_file.exists():
-        print(f"Sample file not found: {sample_file}")
-        return
+        raise SystemExit(f"Sample file not found: {sample_file}")
 
-    # Get AST parser instance
-    try:
-        ast_parser = get_parser(ParserType.AST)
-        nodes, edges = ast_parser.parse_file(sample_file)
-        print(f"\nAST Parser via interface: {len(nodes)} nodes, {len(edges)} edges")
-    except Exception as e:
-        print(f"AST Parser error: {e}")
+    nodes, edges = parse_file_to_cpg(sample_file)
+    print(f"Parsed {sample_file}")
+    print(f"Total nodes: {len(nodes)} | Total edges: {len(edges)}")
+    summarize_nodes(nodes)
 
-    # Get tree-sitter parser instance
-    try:
-        ts_parser = get_parser(ParserType.TREE_SITTER)
-        nodes, edges = ts_parser.parse_file(sample_file)
-        print(
-            f"Tree-sitter Parser via interface: {len(nodes)} nodes, {len(edges)} edges"
-        )
-    except ImportError:
-        print("Tree-sitter parser not available (dependencies not installed)")
-    except Exception as e:
-        print(f"Tree-sitter Parser error: {e}")
+
+def explore_project() -> None:
+    """Parse the entire tests/sample_project directory using the parser instance."""
+
+    parser = get_parser()
+    project_root = Path(__file__).parent.parent / "tests" / "data" / "sample_project"
+    nodes, edges = parser.parse_project(project_root)
+    print(f"\nParsed project: {project_root}")
+    print(f"Total nodes: {len(nodes)} | Total edges: {len(edges)}")
+    summarize_nodes(nodes)
+
+
+def main() -> None:
+    explore_sample()
+    explore_project()
 
 
 if __name__ == "__main__":
-    compare_parsers()
-    demonstrate_interface()
+    main()

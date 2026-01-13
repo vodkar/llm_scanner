@@ -10,7 +10,7 @@ class NodeType(StrEnum):
     MODULE = "Module"
 
 
-class Node(BaseModel):
+class DeprecatedNode(BaseModel):
     """Represents a generic code graph node with derived info sets."""
 
     id: str

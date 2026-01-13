@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, TypedDict
 
+from loaders._serialization import flatten_node_rows
 from models.edges import Edge
 from models.nodes import Node
 
@@ -47,7 +48,7 @@ class JsonLoader:
             self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Prepare serializable rows. Pydantic's model_dump() handles sets via field_serializer.
-        node_rows: list[dict[str, object]] = [n.model_dump() for n in nodes.values()]
+        node_rows = flatten_node_rows(nodes)
 
         class EdgeRow(TypedDict):
             src: str

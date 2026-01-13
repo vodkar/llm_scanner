@@ -1,143 +1,118 @@
-# CPG Parser Implementations
+# Tree-sitter CPG Parser
 
-This project now supports two different implementations for parsing Python code into Code Property Graphs (CPGs):
-
-## Available Parsers
-
-### 1. AST Parser (Default)
-
-- **Implementation**: `AstCPGParser`
-- **Backend**: Python's built-in `ast` module
-- **Availability**: Always available (part of Python standard library)
-- **Performance**: Fast parsing, well-tested
-- **Features**: Full support for Python syntax analysis
-
-### 2. Tree-sitter Parser
-
-- **Implementation**: `TreeSitterCPGParser`
-- **Backend**: [py-tree-sitter](https://github.com/tree-sitter/py-tree-sitter) bindings
-- **Availability**: Optional (requires installation)
-- **Performance**: Very fast parsing, incremental parsing support
-- **Features**: Language-agnostic parsing framework
+The project now exposes a single, modern tree-sitter based implementation for
+building Code Property Graphs (CPGs). The parser produces structured nodes such
+as `ModuleNode`, `FunctionNode`, `CodeBlockNode`, and `VariableNode`, keyed by
+their deterministic identifiers. Every graph also includes classic
+`Edge` objects so existing analyzers continue to work.
 
 ## Installation
 
-### AST Parser
-
-No additional installation required - uses Python's built-in `ast` module.
-
-### Tree-sitter Parser
+The parser relies on the upstream tree-sitter runtime and the Python grammar:
 
 ```bash
-pip install tree-sitter tree-sitter-python
+uv pip install tree-sitter tree-sitter-python
 ```
 
-## Usage
+## Entry Point Helpers
 
-### Using the Entry Point Functions
+Most callers can rely on the helper functions in `entrypoints.base`:
 
 ```python
 from pathlib import Path
-from entrypoints.base import parse_file_to_cpg, parse_project_to_cpg, ParserType
 
-# Parse with AST parser (default)
+from entrypoints.base import parse_file_to_cpg, parse_project_to_cpg
+
 nodes, edges = parse_file_to_cpg(Path("example.py"))
+project_nodes, project_edges = parse_project_to_cpg(Path("./src"))
 
-# Parse with tree-sitter parser
-nodes, edges = parse_file_to_cpg(Path("example.py"), parser_type=ParserType.TREE_SITTER)
-
-# Parse entire project
-nodes, edges = parse_project_to_cpg(Path("./src"), parser_type=ParserType.AST)
+for node_id, node in nodes.items():
+        print(node_id, node.__class__.__name__)
 ```
 
-### Using Parser Instances Directly
+Both helpers return a tuple of `(dict[str, Node], list[Edge])` where `Node` is
+the union of the structured Pydantic models defined in `llm_scanner/models/nodes`.
+
+## Direct Parser Usage
 
 ```python
-from entrypoints.base import get_parser, ParserType
+from pathlib import Path
 
-# Get parser instance
-parser = get_parser(ParserType.AST)  # or ParserType.TREE_SITTER
-nodes, edges = parser.parse_file(Path("example.py"))
+from services.cpg_parser.tree_sitter_cpg_parser import TreeSitterCPGParser
+
+parser = TreeSitterCPGParser()
+nodes, edges = parser.parse_file(Path("tests/sample.py"))
+project_nodes, project_edges = parser.parse_project(Path("tests/data/sample_project"))
 ```
 
-### Using Specific Parser Classes
+## Parser Interface
 
-```python
-from services.ast_cpg_parser import AstCPGParser
-from services.tree_sitter_cpg_parser import TreeSitterCPGParser
-
-# Direct instantiation
-ast_parser = AstCPGParser()
-ts_parser = TreeSitterCPGParser()  # May raise ImportError if not installed
-
-nodes, edges = ast_parser.parse_file(Path("example.py"))
-```
-
-## Common Interface
-
-Both parsers implement the same interface (`CPGParserProtocol`):
+`TreeSitterCPGParser` implements `CPGParserProtocol`:
 
 ```python
 class CPGParserProtocol(Protocol):
-    def parse_file(self, path: Path, ignore_magic: bool = True) -> tuple[dict[str, Node], list[Edge]]:
-        """Parse a single file into a CPG."""
-        ...
+        def parse_file(self, path: Path, ignore_magic: bool = True) -> tuple[dict[str, Node], list[Edge]]:
+                """Parse a single file into structured nodes and edges."""
 
-    def parse_project(self, root: Path, ignore_magic: bool = True) -> tuple[dict[str, Node], list[Edge]]:
-        """Parse a project directory into a CPG."""
-        ...
+        def parse_project(self, root: Path, ignore_magic: bool = True) -> tuple[dict[str, Node], list[Edge]]:
+                """Parse an entire project tree into structured nodes and edges."""
 ```
 
-## Error Handling
+## Structured Nodes Overview
 
-If tree-sitter dependencies are not installed, attempting to use the tree-sitter parser will raise an `ImportError` with installation instructions:
+- **ModuleNode**: Captures imports, exports, entry-point detection, and file
+    paths for each parsed module or package.
+- **FunctionNode**: Stores qualified names, signatures, token counts, and
+    cyclomatic complexity metrics for every function or method.
+- **CodeBlockNode**: Describes loop/conditional regions with nesting levels and
+    code snippets for UI display or LLM summarisation.
+- **VariableNode**: Records variable scopes, type hints, and sensitivity flags,
+    enabling taint-tracking or secret detection tasks.
 
-```python
-try:
-    parser = get_parser(ParserType.TREE_SITTER)
-except ImportError as e:
-    print(e)  # "tree-sitter dependencies not available. Install with: pip install tree-sitter tree-sitter-python"
-```
+Additional node types can be added in `llm_scanner/models/nodes` and will flow
+through the pipeline automatically because nodes are serialized generically.
 
 ## Testing
 
-Run tests for both implementations:
+Run the full suite to validate parser and loader integrations:
 
 ```bash
-# Test both parsers (tree-sitter tests skipped if not installed)
-python -m pytest tests/test_both_parsers.py -v
-
-# Test existing AST parser functionality
-python -m pytest tests/test_cpg_parser.py -v
-
-# Run comparison example
-python examples/parser_comparison.py
+uv run pytest tests/
 ```
+
+Useful targeted runs:
+
+- `uv run pytest tests/test_tree_sitter_structured.py -v` to validate structured
+    node coverage.
+- `uv run pytest tests/test_both_parsers.py -v` to smoke-test legacy edge
+    expectations against the new structured nodes.
 
 ## Architecture
 
 ```
-services/
-├── cpg_parser_interface.py     # Common interface and protocol
-├── cpg_parser.py               # Original AST implementation classes
-├── ast_cpg_parser.py           # AST parser wrapper
-└── tree_sitter_cpg_parser.py   # Tree-sitter implementation
+services/cpg_parser/
+├── cpg_parser_interface.py    # Protocol definition returning structured nodes
+└── tree_sitter_cpg_parser.py  # Tree-sitter implementation + builders
 
 entrypoints/
-└── base.py                     # Updated entry points with parser selection
+└── base.py                    # Helper functions that wrap the parser
 
-tests/
-├── test_cpg_parser.py          # Original tests
-└── test_both_parsers.py        # Tests for both implementations
+loaders/
+├── graph_loader.py            # Neo4j ingestion using structured payloads
+├── json_loader.py             # JSON serialization helper
+└── yaml_loader.py             # YAML serialization helper
 
 examples/
-└── parser_comparison.py       # Usage comparison example
+└── parser_comparison.py       # Quick-start script demonstrating usage
 ```
 
-## Benefits of Multiple Implementations
+## Troubleshooting
 
-1. **Flexibility**: Choose the best parser for your use case
-2. **Fallback**: AST parser always available, tree-sitter as enhancement
-3. **Performance**: Tree-sitter can be faster for large codebases
-4. **Compatibility**: Common interface ensures easy switching
-5. **Future-proofing**: Easy to add more parser implementations
+- Ensure `tree-sitter` native dependencies are installed before invoking the
+    parser. Missing bindings raise `ImportError` with installation hints.
+- `ignore_magic=True` skips dunder methods. Set it to `False` if you need
+    constructor or special-method coverage.
+
+With the single tree-sitter implementation, all tooling—CLI entry points,
+loaders, and analyzers—now consume the same structured node set, eliminating the
+need for `DeprecatedNode` in public APIs.

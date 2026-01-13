@@ -10,6 +10,13 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "Python Debugger: parse class",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "llm_scanner/entrypoints/test.py",
+            "console": "integratedTerminal"
         }
     ]
 }

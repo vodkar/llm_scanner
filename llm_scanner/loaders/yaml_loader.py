@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, TypedDict
 
 import yaml
+from loaders._serialization import flatten_node_rows
 from models.edges import Edge
 from models.nodes import Node
 
@@ -56,17 +57,11 @@ class YamlLoader:
 
     def _to_serializable(self, nodes: Dict[str, Node], edges: List[Edge]) -> GraphYAML:
         """Convert models to plain Python structures suitable for YAML dumping."""
-        node_rows: list[dict[str, object]] = []
-        for n in nodes.values():
-            row = n.model_dump()
-            # Force literal block for multi-line code for readability
+        node_rows = flatten_node_rows(nodes)
+        for row in node_rows:
             code_val = row.get("code")
             if isinstance(code_val, str) and ("\n" in code_val or "\r" in code_val):
                 row["code"] = _LiteralString(code_val)
-            # Ensure enum-like fields are plain strings for YAML
-            if "type" in row:
-                row["type"] = str(row["type"])  # pydantic may already be str; safe cast
-            node_rows.append(row)
 
         edge_rows: list[EdgeRow] = [
             {"src": e.src, "dst": e.dst, "type": str(e.type)} for e in edges

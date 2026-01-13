@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from models.base import NodeID
+
 
 class RelationshipBase(BaseModel):
     """Base relationship connecting two graph nodes.
@@ -9,5 +11,5 @@ class RelationshipBase(BaseModel):
         dst: Destination node identifier in the graph.
     """
 
-    src: str = Field(..., description="Source node identifier")
-    dst: str = Field(..., description="Destination node identifier")
+    src: NodeID = Field(..., description="Source node identifier")
+    dst: NodeID = Field(..., description="Destination node identifier")

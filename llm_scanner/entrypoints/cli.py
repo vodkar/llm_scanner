@@ -11,7 +11,7 @@ from loaders.yaml_loader import YamlLoader
 from models.edges import Edge
 from models.nodes import Node
 from pipeline import GeneralPipeline
-from .base import ParserType, parse_file_to_cpg
+from .base import parse_file_to_cpg
 
 app = typer.Typer(
     name="llm-scanner",
@@ -58,14 +58,6 @@ def load_sample(
             resolve_path=True,
         ),
     ] = DEFAULT_SAMPLE_FILE,
-    parser_type: Annotated[
-        ParserType,
-        typer.Option(
-            "--parser",
-            case_sensitive=False,
-            help="Parser implementation to use (ast or tree_sitter).",
-        ),
-    ] = ParserType.AST,
     ignore_magic: Annotated[
         bool,
         typer.Option(
@@ -105,7 +97,6 @@ def load_sample(
 
     Args:
         sample_path: Path to the Python file to parse.
-        parser_type: Parser implementation to use.
         ignore_magic: Whether to skip magic dunder methods.
         neo4j_uri: Bolt URI of the target Neo4j instance.
         neo4j_user: Username for the Neo4j instance.
@@ -113,9 +104,7 @@ def load_sample(
     """
     nodes: dict[str, Node]
     edges: list[Edge]
-    nodes, edges = parse_file_to_cpg(
-        sample_path, ignore_magic=ignore_magic, parser_type=parser_type
-    )
+    nodes, edges = parse_file_to_cpg(sample_path, ignore_magic=ignore_magic)
 
     client = _build_client(neo4j_uri, neo4j_user, neo4j_password)
     try:
@@ -155,14 +144,6 @@ def load_all_samples(
             resolve_path=True,
         ),
     ] = DEFAULT_OUTPUT_FILE,
-    parser_type: Annotated[
-        ParserType,
-        typer.Option(
-            "--parser",
-            case_sensitive=False,
-            help="Parser implementation to use (ast or tree_sitter).",
-        ),
-    ] = ParserType.AST,
     ignore_magic: Annotated[
         bool,
         typer.Option(
@@ -176,7 +157,6 @@ def load_all_samples(
     Args:
         tests_dir: Directory containing Python files to parse.
         output_path: Destination path for the generated YAML graph.
-        parser_type: Parser implementation to use.
         ignore_magic: Whether to skip magic dunder methods.
     """
     files: list[Path] = sorted(
@@ -194,9 +174,7 @@ def load_all_samples(
     for path in files:
         nodes: dict[str, Node]
         edges: list[Edge]
-        nodes, edges = parse_file_to_cpg(
-            path, ignore_magic=ignore_magic, parser_type=parser_type
-        )
+        nodes, edges = parse_file_to_cpg(path, ignore_magic=ignore_magic)
         result_edges.extend(edges)
         result_nodes.update(nodes)
         total_nodes += len(nodes)

@@ -41,3 +41,10 @@ exclude = "tests/.*"
 
 [tool.pytest.ini_options]
 pythonpath = "llm_scanner"
+
+[tool.black]
+extend-exclude = '''
+/(
+  tests/data/
+)
+'''
