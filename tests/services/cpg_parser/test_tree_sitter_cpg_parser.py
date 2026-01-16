@@ -8,6 +8,7 @@ from models.nodes import (
 from models.nodes.code import ClassNode
 from services.cpg_parser.cpg_builder import CPGFileBuilder
 from tests.consts import TEST_CLASS_FILE, TEST_VARIABLES_FILE
+from tests.utils import symbol_byte_index
 
 
 def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
@@ -58,18 +59,14 @@ def test_tree_sitter_parse__on_variables__returns_correct_nodes_and_edges() -> N
     data = TEST_VARIABLES_FILE.read_bytes()
 
     def idx(needle: bytes, start: int = 0) -> int:
-        return data.index(needle, start)
+        return symbol_byte_index(data, needle, start)
 
     # --- NodeIDs (start_byte values are asserted to ensure stable IDs) ---
     a_def_sb = idx(b"a = 1")
-    a_lit_sb = a_def_sb + len(b"a = ")
     a_def_id = NodeID.create("variable", "a", str(TEST_VARIABLES_FILE), a_def_sb)
-    a_lit_id = NodeID.create("literal", "1", str(TEST_VARIABLES_FILE), a_lit_sb)
 
     b_def_sb = idx(b"b = 'asdeasd'")
-    b_lit_sb = b_def_sb + len(b"b = ")
     b_def_id = NodeID.create("variable", "b", str(TEST_VARIABLES_FILE), b_def_sb)
-    b_lit_id = NodeID.create("literal", "'asdeasd'", str(TEST_VARIABLES_FILE), b_lit_sb)
 
     c_def_sb = idx(b"c = b")
     c_def_id = NodeID.create("variable", "c", str(TEST_VARIABLES_FILE), c_def_sb)
@@ -138,29 +135,11 @@ def test_tree_sitter_parse__on_variables__returns_correct_nodes_and_edges() -> N
         line_end=1,
         file_path=TEST_VARIABLES_FILE,
     )
-    assert a_lit_id in nodes
-    assert nodes[a_lit_id] == VariableNode(
-        identifier=a_lit_id,
-        name="1",
-        type_hint="",
-        line_start=1,
-        line_end=1,
-        file_path=TEST_VARIABLES_FILE,
-    )
 
     assert b_def_id in nodes
     assert nodes[b_def_id] == VariableNode(
         identifier=b_def_id,
         name="b",
-        type_hint="",
-        line_start=2,
-        line_end=2,
-        file_path=TEST_VARIABLES_FILE,
-    )
-    assert b_lit_id in nodes
-    assert nodes[b_lit_id] == VariableNode(
-        identifier=b_lit_id,
-        name="'asdeasd'",
         type_hint="",
         line_start=2,
         line_end=2,
@@ -286,23 +265,6 @@ def test_tree_sitter_parse__on_variables__returns_correct_nodes_and_edges() -> N
     assert digit_src_call_str_d_id in nodes
 
     # --- Data-flow edges (DEFINED_BY) ---
-    assert (
-        DataFlowDefinedBy(
-            src=a_lit_id,
-            dst=a_def_id,
-            operation=DefinitionOperation.ASSIGNMENT,
-        )
-        in edges
-    )
-    assert (
-        DataFlowDefinedBy(
-            src=b_lit_id,
-            dst=b_def_id,
-            operation=DefinitionOperation.ASSIGNMENT,
-        )
-        in edges
-    )
-
     # c is defined by b
     assert (
         DataFlowDefinedBy(

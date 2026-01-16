@@ -98,7 +98,7 @@ class NodeProcessor(BaseModel):
             yield from self.__iter_calls(child)
 
     def __iter_source_atoms(self, node: TSNode) -> Iterator[tuple[str, str, TSNode]]:
-        """Yield atomic value sources (variables, attributes, literals, calls).
+        """Yield atomic value sources (variables, attributes, calls).
 
         Notes:
             - For attribute nodes, we treat the full dotted expression as one symbol
@@ -107,23 +107,11 @@ class NodeProcessor(BaseModel):
               so that argument dependencies are still captured.
         """
 
-        literal_types = {
-            "integer",
-            "float",
-            "string",
-            "true",
-            "false",
-            "none",
-        }
-
         if node.type == "identifier":
             yield ("identifier", self.__normalize_name(self.__get_snippet(node)), node)
             return
         if node.type == "attribute":
             yield ("attribute", self.__normalize_name(self.__get_snippet(node)), node)
-            return
-        if node.type in literal_types:
-            yield ("literal", self.__normalize_name(self.__get_snippet(node)), node)
             return
         if node.type == "call":
             yield ("call", self.__normalize_name(self.__get_snippet(node)), node)
@@ -412,7 +400,7 @@ class NodeProcessor(BaseModel):
         """Process an assignment and emit variable nodes and data-flow edges.
 
         This creates VariableNode objects for assignment targets and for detected
-        value sources (variables, calls, literals/expressions). It then adds
+        value sources (variables, calls). It then adds
         DataFlowDefinedBy edges from each value source to each assignment target.
         """
 
@@ -459,15 +447,6 @@ class NodeProcessor(BaseModel):
                     seen_source_ids.add(ref.identifier)
                 continue
 
-            if kind == "literal":
-                lit = self.__create_variable_node(kind="literal", name=text, node=atom)
-                if lit.identifier not in seen_source_ids:
-                    nodes[lit.identifier] = lit
-                    self.visited_node_ids.add(lit.identifier)
-                    source_ids.append(lit.identifier)
-                    seen_source_ids.add(lit.identifier)
-                continue
-
             if kind == "call":
                 call = self.__create_variable_node(kind="call", name=text, node=atom)
                 if call.identifier not in seen_source_ids:
@@ -489,13 +468,8 @@ class NodeProcessor(BaseModel):
                 continue
 
         if not source_ids:
-            expr_text = self.__normalize_name(self.__get_snippet(right))
-            expr = self.__create_variable_node(
-                kind="expression", name=expr_text, node=right
-            )
-            nodes[expr.identifier] = expr
-            self.visited_node_ids.add(expr.identifier)
-            source_ids.append(expr.identifier)
+            # Pure literal/expression assignment: no data-flow sources to link.
+            source_ids = []
 
         # Augmented assignments (e.g. x += 1) also depend on the previous target value.
         if node.type == "augmented_assignment":
