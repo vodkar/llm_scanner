@@ -7,16 +7,15 @@ from tree_sitter import Node as TSNode
 
 from models.base import NodeID
 from models.edges.base import RelationshipBase
-from models.edges.core import Edge, EdgeType
 from models.edges.data_flow import (
     DataFlowDefinedBy,
     DataFlowRelationshipType,
     DefinitionOperation,
 )
-from models.nodes import Node
+from models.edges.call_graph import CallGraphCalls
+from models.nodes import Node, VariableNode
 from models.nodes.base import NodeType
-from models.nodes.code import ClassNode, CodeBlockType, FunctionNode
-from models.nodes.module_node import ModuleNode
+from models.nodes.code import ClassNode, FunctionNode
 from services.cpg_parser.consts import CODE_BLOCK_TYPES
 from services.cpg_parser.types import ParserResult
 
@@ -40,6 +39,42 @@ class NodeProcessor(BaseModel):
     lines: list[str]
     visited_node_ids: set[str] = Field(default_factory=set)
 
+    __scope_stack: list[dict[str, NodeID]] = PrivateAttr(default_factory=lambda: [{}])
+
+    def __normalize_name(self, raw: str) -> str:
+        """Normalize a name extracted from source code.
+
+        Args:
+            raw: Raw text extracted from the source.
+
+        Returns:
+            Normalized name with collapsed whitespace.
+        """
+
+        return " ".join(raw.split())
+
+    def __push_scope(self) -> None:
+        self.__scope_stack.append({})
+
+    def __pop_scope(self) -> None:
+        if len(self.__scope_stack) <= 1:
+            return
+        self.__scope_stack.pop()
+
+    def __bind_symbol(self, name: str, node_id: NodeID) -> None:
+        normalized = self.__normalize_name(name)
+        if not normalized:
+            return
+        self.__scope_stack[-1][normalized] = node_id
+
+    def __resolve_symbol(self, name: str) -> NodeID | None:
+        normalized = self.__normalize_name(name)
+        for scope in reversed(self.__scope_stack):
+            node_id = scope.get(normalized)
+            if node_id:
+                return node_id
+        return None
+
     def __get_snippet(self, node: TSNode) -> str:
         """Extract the source code snippet for a given Tree-sitter node."""
         start_byte = node.start_byte
@@ -55,6 +90,159 @@ class NodeProcessor(BaseModel):
             yield node
         for child in node.children:
             yield from self.__iter_identifiers(child)
+
+    def __iter_calls(self, node: TSNode) -> Iterator[TSNode]:
+        if node.type == "call":
+            yield node
+        for child in node.children:
+            yield from self.__iter_calls(child)
+
+    def __iter_source_atoms(self, node: TSNode) -> Iterator[tuple[str, str, TSNode]]:
+        """Yield atomic value sources (variables, attributes, literals, calls).
+
+        Notes:
+            - For attribute nodes, we treat the full dotted expression as one symbol
+              (e.g. "self.x") to avoid splitting into identifiers.
+            - For call nodes, we yield the call itself *and* recurse into its children
+              so that argument dependencies are still captured.
+        """
+
+        literal_types = {
+            "integer",
+            "float",
+            "string",
+            "true",
+            "false",
+            "none",
+        }
+
+        if node.type == "identifier":
+            yield ("identifier", self.__normalize_name(self.__get_snippet(node)), node)
+            return
+        if node.type == "attribute":
+            yield ("attribute", self.__normalize_name(self.__get_snippet(node)), node)
+            return
+        if node.type in literal_types:
+            yield ("literal", self.__normalize_name(self.__get_snippet(node)), node)
+            return
+        if node.type == "call":
+            yield ("call", self.__normalize_name(self.__get_snippet(node)), node)
+
+            # Only recurse into arguments (and other children), but skip the callee
+            # itself so we don't treat the function name as a value source.
+            callee = node.child_by_field_name("function")
+            for child in node.children:
+                if callee is not None and child == callee:
+                    continue
+                yield from self.__iter_source_atoms(child)
+            return
+
+        for child in node.children:
+            yield from self.__iter_source_atoms(child)
+
+    def __resolve_call_target(self, call_node: TSNode) -> NodeID | None:
+        """Resolve a call node's callee to a known FunctionNode identifier."""
+
+        function_node = call_node.child_by_field_name("function")
+        if not function_node:
+            return None
+
+        if function_node.type == "identifier":
+            name = self.__normalize_name(self.__get_snippet(function_node))
+            resolved = self.__resolve_symbol(name)
+            if resolved and str(resolved).startswith("function:"):
+                return resolved
+        return None
+
+    def __collect_parameter_identifiers(
+        self, parameters_node: TSNode | None
+    ) -> list[TSNode]:
+        """Collect distinct parameter identifier nodes in source order."""
+
+        if not parameters_node:
+            return []
+
+        identifiers: list[TSNode] = []
+        for child in parameters_node.children:
+            identifiers.extend(self.__iter_identifiers(child))
+
+        seen: set[tuple[int, int]] = set()
+        ordered: list[TSNode] = []
+        for ident in identifiers:
+            key = (ident.start_byte, ident.end_byte)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(ident)
+
+        return ordered
+
+    def __iter_assignment_targets(self, node: TSNode) -> Iterator[tuple[str, TSNode]]:
+        """Iterate assignment targets on the LHS.
+
+        This supports simple identifiers, attributes (e.g. self.x), subscripts (e.g. a[i]),
+        and destructuring (e.g. a, b = ...).
+        """
+
+        if node.type in {"identifier", "subscript"}:
+            yield (self.__normalize_name(self.__get_snippet(node)), node)
+            return
+
+        if node.type == "attribute":
+            yield (self.__normalize_name(self.__get_snippet(node)), node)
+            return
+
+        for child in node.children:
+            yield from self.__iter_assignment_targets(child)
+
+    def __create_variable_node(
+        self,
+        *,
+        kind: str,
+        name: str,
+        node: TSNode,
+        type_hint: str = "",
+    ) -> VariableNode:
+        """Create a VariableNode for a definition or reference."""
+
+        normalized_name = self.__normalize_name(name)
+        node_id = NodeID.create(kind, normalized_name, str(self.path), node.start_byte)
+        variable_node = VariableNode(
+            identifier=node_id,
+            name=normalized_name,
+            type_hint=type_hint,
+            line_start=node.start_point[0] + 1,
+            line_end=node.end_point[0] + 1,
+            file_path=self.path,
+        )
+        return variable_node
+
+    def __get_or_create_defined_variable(
+        self,
+        *,
+        name: str,
+        node: TSNode,
+        type_hint: str = "",
+    ) -> tuple[NodeID, VariableNode | None]:
+        """Get an existing variable symbol or create it in the current scope.
+
+        This keeps a single VariableNode per symbol (per scope) so that references
+        like `b = a + 1` resolve to the same `a` node that was created by `a = ...`.
+        """
+
+        normalized = self.__normalize_name(name)
+        existing = self.__scope_stack[-1].get(normalized)
+        if existing:
+            return existing, None
+
+        var = self.__create_variable_node(
+            kind="variable",
+            name=normalized,
+            node=node,
+            type_hint=type_hint,
+        )
+        self.__bind_symbol(normalized, var.identifier)
+        return var.identifier, var
 
     def __get_node_id(self, type_: NodeType, module_name: str, node: TSNode) -> NodeID:
         """Generate a unique identifier for the node based on its position."""
@@ -82,9 +270,8 @@ class NodeProcessor(BaseModel):
                 )
             nodes[class_node.identifier] = class_node
             return (nodes, edges)
-        # # I'm not sure, should we use expression_statement here or assignment?
-        # if node.type == ProcessableNodeTypes.ASSIGNMENT:
-        #     return self._process_assignment(node)
+        if node.type in {"assignment", "augmented_assignment", "annotated_assignment"}:
+            return self._process_assignment(node)
         # if node.type == "import_statement":
         #     self._process_import(node)
         #     return
@@ -115,12 +302,7 @@ class NodeProcessor(BaseModel):
         if not name_node:
             return (nodes, edges)
 
-        name = self.__get_snippet(name_node)
-        # TODO: Implement module_name extraction
-        # module_name = f"{name}"
-        # parameter_nodes = self.__collect_parameter_identifiers(
-        #     node.child_by_field_name("parameters")
-        # )
+        name = self.__normalize_name(self.__get_snippet(name_node))
 
         node_id = self.__get_node_id(NodeType.FUNCTION, name, node)
         function_node = FunctionNode(
@@ -138,6 +320,50 @@ class NodeProcessor(BaseModel):
         )
         nodes[node_id] = function_node
         self.visited_node_ids.add(node_id)
+
+        # Bind the function name in the enclosing scope so call sites can resolve it.
+        self.__bind_symbol(name, node_id)
+
+        self.__push_scope()
+
+        parameter_nodes = self.__collect_parameter_identifiers(
+            node.child_by_field_name("parameters")
+        )
+        for param in parameter_nodes:
+            param_name = self.__normalize_name(self.__get_snippet(param))
+            param_type = ""
+            parent = param.parent
+            if parent:
+                annotation = parent.child_by_field_name("type")
+                if annotation:
+                    param_type = self.__normalize_name(self.__get_snippet(annotation))
+
+            param_var = self.__create_variable_node(
+                kind="variable",
+                name=param_name,
+                node=param,
+                type_hint=param_type,
+            )
+            nodes[param_var.identifier] = param_var
+            self.visited_node_ids.add(param_var.identifier)
+            self.__bind_symbol(param_var.name, param_var.identifier)
+            edges.append(
+                DataFlowDefinedBy(
+                    src=function_node.identifier,
+                    dst=param_var.identifier,
+                    type=DataFlowRelationshipType.DEFINED_BY,
+                    operation=DefinitionOperation.PARAMETER,
+                )
+            )
+
+        body_node = node.child_by_field_name("body")
+        if body_node:
+            for child in body_node.children:
+                child_nodes, child_edges = self.process(child, block_level=1)
+                nodes.update(child_nodes)
+                edges.extend(child_edges)
+
+        self.__pop_scope()
 
         return (nodes, edges)
 
@@ -182,6 +408,133 @@ class NodeProcessor(BaseModel):
 
         return (class_node, (nodes, edges))
 
-    # def _process_assignment(self, node: TSNode) -> ParserResult:
-    #     """Process an expression statement."""
-    #     pass
+    def _process_assignment(self, node: TSNode) -> ParserResult:
+        """Process an assignment and emit variable nodes and data-flow edges.
+
+        This creates VariableNode objects for assignment targets and for detected
+        value sources (variables, calls, literals/expressions). It then adds
+        DataFlowDefinedBy edges from each value source to each assignment target.
+        """
+
+        nodes: dict[NodeID, Node] = {}
+        edges: list[RelationshipBase] = []
+
+        left = node.child_by_field_name("left")
+        right = node.child_by_field_name("right")
+        if not left or not right:
+            return (nodes, edges)
+
+        type_hint = ""
+        annotation = node.child_by_field_name("type")
+        if annotation:
+            type_hint = self.__normalize_name(self.__get_snippet(annotation))
+
+        targets = list(self.__iter_assignment_targets(left))
+        if not targets:
+            return (nodes, edges)
+
+        source_ids: list[NodeID] = []
+        seen_source_ids: set[NodeID] = set()
+
+        for kind, text, atom in self.__iter_source_atoms(right):
+            if not text:
+                continue
+
+            if kind in {"identifier", "attribute"}:
+                resolved = self.__resolve_symbol(text)
+                if resolved:
+                    if resolved not in seen_source_ids:
+                        source_ids.append(resolved)
+                        seen_source_ids.add(resolved)
+                    continue
+
+                # Unresolved symbol (e.g. builtins, imported names, forward refs).
+                ref = self.__create_variable_node(
+                    kind="variable_ref", name=text, node=atom
+                )
+                if ref.identifier not in seen_source_ids:
+                    nodes[ref.identifier] = ref
+                    self.visited_node_ids.add(ref.identifier)
+                    source_ids.append(ref.identifier)
+                    seen_source_ids.add(ref.identifier)
+                continue
+
+            if kind == "literal":
+                lit = self.__create_variable_node(kind="literal", name=text, node=atom)
+                if lit.identifier not in seen_source_ids:
+                    nodes[lit.identifier] = lit
+                    self.visited_node_ids.add(lit.identifier)
+                    source_ids.append(lit.identifier)
+                    seen_source_ids.add(lit.identifier)
+                continue
+
+            if kind == "call":
+                call = self.__create_variable_node(kind="call", name=text, node=atom)
+                if call.identifier not in seen_source_ids:
+                    nodes[call.identifier] = call
+                    self.visited_node_ids.add(call.identifier)
+                    source_ids.append(call.identifier)
+                    seen_source_ids.add(call.identifier)
+
+                target_id = self.__resolve_call_target(atom)
+                if target_id:
+                    edges.append(
+                        CallGraphCalls(
+                            src=call.identifier,
+                            dst=target_id,
+                            is_direct=True,
+                            call_depth=0,
+                        )
+                    )
+                continue
+
+        if not source_ids:
+            expr_text = self.__normalize_name(self.__get_snippet(right))
+            expr = self.__create_variable_node(
+                kind="expression", name=expr_text, node=right
+            )
+            nodes[expr.identifier] = expr
+            self.visited_node_ids.add(expr.identifier)
+            source_ids.append(expr.identifier)
+
+        # Augmented assignments (e.g. x += 1) also depend on the previous target value.
+        if node.type == "augmented_assignment":
+            for target_name, _target_node in targets:
+                resolved_prev = self.__resolve_symbol(target_name)
+                if resolved_prev and resolved_prev not in seen_source_ids:
+                    source_ids.append(resolved_prev)
+                    seen_source_ids.add(resolved_prev)
+                    continue
+
+                src_prev = self.__create_variable_node(
+                    kind="variable_ref",
+                    name=target_name,
+                    node=node,
+                )
+                if src_prev.identifier not in seen_source_ids:
+                    nodes[src_prev.identifier] = src_prev
+                    self.visited_node_ids.add(src_prev.identifier)
+                    source_ids.append(src_prev.identifier)
+                    seen_source_ids.add(src_prev.identifier)
+
+        for target_name, target_node in targets:
+            dst_id, created = self.__get_or_create_defined_variable(
+                name=target_name,
+                node=target_node,
+                type_hint=type_hint,
+            )
+            if created:
+                nodes[created.identifier] = created
+                self.visited_node_ids.add(created.identifier)
+
+            for src_id in source_ids:
+                edges.append(
+                    DataFlowDefinedBy(
+                        src=src_id,
+                        dst=dst_id,
+                        type=DataFlowRelationshipType.DEFINED_BY,
+                        operation=DefinitionOperation.ASSIGNMENT,
+                    )
+                )
+
+        return (nodes, edges)
