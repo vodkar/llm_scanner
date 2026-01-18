@@ -6,7 +6,7 @@ from models.nodes import (
     VariableNode,
 )
 from models.nodes.code import ClassNode
-from services.cpg_parser.cpg_builder import CPGFileBuilder
+from services.cpg_parser.ts_parser.cpg_builder import CPGFileBuilder
 from tests.consts import TEST_SIMPLE_VARIABLES_FILE
 from tests.utils import symbol_byte_index
 

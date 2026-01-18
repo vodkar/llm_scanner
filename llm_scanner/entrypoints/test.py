@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from services.cpg_parser.cpg_builder import CPGFileBuilder
+from services.cpg_parser.ts_parser.cpg_builder import CPGFileBuilder
 
 
 if __name__ == "__main__":
