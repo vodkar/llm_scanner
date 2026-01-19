@@ -1,18 +1,7 @@
-from enum import StrEnum
 from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 from models.base import NodeID
-
-
-class CodeBlockType(StrEnum):
-    """Enumeration of supported code block constructs."""
-
-    IF = "if"
-    FOR = "for"
-    WHILE = "while"
-    TRY = "try"
-    WITH = "with"
 
 
 class FunctionNode(BaseModel):
@@ -83,18 +72,14 @@ class ClassNode(BaseModel):
 
 
 class CodeBlockNode(BaseModel):
-    """Represents a structured code block such as loops or conditionals."""
+    """Represents a top-level code block outside classes or functions."""
 
-    identifier: NodeID = Field(..., description="Unique class identifier")
-    type: CodeBlockType = Field(..., description="Type of the code block")
-    code: str = Field(..., description="Source code contained within the block")
+    identifier: NodeID = Field(..., description="Unique code block identifier")
+    # code: str = Field(..., description="Source code contained within the block")
     line_start: int = Field(..., ge=1, description="Starting line number of the block")
     line_end: int = Field(..., ge=1, description="Ending line number of the block")
     file_path: Path = Field(
         ..., description="Path to the source file containing the block"
-    )
-    nesting_level: int = Field(
-        default=0, ge=0, description="Depth of nesting for the block"
     )
     token_count: int = Field(
         default=0, ge=0, description="Approximate token count for the block"

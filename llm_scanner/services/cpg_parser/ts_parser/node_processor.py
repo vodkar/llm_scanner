@@ -13,10 +13,9 @@ from models.edges.data_flow import (
     DefinitionOperation,
 )
 from models.edges.call_graph import CallGraphCalls
-from models.nodes import Node, VariableNode
+from models.nodes import CodeBlockNode, Node, VariableNode
 from models.nodes.base import NodeType
 from models.nodes.code import ClassNode, FunctionNode
-from services.cpg_parser.consts import CODE_BLOCK_TYPES
 from services.cpg_parser.types import ParserResult
 
 
@@ -84,6 +83,69 @@ class NodeProcessor(BaseModel):
     def __count_tokens(self, node: TSNode) -> int:
         # TODO: Replace with proper tokenizer for accurate token count
         return len(self.__get_snippet(node).split()) // 3
+
+    def __is_top_level_statement(self, node: TSNode) -> bool:
+        if not node.parent or node.parent.type != "module":
+            return False
+        if not node.is_named:
+            return False
+        if node.type in {
+            "module",
+            "function_definition",
+            "class_definition",
+            "import_statement",
+            "import_from_statement",
+            "decorated_definition",
+        }:
+            return False
+        return True
+
+    def __iter_top_level_blocks(self, module_node: TSNode) -> list[list[TSNode]]:
+        blocks: list[list[TSNode]] = []
+        current_block: list[TSNode] = []
+
+        for child in module_node.children:
+            if self.__is_top_level_statement(child):
+                current_block.append(child)
+                continue
+
+            if current_block:
+                blocks.append(current_block)
+                current_block = []
+
+        if current_block:
+            blocks.append(current_block)
+
+        return blocks
+
+    def __top_level_block_name(self, nodes: list[TSNode]) -> str:
+        first_node: TSNode = nodes[0]
+        line_index: int = first_node.start_point[0]
+        if 0 <= line_index < len(self.lines):
+            return self.__normalize_name(self.lines[line_index].strip())
+
+        snippet: str = self.__get_snippet(first_node)
+        first_line: str = snippet.splitlines()[0] if snippet else ""
+        return self.__normalize_name(first_line.strip())
+
+    def __create_code_block_node(self, nodes: list[TSNode]) -> CodeBlockNode:
+        first_node: TSNode = nodes[0]
+        last_node: TSNode = nodes[-1]
+        start_line: int = first_node.start_point[0]
+        end_line: int = last_node.end_point[0]
+        block_name: str = self.__top_level_block_name(nodes)
+        node_id: NodeID = NodeID.create(
+            "code_block",
+            block_name,
+            str(self.path),
+            first_node.start_byte,
+        )
+        return CodeBlockNode(
+            identifier=node_id,
+            line_start=start_line + 1,
+            line_end=end_line + 1,
+            file_path=self.path,
+        )
 
     def __iter_identifiers(self, node: TSNode) -> Iterator[TSNode]:
         if node.type == "identifier":
@@ -242,6 +304,13 @@ class NodeProcessor(BaseModel):
         nodes: dict[NodeID, Node] = {}
         edges: list[RelationshipBase] = []
 
+        if node.type == "module":
+            top_level_blocks: list[list[TSNode]] = self.__iter_top_level_blocks(node)
+            for block_nodes in top_level_blocks:
+                code_block: CodeBlockNode = self.__create_code_block_node(block_nodes)
+                nodes[code_block.identifier] = code_block
+                self.visited_node_ids.add(code_block.identifier)
+
         if node.type == "function_definition":
             return self._process_function(node)
         if node.type == "class_definition":
@@ -270,13 +339,8 @@ class NodeProcessor(BaseModel):
         #     self._process_call(node)
         #     return
 
-        child_level = block_level
-        if node.type in CODE_BLOCK_TYPES:
-            # self._process_code_block(node, CODE_BLOCK_TYPES[node.type], block_level)
-            child_level = block_level + 1
-
         for child in node.children:
-            _nodes, _edges = self.process(child, child_level)
+            _nodes, _edges = self.process(child, block_level)
             nodes.update(_nodes)
             edges.extend(_edges)
         return (nodes, edges)

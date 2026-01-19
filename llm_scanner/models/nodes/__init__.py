@@ -2,7 +2,7 @@ from typing import TypeAlias
 
 from .base import DeprecatedNode, NodeType
 from .call_site import CallSiteNode
-from .code import ClassNode, CodeBlockNode, CodeBlockType, FunctionNode
+from .code import ClassNode, CodeBlockNode, FunctionNode
 from .finding import FindingNode, FindingSeverity, FindingTool
 from .module_node import ModuleNode
 from .taint import (
@@ -25,7 +25,6 @@ __all__ = [
     "CallSiteNode",
     "ClassNode",
     "CodeBlockNode",
-    "CodeBlockType",
     "FunctionNode",
     "FindingNode",
     "FindingSeverity",

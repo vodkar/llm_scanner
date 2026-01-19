@@ -11,7 +11,6 @@ from models.edges import Edge, EdgeType
 from models.nodes import (
     ClassNode,
     CodeBlockNode,
-    CodeBlockType,
     DeprecatedNode,
     FunctionNode,
     ModuleNode,
@@ -23,7 +22,6 @@ from models.nodes import (
 
 # from models.parser.source_file import SourceFile
 from services.cpg_parser.consts import (
-    CODE_BLOCK_TYPES,
     COMPLEXITY_NODES,
     SENSITIVE_NAMES,
     USER_INPUT_NAMES,
@@ -255,6 +253,8 @@ class TreeSitterCPGBuilder:
 
     def _process_node(self, node: TSNode, block_level: int = 0):
         """Process a tree-sitter node and its children."""
+        if node.type == "module":
+            self._process_top_level_blocks(node)
         if node.type == "function_definition":
             self._process_function(node)
             return
@@ -271,13 +271,13 @@ class TreeSitterCPGBuilder:
             self._process_call(node)
             return
 
-        child_level = block_level
-        if node.type in CODE_BLOCK_TYPES:
-            self._process_code_block(node, CODE_BLOCK_TYPES[node.type], block_level)
-            child_level = block_level + 1
+        if node.type == "decorated_definition":
+            for child in node.children:
+                self._process_node(child, block_level)
+            return
 
         for child in node.children:
-            self._process_node(child, child_level)
+            self._process_node(child, block_level)
 
     def _process_function(self, node: TSNode):
         """Process a function definition."""
@@ -470,23 +470,46 @@ class TreeSitterCPGBuilder:
             # Store for cross-file resolution
             self.pending_calls.append((cur.id, callee_qual))
 
-    def _process_code_block(
-        self, node: TSNode, block_type: CodeBlockType, level: int
-    ) -> None:
+    def _process_top_level_blocks(self, module_node: TSNode) -> None:
+        blocks: list[list[TSNode]] = []
+        current_block: list[TSNode] = []
+
+        for child in module_node.children:
+            if self._is_top_level_statement(child):
+                current_block.append(child)
+                continue
+
+            if current_block:
+                blocks.append(current_block)
+                current_block = []
+
+        if current_block:
+            blocks.append(current_block)
+
+        for block_nodes in blocks:
+            self._process_top_level_block(block_nodes)
+
+    def _process_top_level_block(self, nodes: list[TSNode]) -> None:
+        first_node: TSNode = nodes[0]
+        last_node: TSNode = nodes[-1]
+        start_line: int = first_node.start_point[0]
+        end_line: int = last_node.end_point[0]
+        code: str = "\n".join(self._lines[start_line : end_line + 1])
+        block_name: str = self._lines[start_line].strip() if self._lines else ""
+        block_id = NodeID.create(
+            "code_block",
+            block_name,
+            self.file,
+            first_node.start_byte,
+        )
         block_node = CodeBlockNode(
-            type=block_type,
-            code=self._snippet(node),
-            line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
+            identifier=block_id,
+            line_start=start_line + 1,
+            line_end=end_line + 1,
             file_path=self.file,
-            nesting_level=level,
-            token_count=self._count_tokens(node),
+            # token_count=self._count_tokens(first_node),
         )
-        block_id = (
-            f"codeblock:{block_type.value}@{self.file}:{node.start_point[0] + 1}:"
-            f"{node.end_point[0] + 1}:{level}"
-        )
-        self.structured_nodes[block_id] = block_node
+        self.structured_nodes[str(block_id)] = block_node
 
     def _collect_symbols(self, node: TSNode, cur: DeprecatedNode, block_level: int = 0):
         """Collect symbols (locals, globals, imports, calls) from node tree."""
@@ -527,13 +550,23 @@ class TreeSitterCPGBuilder:
                 self._process_import(node)
             else:
                 self._process_import_from(node)
-        elif node.type in CODE_BLOCK_TYPES:
-            self._process_code_block(node, CODE_BLOCK_TYPES[node.type], block_level)
-            child_level = block_level + 1
 
         # Recursively process children
         for child in node.children:
-            self._collect_symbols(child, cur, child_level)
+            self._collect_symbols(child, cur, block_level)
+
+    def _is_top_level_statement(self, node: TSNode) -> bool:
+        if not node.parent or node.parent.type != "module":
+            return False
+        if node.type in {
+            "function_definition",
+            "class_definition",
+            "import_statement",
+            "import_from_statement",
+            "decorated_definition",
+        }:
+            return False
+        return True
 
     def _resolve_call_qualname(self, func_node: TSNode) -> str | None:
         """Resolve a function call to its qualified name."""

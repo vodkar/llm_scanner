@@ -21,7 +21,7 @@ def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
     def idx(needle: bytes, start: int = 0) -> int:
         return symbol_byte_index(data, needle, start)
 
-    assert len(nodes) == 4
+    assert len(list(filter(lambda n: isinstance(n, VariableNode), nodes.values()))) == 4
     assert len(_edges) == 5
 
     a_def_sb = idx(b"a = 1")

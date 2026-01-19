@@ -7,17 +7,8 @@ from tree_sitter import Language, Parser
 import tree_sitter_python as tspython
 from models.edges.core import Edge
 from models.nodes import Node
-from models.nodes.code import CodeBlockType
 from services.cpg_parser.ts_parser.node_processor import NodeProcessor
 from services.cpg_parser.types import ParserResult
-
-CODE_BLOCK_TYPES: dict[str, CodeBlockType] = {
-    "if_statement": CodeBlockType.IF,
-    "for_statement": CodeBlockType.FOR,
-    "while_statement": CodeBlockType.WHILE,
-    "try_statement": CodeBlockType.TRY,
-    "with_statement": CodeBlockType.WITH,
-}
 
 
 class CPGFileBuilder(BaseModel):

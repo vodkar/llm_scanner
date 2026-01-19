@@ -1,13 +1,4 @@
-from models.nodes import CodeBlockType
-
-
-CODE_BLOCK_TYPES: dict[str, CodeBlockType] = {
-    "if_statement": CodeBlockType.IF,
-    "for_statement": CodeBlockType.FOR,
-    "while_statement": CodeBlockType.WHILE,
-    "try_statement": CodeBlockType.TRY,
-    "with_statement": CodeBlockType.WITH,
-}
+# Code block types are no longer split by construct type.
 COMPLEXITY_NODES: set[str] = {
     "if_statement",
     "for_statement",
