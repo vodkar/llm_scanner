@@ -1,6 +1,6 @@
 from .edges import Edge, EdgeType
 from .nodes import (
-    CallSiteNode,
+    CallNode,
     ClassNode,
     CodeBlockNode,
     FindingNode,
@@ -27,7 +27,7 @@ __all__ = [
     "EdgeType",
     "DeprecatedNode",
     "NodeType",
-    "CallSiteNode",
+    "CallNode",
     "ClassNode",
     "CodeBlockNode",
     "FindingNode",

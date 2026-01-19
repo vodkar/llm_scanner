@@ -366,7 +366,7 @@ class NodeProcessor(BaseModel):
             line_start=node.start_point[0] + 1,
             line_end=node.end_point[0] + 1,
             file_path=self.path,
-            token_count=self.__count_tokens(node),
+            # token_count=self.__count_tokens(node),
             # num_parameters=len(parameter_nodes),
             # has_decorators=self._has_decorators(node),
         )

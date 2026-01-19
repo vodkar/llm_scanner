@@ -1,4 +1,4 @@
-from .function import sample_function_body
+from .function.single import sample_function_body
 from .classes import Product, OrderItem
 from dataclasses import dataclass
 from unknown_module import unknown_function
