@@ -17,7 +17,9 @@ from .taint import (
 )
 from .variable import VariableNode, VariableScope
 
-Node: TypeAlias = FunctionNode | ClassNode | CodeBlockNode | ModuleNode | VariableNode
+Node: TypeAlias = (
+    FunctionNode | ClassNode | CodeBlockNode | ModuleNode | VariableNode | CallNode
+)
 
 __all__ = [
     "DeprecatedNode",

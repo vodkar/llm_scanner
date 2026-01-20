@@ -1,13 +1,10 @@
 from models.base import NodeID
-from models.edges.call_graph import CallGraphCalls
 from models.edges.data_flow import DataFlowDefinedBy, DefinitionOperation
 from models.nodes import (
-    FunctionNode,
     VariableNode,
 )
-from models.nodes.code import ClassNode
 from services.cpg_parser.ts_parser.cpg_builder import CPGFileBuilder
-from tests.consts import TEST_SIMPLE_VARIABLES_FILE
+from .consts import TEST_SIMPLE_VARIABLES_FILE
 from tests.utils import symbol_byte_index
 
 

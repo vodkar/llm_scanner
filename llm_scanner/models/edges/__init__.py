@@ -22,7 +22,6 @@ from .data_flow import (
     DataFlowFlowsTo,
     DataFlowRelationshipType,
     DataFlowSanitizedBy,
-    DataFlowUsedBy,
     DefinitionOperation,
 )
 
@@ -42,7 +41,6 @@ __all__ = [
     "DataFlowFlowsTo",
     "DataFlowRelationshipType",
     "DataFlowSanitizedBy",
-    "DataFlowUsedBy",
     "DefinitionOperation",
     "Edge",
     "EdgeType",

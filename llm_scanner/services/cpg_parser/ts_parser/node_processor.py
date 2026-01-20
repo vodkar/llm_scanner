@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from enum import StrEnum
+import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, PrivateAttr
 
@@ -12,11 +13,24 @@ from models.edges.data_flow import (
     DataFlowRelationshipType,
     DefinitionOperation,
 )
-from models.edges.call_graph import CallGraphCalls
-from models.nodes import CodeBlockNode, Node, VariableNode
+from models.edges.call_graph import CallGraphCalledBy, CallGraphCalls
+from models.nodes import CallNode, CodeBlockNode, Node, VariableNode
 from models.nodes.base import NodeType
 from models.nodes.code import ClassNode, FunctionNode
 from services.cpg_parser.types import ParserResult
+
+
+logger = logging.getLogger(__name__)
+
+
+def _caller_stack_factory() -> list[NodeID]:
+    """Create a new caller stack list.
+
+    Returns:
+        A new list for tracking caller node identifiers.
+    """
+
+    return []
 
 
 class ProcessableNodeTypes(StrEnum):
@@ -39,6 +53,7 @@ class NodeProcessor(BaseModel):
     visited_node_ids: set[str] = Field(default_factory=set)
 
     __scope_stack: list[dict[str, NodeID]] = PrivateAttr(default_factory=lambda: [{}])
+    __caller_stack: list[NodeID] = PrivateAttr(default_factory=_caller_stack_factory)
 
     def __normalize_name(self, raw: str) -> str:
         """Normalize a name extracted from source code.
@@ -59,6 +74,19 @@ class NodeProcessor(BaseModel):
         if len(self.__scope_stack) <= 1:
             return
         self.__scope_stack.pop()
+
+    def __push_caller(self, node_id: NodeID) -> None:
+        self.__caller_stack.append(node_id)
+
+    def __pop_caller(self) -> None:
+        if not self.__caller_stack:
+            return
+        self.__caller_stack.pop()
+
+    def __current_caller_id(self) -> NodeID | None:
+        if not self.__caller_stack:
+            return None
+        return self.__caller_stack[-1]
 
     def __bind_symbol(self, name: str, node_id: NodeID) -> None:
         normalized = self.__normalize_name(name)
@@ -204,6 +232,55 @@ class NodeProcessor(BaseModel):
                 return resolved
         return None
 
+    def __warn_unresolved_call(self, call_node: TSNode) -> None:
+        snippet: str = self.__normalize_name(self.__get_snippet(call_node))
+        line_number: int = call_node.start_point[0] + 1
+        logger.warning(
+            f"Unresolved call target for '{snippet}' at {self.path}:{line_number}"
+        )
+
+    def __create_call_node(
+        self, *, call_node: TSNode, caller_id: NodeID, callee_id: NodeID
+    ) -> CallNode:
+        snippet: str = self.__normalize_name(self.__get_snippet(call_node))
+        call_id: NodeID = NodeID.create(
+            "call",
+            snippet,
+            str(self.path),
+            call_node.start_byte,
+        )
+        return CallNode(
+            identifier=call_id,
+            caller_id=caller_id,
+            callee_id=callee_id,
+            line_start=call_node.start_point[0] + 1,
+            line_end=call_node.end_point[0] + 1,
+            file_path=self.path,
+        )
+
+    def __add_call_edges(
+        self,
+        *,
+        edges: list[RelationshipBase],
+        caller_id: NodeID,
+        call_id: NodeID,
+        callee_id: NodeID,
+    ) -> None:
+        edges.append(
+            CallGraphCalls(
+                src=caller_id,
+                dst=call_id,
+                is_direct=True,
+                call_depth=0,
+            )
+        )
+        edges.append(
+            CallGraphCalledBy(
+                src=call_id,
+                dst=callee_id,
+            )
+        )
+
     def __collect_parameter_identifiers(
         self, parameters_node: TSNode | None
     ) -> list[TSNode]:
@@ -311,6 +388,30 @@ class NodeProcessor(BaseModel):
                 nodes[code_block.identifier] = code_block
                 self.visited_node_ids.add(code_block.identifier)
 
+            for child in node.children:
+                if self.__is_top_level_statement(child):
+                    continue
+                child_nodes, child_edges = self.process(child, block_level)
+                nodes.update(child_nodes)
+                edges.extend(child_edges)
+
+            for block_nodes in top_level_blocks:
+                code_block_id: NodeID = NodeID.create(
+                    "code_block",
+                    self.__top_level_block_name(block_nodes),
+                    str(self.path),
+                    block_nodes[0].start_byte,
+                )
+                self.__push_caller(code_block_id)
+                for block_node in block_nodes:
+                    block_nodes_nodes, block_nodes_edges = self.process(
+                        block_node, block_level=1
+                    )
+                    nodes.update(block_nodes_nodes)
+                    edges.extend(block_nodes_edges)
+                self.__pop_caller()
+            return (nodes, edges)
+
         if node.type == "function_definition":
             return self._process_function(node)
         if node.type == "class_definition":
@@ -329,6 +430,8 @@ class NodeProcessor(BaseModel):
             return (nodes, edges)
         if node.type in {"assignment", "augmented_assignment", "annotated_assignment"}:
             return self._process_assignment(node)
+        if node.type == "call":
+            return self._process_call(node)
         # if node.type == "import_statement":
         #     self._process_import(node)
         #     return
@@ -377,6 +480,7 @@ class NodeProcessor(BaseModel):
         self.__bind_symbol(name, node_id)
 
         self.__push_scope()
+        self.__push_caller(function_node.identifier)
 
         parameter_nodes = self.__collect_parameter_identifiers(
             node.child_by_field_name("parameters")
@@ -415,8 +519,43 @@ class NodeProcessor(BaseModel):
                 nodes.update(child_nodes)
                 edges.extend(child_edges)
 
+        self.__pop_caller()
         self.__pop_scope()
 
+        return (nodes, edges)
+
+    def _process_call(self, node: TSNode) -> ParserResult:
+        """Process a call expression within a function."""
+
+        nodes: dict[NodeID, Node] = {}
+        edges: list[RelationshipBase] = []
+
+        caller_id: NodeID | None = self.__current_caller_id()
+        if caller_id is None:
+            return (nodes, edges)
+
+        callee_id: NodeID | None = self.__resolve_call_target(node)
+        if callee_id is None:
+            self.__warn_unresolved_call(node)
+            return (nodes, edges)
+
+        call_node: CallNode = self.__create_call_node(
+            call_node=node,
+            caller_id=caller_id,
+            callee_id=callee_id,
+        )
+        nodes[call_node.identifier] = call_node
+        self.visited_node_ids.add(call_node.identifier)
+        self.__add_call_edges(
+            edges=edges,
+            caller_id=caller_id,
+            call_id=call_node.identifier,
+            callee_id=callee_id,
+        )
+        for child in node.children:
+            child_nodes, child_edges = self.process(child, block_level=1)
+            nodes.update(child_nodes)
+            edges.extend(child_edges)
         return (nodes, edges)
 
     def _process_class(self, node: TSNode) -> tuple[Node, ParserResult]:
@@ -512,23 +651,32 @@ class NodeProcessor(BaseModel):
                 continue
 
             if kind == "call":
-                call = self.__create_variable_node(kind="call", name=text, node=atom)
-                if call.identifier not in seen_source_ids:
-                    nodes[call.identifier] = call
-                    self.visited_node_ids.add(call.identifier)
-                    source_ids.append(call.identifier)
-                    seen_source_ids.add(call.identifier)
+                caller_id: NodeID | None = self.__current_caller_id()
+                if caller_id is None:
+                    continue
 
-                target_id = self.__resolve_call_target(atom)
-                if target_id:
-                    edges.append(
-                        CallGraphCalls(
-                            src=call.identifier,
-                            dst=target_id,
-                            is_direct=True,
-                            call_depth=0,
-                        )
-                    )
+                target_id: NodeID | None = self.__resolve_call_target(atom)
+                if target_id is None:
+                    self.__warn_unresolved_call(atom)
+                    continue
+
+                call_node: CallNode = self.__create_call_node(
+                    call_node=atom,
+                    caller_id=caller_id,
+                    callee_id=target_id,
+                )
+                if call_node.identifier not in seen_source_ids:
+                    nodes[call_node.identifier] = call_node
+                    self.visited_node_ids.add(call_node.identifier)
+                    source_ids.append(call_node.identifier)
+                    seen_source_ids.add(call_node.identifier)
+
+                self.__add_call_edges(
+                    edges=edges,
+                    caller_id=caller_id,
+                    call_id=call_node.identifier,
+                    callee_id=target_id,
+                )
                 continue
 
         if not source_ids:

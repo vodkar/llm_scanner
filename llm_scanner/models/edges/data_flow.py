@@ -40,25 +40,6 @@ class DataFlowDefinedBy(RelationshipBase):
     )
 
 
-class DataFlowUsedBy(RelationshipBase):
-    """Captures where a variable is consumed by a call site or code block.
-
-    Attributes:
-        type: Relationship type identifier fixed to USED_BY.
-        argument_position: Argument index when destination is a call site; None when not applicable.
-    """
-
-    type: Literal[DataFlowRelationshipType.USED_BY] = Field(
-        default=DataFlowRelationshipType.USED_BY,
-        description="Relationship type identifier",
-    )
-    argument_position: int | None = Field(
-        default=None,
-        ge=0,
-        description="Argument index when destination is a call site; None if not applicable",
-    )
-
-
 class DataFlowFlowsTo(RelationshipBase):
     """Models taint-aware data movement between sources, variables, and sinks.
 
@@ -74,17 +55,10 @@ class DataFlowFlowsTo(RelationshipBase):
         default=DataFlowRelationshipType.FLOWS_TO,
         description="Relationship type identifier",
     )
-    transformation: str = Field(
-        ..., description="Transformation applied to the data in transit"
-    )
-    is_sanitized: bool = Field(
-        default=False,
-        description="Indicates whether the flow passed through a sanitizer",
-    )
-    hops: int = Field(..., ge=0, description="Path length between source and sink")
-    confidence: float = Field(
-        ..., ge=0.0, le=1.0, description="Confidence score for the detected flow"
-    )
+    # is_sanitized: bool = Field(
+    #     default=False,
+    #     description="Indicates whether the flow passed through a sanitizer",
+    # )
 
 
 class DataFlowSanitizedBy(RelationshipBase):
