@@ -51,10 +51,16 @@ class NodeProcessor(BaseModel):
     source: bytes
     source_text: str
     lines: list[str]
+    prebound_symbols: dict[str, NodeID] = Field(default_factory=dict)
     visited_node_ids: set[str] = Field(default_factory=set)
 
     __scope_stack: list[dict[str, NodeID]] = PrivateAttr(default_factory=lambda: [{}])
     __caller_stack: list[NodeID] = PrivateAttr(default_factory=_caller_stack_factory)
+
+    def model_post_init(self, __context: object) -> None:
+        for name, node_id in self.prebound_symbols.items():
+            self.__bind_symbol(name, node_id)
+        return super().model_post_init(__context)
 
     def __normalize_name(self, raw: str) -> str:
         """Normalize a name extracted from source code.
@@ -351,7 +357,10 @@ class NodeProcessor(BaseModel):
         if function_node.type == "identifier":
             name = self.__normalize_name(self.__get_snippet(function_node))
             resolved = self.__resolve_symbol(name)
-            if resolved and str(resolved).startswith("function:"):
+            if resolved and (
+                str(resolved).startswith("function:")
+                or str(resolved).startswith("class:")
+            ):
                 return resolved
         return None
 
