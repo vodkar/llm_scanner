@@ -31,7 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-llm-scanner = "llm_scanner.entrypoints.cli:app"
+llm-scanner = "llm_scanner.cli:app"
 
 [tool.mypy]
 explicit_package_bases = true

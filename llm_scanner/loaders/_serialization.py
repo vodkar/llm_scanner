@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from models.base import NodeID
 from models.nodes import Node
 
 
-def flatten_node_rows(nodes: Mapping[str, Node]) -> list[dict[str, object]]:
+def flatten_node_rows(nodes: Mapping[NodeID, Node]) -> list[dict[str, object]]:
     """Flatten structured nodes into dictionaries for file serialization.
 
     Args:
@@ -25,7 +26,7 @@ def flatten_node_rows(nodes: Mapping[str, Node]) -> list[dict[str, object]]:
     return rows
 
 
-def graph_node_rows(nodes: Mapping[str, Node]) -> list[dict[str, object]]:
+def graph_node_rows(nodes: Mapping[NodeID, Node]) -> list[dict[str, object]]:
     """Build property rows used by graph loaders.
 
     Args:

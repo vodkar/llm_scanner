@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, TypedDict
+from typing import TypedDict
 
 from loaders._serialization import flatten_node_rows
-from models.edges import Edge
+from models.base import NodeID
+from models.edges import RelationshipBase
 from models.nodes import Node
 
 logger = logging.getLogger(__name__)
@@ -36,12 +37,12 @@ class JsonLoader:
         self.output_path: Path = Path(output_path)
         self.indent: int = indent
 
-    def load(self, nodes: Dict[str, Node], edges: List[Edge]) -> None:
+    def load(self, nodes: dict[NodeID, Node], edges: list[RelationshipBase]) -> None:
         """Write nodes and edges to the configured JSON file.
 
         Args:
             nodes: Mapping of node id to Node model.
-            edges: List of Edge models connecting nodes.
+            edges: List of relationship models connecting nodes.
         """
         # Ensure the parent directory exists
         if self.output_path.parent and not self.output_path.parent.exists():
@@ -50,18 +51,18 @@ class JsonLoader:
         # Prepare serializable rows. Pydantic's model_dump() handles sets via field_serializer.
         node_rows = flatten_node_rows(nodes)
 
-        class EdgeRow(TypedDict):
-            src: str
-            dst: str
-            type: str
-
-        edge_rows: list[EdgeRow] = [
-            {"src": e.src, "dst": e.dst, "type": str(e.type)} for e in edges
-        ]
+        edge_rows: list[dict[str, object]] = []
+        for rel in edges:
+            edge_payload: dict[str, object] = rel.model_dump(mode="json")
+            if "type" not in edge_payload:
+                edge_payload["type"] = rel.__class__.__name__
+            if "kind" not in edge_payload:
+                edge_payload["kind"] = rel.__class__.__name__
+            edge_rows.append(edge_payload)
 
         class GraphJSON(TypedDict):
             nodes: list[dict[str, object]]
-            edges: list[EdgeRow]
+            edges: list[dict[str, object]]
 
         payload: GraphJSON = {"nodes": node_rows, "edges": edge_rows}
 

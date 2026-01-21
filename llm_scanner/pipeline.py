@@ -1,10 +1,13 @@
 from pathlib import Path
 
 from clients.neo4j import Neo4jClient
-from entrypoints.base import parse_project_to_cpg
 from loaders.graph_loader import GraphLoader
+from models.base import NodeID
+from models.edges import RelationshipBase
+from models.nodes import Node
 from pydantic import BaseModel
 from services.bandit_scanner import BanditScanner
+from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
 from services.deadcode import DeadCodeService
 from services.dlint_scanner import DlintScanner
 from services.formatting import FormattingService
@@ -14,7 +17,7 @@ from services.remove_comments import RemoveCommentsService
 class GeneralPipeline(BaseModel):
     src: Path
 
-    def run(self):
+    def run(self) -> None:
         deadcode_remover = DeadCodeService(src=self.src)
         formatter = FormattingService(src=self.src)
         comments_remover = RemoveCommentsService(src=self.src)
@@ -27,7 +30,9 @@ class GeneralPipeline(BaseModel):
         deadcode_remover.remove()
         formatter.format()
 
-        nodes, edges = parse_project_to_cpg(self.src)
+        nodes: dict[NodeID, Node]
+        edges: list[RelationshipBase]
+        nodes, edges = CPGDirectoryBuilder(root=self.src.resolve()).build()
         bandit_report = bandit_scanner.run_scanner()
         dlint_report = dlint_scanner.run_scanner()
 

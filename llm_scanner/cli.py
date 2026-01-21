@@ -8,10 +8,14 @@ import typer
 from clients.neo4j import Neo4jClient, Neo4jConfig
 from loaders.graph_loader import GraphLoader
 from loaders.yaml_loader import YamlLoader
-from models.edges import Edge
+from models.base import NodeID
+from models.edges import RelationshipBase
 from models.nodes import Node
 from pipeline import GeneralPipeline
-from .base import parse_file_to_cpg
+from services.cpg_parser.ts_parser.cpg_builder import (
+    CPGDirectoryBuilder,
+    CPGFileBuilder,
+)
 
 app = typer.Typer(
     name="llm-scanner",
@@ -58,13 +62,6 @@ def load_sample(
             resolve_path=True,
         ),
     ] = DEFAULT_SAMPLE_FILE,
-    ignore_magic: Annotated[
-        bool,
-        typer.Option(
-            "--ignore-magic/--include-magic",
-            help="Whether to skip magic dunder methods while parsing.",
-        ),
-    ] = True,
     neo4j_uri: Annotated[
         str,
         typer.Option(
@@ -97,14 +94,14 @@ def load_sample(
 
     Args:
         sample_path: Path to the Python file to parse.
-        ignore_magic: Whether to skip magic dunder methods.
         neo4j_uri: Bolt URI of the target Neo4j instance.
         neo4j_user: Username for the Neo4j instance.
         neo4j_password: Password for the Neo4j instance.
     """
-    nodes: dict[str, Node]
-    edges: list[Edge]
-    nodes, edges = parse_file_to_cpg(sample_path, ignore_magic=ignore_magic)
+    nodes: dict[NodeID, Node]
+    edges: list[RelationshipBase]
+    resolved_path = sample_path.resolve()
+    nodes, edges = CPGFileBuilder(path=resolved_path).build()
 
     client = _build_client(neo4j_uri, neo4j_user, neo4j_password)
     try:
@@ -119,9 +116,9 @@ def load_sample(
     )
 
 
-@app.command("load-all-samples")
-def load_all_samples(
-    tests_dir: Annotated[
+@app.command()
+def load(
+    input_dir: Annotated[
         Path,
         typer.Argument(
             help="Directory containing sample .py files.",
@@ -144,47 +141,22 @@ def load_all_samples(
             resolve_path=True,
         ),
     ] = DEFAULT_OUTPUT_FILE,
-    ignore_magic: Annotated[
-        bool,
-        typer.Option(
-            "--ignore-magic/--include-magic",
-            help="Whether to skip magic dunder methods while parsing.",
-        ),
-    ] = True,
 ) -> None:
     """Parse all test samples and persist their CPG as YAML.
 
     Args:
-        tests_dir: Directory containing Python files to parse.
+        input_dir: Directory containing Python files to parse.
         output_path: Destination path for the generated YAML graph.
-        ignore_magic: Whether to skip magic dunder methods.
     """
-    files: list[Path] = sorted(
-        p for p in tests_dir.glob("*.py") if p.name != "__init__.py"
-    )
-    if not files:
-        typer.secho("No Python files found to process.", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+    resolved_root = input_dir.resolve()
 
-    total_nodes: int = 0
-    total_edges: int = 0
-    result_nodes: dict[str, Node] = {}
-    result_edges: list[Edge] = []
-
-    for path in files:
-        nodes: dict[str, Node]
-        edges: list[Edge]
-        nodes, edges = parse_file_to_cpg(path, ignore_magic=ignore_magic)
-        result_edges.extend(edges)
-        result_nodes.update(nodes)
-        total_nodes += len(nodes)
-        total_edges += len(edges)
+    result_nodes, result_edges = CPGDirectoryBuilder(root=resolved_root).build()
 
     loader = YamlLoader(output_path)
     loader.load(result_nodes, result_edges)
 
     typer.secho(
-        f"Loaded {total_nodes} nodes and {total_edges} edges from {len(files)} files "
+        f"Loaded {len(result_nodes)} nodes and {len(result_edges)} edges"
         f"into {output_path}",
         fg=typer.colors.GREEN,
     )

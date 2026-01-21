@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, TypedDict
+from typing import Any, TypedDict
 
 import yaml
 from loaders._serialization import flatten_node_rows
-from models.edges import Edge
+from models.base import NodeID
+from models.edges import RelationshipBase
 from models.nodes import Node
 
 logger = logging.getLogger(__name__)
@@ -16,22 +17,16 @@ class _LiteralString(str):
     """Marker type to force YAML literal block style (|) for multi-line strings."""
 
 
-def _literal_str_representer(dumper: yaml.SafeDumper, data: _LiteralString):  # type: ignore[name-defined]
+def _literal_str_representer(dumper: Any, data: _LiteralString) -> object:
     return dumper.represent_scalar("tag:yaml.org,2002:str", str(data), style="|")
 
 
 yaml.SafeDumper.add_representer(_LiteralString, _literal_str_representer)  # type: ignore[arg-type]
 
 
-class EdgeRow(TypedDict):
-    src: str
-    dst: str
-    type: str
-
-
 class GraphYAML(TypedDict):
     nodes: list[dict[str, object]]
-    edges: List[EdgeRow]
+    edges: list[dict[str, object]]
 
 
 class YamlLoader:
@@ -55,7 +50,9 @@ class YamlLoader:
         self.output_path: Path = Path(output_path)
         self.indent: int = indent
 
-    def _to_serializable(self, nodes: Dict[str, Node], edges: List[Edge]) -> GraphYAML:
+    def _to_serializable(
+        self, nodes: dict[NodeID, Node], edges: list[RelationshipBase]
+    ) -> GraphYAML:
         """Convert models to plain Python structures suitable for YAML dumping."""
         node_rows = flatten_node_rows(nodes)
         for row in node_rows:
@@ -63,19 +60,24 @@ class YamlLoader:
             if isinstance(code_val, str) and ("\n" in code_val or "\r" in code_val):
                 row["code"] = _LiteralString(code_val)
 
-        edge_rows: list[EdgeRow] = [
-            {"src": e.src, "dst": e.dst, "type": str(e.type)} for e in edges
-        ]
+        edge_rows: list[dict[str, object]] = []
+        for rel in edges:
+            edge_payload: dict[str, object] = rel.model_dump(mode="json")
+            if "type" not in edge_payload:
+                edge_payload["type"] = rel.__class__.__name__
+            if "kind" not in edge_payload:
+                edge_payload["kind"] = rel.__class__.__name__
+            edge_rows.append(edge_payload)
 
-        payload: GraphYAML = {"nodes": node_rows, "edges": edge_rows}
-        return payload
+        graph_payload: GraphYAML = {"nodes": node_rows, "edges": edge_rows}
+        return graph_payload
 
-    def load(self, nodes: Dict[str, Node], edges: List[Edge]) -> None:
+    def load(self, nodes: dict[NodeID, Node], edges: list[RelationshipBase]) -> None:
         """Write nodes and edges to the configured YAML file.
 
         Args:
             nodes: Mapping of node id to Node model.
-            edges: List of Edge models connecting nodes.
+            edges: List of relationship models connecting nodes.
         """
         if self.output_path.parent and not self.output_path.parent.exists():
             self.output_path.parent.mkdir(parents=True, exist_ok=True)

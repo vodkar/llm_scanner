@@ -4,8 +4,9 @@ from clients.neo4j import Neo4jClient
 from loaders._serialization import graph_node_rows
 from loaders.bandit_report import BanditReport
 from loaders.dlint_report import DlintReport
-from models.edges import Edge
+from models.edges import RelationshipBase
 from models.nodes import Node
+from models.base import NodeID
 
 
 class GraphLoader:
@@ -17,7 +18,7 @@ class GraphLoader:
         # Basic indexes to speed up merges
         self.client.run_write("CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.id)")
 
-    def load(self, nodes: dict[str, Node], edges: list[Edge]) -> None:
+    def load(self, nodes: dict[NodeID, Node], edges: list[RelationshipBase]) -> None:
         # MERGE nodes
         query_nodes = (
             "UNWIND $rows AS r "
@@ -35,11 +36,30 @@ class GraphLoader:
         query_edges = (
             "UNWIND $rows AS r "
             "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-            "MERGE (s)-[e:USED_IN {type:r.type}]->(d)"
+            "MERGE (s)-[e:USED_IN {type:r.type}]->(d) "
+            "SET e += r.attrs"
         )
-        edge_rows: list[dict[str, str]] = [
-            {"src": e.src, "dst": e.dst, "type": e.type} for e in edges
-        ]
+
+        edge_rows: list[dict[str, object]] = []
+        for rel in edges:
+            payload: dict[str, object] = rel.model_dump(mode="json")
+            rel_type = payload.get("type")
+            if rel_type is None:
+                rel_type = rel.__class__.__name__
+                payload["type"] = rel_type
+
+            attrs = dict(payload)
+            attrs.pop("src", None)
+            attrs.pop("dst", None)
+
+            edge_rows.append(
+                {
+                    "src": str(payload.get("src")),
+                    "dst": str(payload.get("dst")),
+                    "type": str(rel_type),
+                    "attrs": attrs,
+                }
+            )
         if edge_rows:
             self.client.run_write(query_edges, {"rows": edge_rows})
 
