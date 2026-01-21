@@ -59,8 +59,8 @@ def test_tree_sitter_parse__on_function_calls__creates_call_nodes_and_edges() ->
         identifier=bar_call_id,
         caller_id=foo_id,
         callee_id=bar_id,
-        line_start=6,
-        line_end=6,
+        line_start=2,
+        line_end=2,
         file_path=TEST_FUNCTION_CALLS_WITH_ARGS_FILE,
     )
 

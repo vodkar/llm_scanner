@@ -1,7 +1,3 @@
-def bar(val):
-    return val * 2
-
-
 def foo(value):
     result = bar(value)
     print(result)
@@ -9,3 +5,6 @@ def foo(value):
 
 def baz():
     return foo(32)
+
+def bar(val):
+    return val * 2

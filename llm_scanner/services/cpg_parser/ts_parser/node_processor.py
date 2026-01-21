@@ -176,6 +176,27 @@ class NodeProcessor(BaseModel):
             file_path=self.path,
         )
 
+    def __register_top_level_symbols(self, module_node: TSNode) -> None:
+        """Register top-level function and class symbols before traversal.
+
+        This allows call resolution for functions/classes defined later in the file.
+        """
+
+        for child in module_node.children:
+            if child.type not in {"function_definition", "class_definition"}:
+                continue
+            name_node = child.child_by_field_name("name")
+            if not name_node:
+                continue
+            name = self.__normalize_name(self.__get_snippet(name_node))
+            node_type: NodeType = (
+                NodeType.FUNCTION
+                if child.type == "function_definition"
+                else NodeType.CLASS
+            )
+            node_id = self.__get_node_id(node_type, name, child)
+            self.__bind_symbol(name, node_id)
+
     def __iter_identifiers(self, node: TSNode) -> Iterator[TSNode]:
         if node.type == "identifier":
             yield node
@@ -489,6 +510,8 @@ class NodeProcessor(BaseModel):
                 code_block: CodeBlockNode = self.__create_code_block_node(block_nodes)
                 nodes[code_block.identifier] = code_block
                 self.visited_node_ids.add(code_block.identifier)
+
+            self.__register_top_level_symbols(node)
 
             for child in node.children:
                 if self.__is_top_level_statement(child):
