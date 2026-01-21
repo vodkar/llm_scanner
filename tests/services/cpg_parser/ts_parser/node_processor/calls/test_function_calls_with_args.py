@@ -1,5 +1,6 @@
 from models.base import NodeID
 from models.edges.call_graph import CallGraphCalledBy, CallGraphCalls
+from models.edges.data_flow import DataFlowFlowsTo
 from models.nodes.call_site import CallNode
 from services.cpg_parser.ts_parser.cpg_builder import CPGFileBuilder
 from tests.utils import symbol_byte_index
@@ -81,6 +82,7 @@ def test_tree_sitter_parse__on_function_calls__creates_call_nodes_and_edges() ->
     )
     assert foo_call_id in nodes
 
+    # Call graph edges assertions
     assert (
         CallGraphCalls(
             src=foo_id,
@@ -128,6 +130,23 @@ def test_tree_sitter_parse__on_function_calls__creates_call_nodes_and_edges() ->
         CallGraphCalledBy(
             src=nested_bar_call_id,
             dst=bar_id,
+        )
+        in edges
+    )
+
+    # Data flow edges assertions
+    value_sb: int = idx(b"value")
+    value_id: NodeID = NodeID.create(
+        "variable",
+        "value",
+        str(TEST_FUNCTION_CALLS_WITH_ARGS_FILE),
+        value_sb,
+    )
+
+    assert (
+        DataFlowFlowsTo(
+            src=value_id,
+            dst=bar_call_id,
         )
         in edges
     )

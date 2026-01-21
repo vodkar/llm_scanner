@@ -10,6 +10,7 @@ from models.base import NodeID
 from models.edges.base import RelationshipBase
 from models.edges.data_flow import (
     DataFlowDefinedBy,
+    DataFlowFlowsTo,
     DataFlowRelationshipType,
     DefinitionOperation,
 )
@@ -217,6 +218,107 @@ class NodeProcessor(BaseModel):
 
         for child in node.children:
             yield from self.__iter_source_atoms(child)
+
+    def __iter_argument_atoms(self, node: TSNode) -> Iterator[tuple[str, str, TSNode]]:
+        """Yield argument-level sources for a call.
+
+        Unlike __iter_source_atoms, this treats nested calls as atomic so we only
+        capture *direct* argument expressions passed to the call.
+        """
+
+        # keyword_argument := <name>=<value>
+        if node.type == "keyword_argument":
+            value = node.child_by_field_name("value")
+            if value is not None:
+                yield from self.__iter_argument_atoms(value)
+            return
+
+        if node.type == "identifier":
+            yield ("identifier", self.__normalize_name(self.__get_snippet(node)), node)
+            return
+        if node.type == "attribute":
+            yield ("attribute", self.__normalize_name(self.__get_snippet(node)), node)
+            return
+        if node.type == "call":
+            yield ("call", self.__normalize_name(self.__get_snippet(node)), node)
+            return
+
+        for child in node.children:
+            yield from self.__iter_argument_atoms(child)
+
+    def __add_argument_dataflow_edges(
+        self,
+        *,
+        call_ts_node: TSNode,
+        call_node_id: NodeID,
+        caller_id: NodeID,
+        nodes: dict[NodeID, Node],
+        edges: list[RelationshipBase],
+    ) -> None:
+        """Add DataFlowFlowsTo edges from argument sources to a call node."""
+
+        arguments_node = call_ts_node.child_by_field_name("arguments")
+        if arguments_node is None:
+            return
+
+        seen_sources: set[NodeID] = set()
+        source_ids: list[NodeID] = []
+
+        for kind, text, atom in self.__iter_argument_atoms(arguments_node):
+            if not text:
+                continue
+
+            if kind in {"identifier", "attribute"}:
+                resolved = self.__resolve_symbol(text)
+                if resolved is not None:
+                    if resolved not in seen_sources:
+                        source_ids.append(resolved)
+                        seen_sources.add(resolved)
+                    continue
+
+                ref = self.__create_variable_node(
+                    kind="variable_ref", name=text, node=atom
+                )
+                if ref.identifier not in seen_sources:
+                    nodes[ref.identifier] = ref
+                    self.visited_node_ids.add(ref.identifier)
+                    source_ids.append(ref.identifier)
+                    seen_sources.add(ref.identifier)
+                continue
+
+            if kind == "call":
+                nested_target_id = self.__resolve_call_target(atom)
+                if nested_target_id is None:
+                    self.__warn_unresolved_call(atom)
+                    continue
+
+                nested_call_node: CallNode = self.__create_call_node(
+                    call_node=atom,
+                    caller_id=caller_id,
+                    callee_id=nested_target_id,
+                )
+                if nested_call_node.identifier not in nodes:
+                    nodes[nested_call_node.identifier] = nested_call_node
+                    self.visited_node_ids.add(nested_call_node.identifier)
+                    self.__add_call_edges(
+                        edges=edges,
+                        caller_id=caller_id,
+                        call_id=nested_call_node.identifier,
+                        callee_id=nested_target_id,
+                    )
+
+                if nested_call_node.identifier not in seen_sources:
+                    source_ids.append(nested_call_node.identifier)
+                    seen_sources.add(nested_call_node.identifier)
+                continue
+
+        for src_id in source_ids:
+            edges.append(
+                DataFlowFlowsTo(
+                    src=src_id,
+                    dst=call_node_id,
+                )
+            )
 
     def __resolve_call_target(self, call_node: TSNode) -> NodeID | None:
         """Resolve a call node's callee to a known FunctionNode identifier."""
@@ -552,6 +654,15 @@ class NodeProcessor(BaseModel):
             call_id=call_node.identifier,
             callee_id=callee_id,
         )
+
+        self.__add_argument_dataflow_edges(
+            call_ts_node=node,
+            call_node_id=call_node.identifier,
+            caller_id=caller_id,
+            nodes=nodes,
+            edges=edges,
+        )
+
         for child in node.children:
             child_nodes, child_edges = self.process(child, block_level=1)
             nodes.update(child_nodes)
@@ -589,6 +700,10 @@ class NodeProcessor(BaseModel):
             # bases=self._extract_class_bases(node),
         )
         self.visited_node_ids.add(node_id)
+
+        # Bind the class name in the enclosing scope so it can be resolved when
+        # passed as an argument (e.g. foo(MyClass)).
+        self.__bind_symbol(self.__normalize_name(name), node_id)
 
         for children in node.children:
             if children.type not in ProcessableNodeTypes:
@@ -676,6 +791,14 @@ class NodeProcessor(BaseModel):
                     caller_id=caller_id,
                     call_id=call_node.identifier,
                     callee_id=target_id,
+                )
+
+                self.__add_argument_dataflow_edges(
+                    call_ts_node=atom,
+                    call_node_id=call_node.identifier,
+                    caller_id=caller_id,
+                    nodes=nodes,
+                    edges=edges,
                 )
                 continue
 

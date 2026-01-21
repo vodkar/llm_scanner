@@ -10,3 +10,7 @@ TEST_FUNCTION_CALLS_FILE: Final[Path] = TEST_CALLS_DATA_DIR / "function_calls.py
 TEST_FUNCTION_CALLS_WITH_ARGS_FILE: Final[Path] = (
     TEST_CALLS_DATA_DIR / "function_calls_with_args.py"
 )
+
+TEST_CLASS_PASSED_AS_ARG_FILE: Final[Path] = (
+    TEST_CALLS_DATA_DIR / "class_passed_as_arg.py"
+)
