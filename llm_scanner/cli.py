@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated, Final
 
 import typer
 
+# This project historically uses flat imports like `from clients...` with
+# `PYTHONPATH=llm_scanner/`. When installed as a console script, that path is
+# not present by default, so we add the package directory to sys.path.
+_PACKAGE_DIR: Final[Path] = Path(__file__).resolve().parent
+if str(_PACKAGE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_DIR))
+
 from clients.neo4j import Neo4jClient, Neo4jConfig
 from loaders.graph_loader import GraphLoader
+from loaders.dot_loader import DotLoader
 from loaders.yaml_loader import YamlLoader
 from models.base import NodeID
 from models.edges import RelationshipBase
@@ -28,6 +37,7 @@ ROOT_DIR: Final[Path] = Path(__file__).resolve().parents[2]
 DEFAULT_TESTS_DIR: Final[Path] = ROOT_DIR / "tests"
 DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
+DEFAULT_DOT_FILE: Final[Path] = ROOT_DIR / "graph.dot"
 
 
 def _build_client(
@@ -184,6 +194,63 @@ def run_pipeline(
     pipeline = GeneralPipeline(src=src)
     pipeline.run()
     typer.secho(f"Pipeline completed for {src}", fg=typer.colors.GREEN)
+
+
+@app.command("visualize")
+def visualize(
+    src: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to a Python file or a project directory to visualize.",
+            exists=True,
+            file_okay=True,
+            dir_okay=True,
+            readable=True,
+            resolve_path=True,
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Path to write the DOT graph (must end with .dot).",
+            file_okay=True,
+            dir_okay=False,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_DOT_FILE,
+) -> None:
+    """Export a Graphviz DOT visualization of nodes and edges.
+
+    The output is a DOT file only (no rendering). The exported labels include
+    traceability information (node ids, file paths, line ranges, and edge
+    attributes) to quickly identify where each node/edge originates.
+
+    Args:
+        src: Python file or directory to parse.
+        output_path: Destination DOT file path.
+    """
+
+    if output_path.suffix.lower() != ".dot":
+        raise typer.BadParameter("--output must point to a .dot file")
+
+    resolved_src = src.resolve()
+
+    nodes: dict[NodeID, Node]
+    edges: list[RelationshipBase]
+    if resolved_src.is_file():
+        nodes, edges = CPGFileBuilder(path=resolved_src).build()
+    else:
+        nodes, edges = CPGDirectoryBuilder(root=resolved_src).build()
+
+    DotLoader(output_path).load(nodes, edges)
+
+    typer.secho(
+        f"Wrote DOT graph with {len(nodes)} nodes and {len(edges)} edges to {output_path}",
+        fg=typer.colors.GREEN,
+    )
 
 
 def main() -> None:
