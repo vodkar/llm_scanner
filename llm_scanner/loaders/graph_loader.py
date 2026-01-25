@@ -7,6 +7,8 @@ from loaders.dlint_report import DlintReport
 from models.edges import RelationshipBase
 from models.nodes import Node
 from models.base import NodeID
+from models.nodes.code import FunctionNode
+from models.nodes.variable import VariableNode
 
 
 class GraphLoader:
@@ -17,6 +19,16 @@ class GraphLoader:
     def _ensure_indexes(self) -> None:
         # Basic indexes to speed up merges
         self.client.run_write("CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.id)")
+
+    def _load_function_nodes(self, nodes: dict[NodeID, FunctionNode]) -> None:
+        query_nodes = (
+            "UNWIND $rows AS r "
+            "MERGE (n:Function {id: r.id}) "
+            "SET n.name = r.name, "
+            "    n.line_start = r.line_start, "
+            "    n.line_end = r.line_end, "
+            "    n.file_path = r.file_path"
+        )
 
     def load(self, nodes: dict[NodeID, Node], edges: list[RelationshipBase]) -> None:
         # MERGE nodes

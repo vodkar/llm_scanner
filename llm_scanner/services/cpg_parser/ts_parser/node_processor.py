@@ -56,6 +56,7 @@ class NodeProcessor(BaseModel):
 
     __scope_stack: list[dict[str, NodeID]] = PrivateAttr(default_factory=lambda: [{}])
     __caller_stack: list[NodeID] = PrivateAttr(default_factory=_caller_stack_factory)
+    __all_functions: dict[str, list[NodeID]] = PrivateAttr(default_factory=dict)
 
     def model_post_init(self, __context: object) -> None:
         for name, node_id in self.prebound_symbols.items():
@@ -100,6 +101,54 @@ class NodeProcessor(BaseModel):
         if not normalized:
             return
         self.__scope_stack[-1][normalized] = node_id
+
+        # Track all functions globally for method resolution
+        if str(node_id).startswith("function:"):
+            if normalized not in self.__all_functions:
+                self.__all_functions[normalized] = []
+            self.__all_functions[normalized].append(node_id)
+
+    def __bind_class_symbol(self, node: TSNode) -> None:
+        """Bind a class name and its methods to the global scope for forward reference resolution."""
+        name_node = node.child_by_field_name("name")
+        if not name_node:
+            return
+
+        class_name = self.__normalize_name(self.__get_snippet(name_node))
+        if not class_name:
+            return
+
+        class_id = self.__get_node_id(NodeType.CLASS, class_name, node)
+        self.__bind_symbol(class_name, class_id)
+
+        # Also bind all methods in the class for method call resolution
+        body_node = node.child_by_field_name("body")
+        if body_node:
+            for child in body_node.children:
+                if child.type == "function_definition":
+                    method_name_node = child.child_by_field_name("name")
+                    if method_name_node:
+                        method_name = self.__normalize_name(
+                            self.__get_snippet(method_name_node)
+                        )
+                        if method_name:
+                            method_id = self.__get_node_id(
+                                NodeType.FUNCTION, method_name, child
+                            )
+                            self.__bind_symbol(method_name, method_id)
+
+    def __bind_function_symbol(self, node: TSNode) -> None:
+        """Bind a function name to the global scope for forward reference resolution."""
+        name_node = node.child_by_field_name("name")
+        if not name_node:
+            return
+
+        function_name = self.__normalize_name(self.__get_snippet(name_node))
+        if not function_name:
+            return
+
+        function_id = self.__get_node_id(NodeType.FUNCTION, function_name, node)
+        self.__bind_symbol(function_name, function_id)
 
     def __resolve_symbol(self, name: str) -> NodeID | None:
         normalized = self.__normalize_name(name)
@@ -182,27 +231,6 @@ class NodeProcessor(BaseModel):
             file_path=self.path,
         )
 
-    def __register_top_level_symbols(self, module_node: TSNode) -> None:
-        """Register top-level function and class symbols before traversal.
-
-        This allows call resolution for functions/classes defined later in the file.
-        """
-
-        for child in module_node.children:
-            if child.type not in {"function_definition", "class_definition"}:
-                continue
-            name_node = child.child_by_field_name("name")
-            if not name_node:
-                continue
-            name = self.__normalize_name(self.__get_snippet(name_node))
-            node_type: NodeType = (
-                NodeType.FUNCTION
-                if child.type == "function_definition"
-                else NodeType.CLASS
-            )
-            node_id = self.__get_node_id(node_type, name, child)
-            self.__bind_symbol(name, node_id)
-
     def __iter_identifiers(self, node: TSNode) -> Iterator[TSNode]:
         if node.type == "identifier":
             yield node
@@ -246,107 +274,6 @@ class NodeProcessor(BaseModel):
         for child in node.children:
             yield from self.__iter_source_atoms(child)
 
-    def __iter_argument_atoms(self, node: TSNode) -> Iterator[tuple[str, str, TSNode]]:
-        """Yield argument-level sources for a call.
-
-        Unlike __iter_source_atoms, this treats nested calls as atomic so we only
-        capture *direct* argument expressions passed to the call.
-        """
-
-        # keyword_argument := <name>=<value>
-        if node.type == "keyword_argument":
-            value = node.child_by_field_name("value")
-            if value is not None:
-                yield from self.__iter_argument_atoms(value)
-            return
-
-        if node.type == "identifier":
-            yield ("identifier", self.__normalize_name(self.__get_snippet(node)), node)
-            return
-        if node.type == "attribute":
-            yield ("attribute", self.__normalize_name(self.__get_snippet(node)), node)
-            return
-        if node.type == "call":
-            yield ("call", self.__normalize_name(self.__get_snippet(node)), node)
-            return
-
-        for child in node.children:
-            yield from self.__iter_argument_atoms(child)
-
-    def __add_argument_dataflow_edges(
-        self,
-        *,
-        call_ts_node: TSNode,
-        call_node_id: NodeID,
-        caller_id: NodeID,
-        nodes: dict[NodeID, Node],
-        edges: list[RelationshipBase],
-    ) -> None:
-        """Add DataFlowFlowsTo edges from argument sources to a call node."""
-
-        arguments_node = call_ts_node.child_by_field_name("arguments")
-        if arguments_node is None:
-            return
-
-        seen_sources: set[NodeID] = set()
-        source_ids: list[NodeID] = []
-
-        for kind, text, atom in self.__iter_argument_atoms(arguments_node):
-            if not text:
-                continue
-
-            if kind in {"identifier", "attribute"}:
-                resolved = self.__resolve_symbol(text)
-                if resolved is not None:
-                    if resolved not in seen_sources:
-                        source_ids.append(resolved)
-                        seen_sources.add(resolved)
-                    continue
-
-                ref = self.__create_variable_node(
-                    kind="variable_ref", name=text, node=atom
-                )
-                if ref.identifier not in seen_sources:
-                    nodes[ref.identifier] = ref
-                    self.visited_node_ids.add(ref.identifier)
-                    source_ids.append(ref.identifier)
-                    seen_sources.add(ref.identifier)
-                continue
-
-            if kind == "call":
-                nested_target_id = self.__resolve_call_target(atom)
-                if nested_target_id is None:
-                    self.__warn_unresolved_call(atom)
-                    continue
-
-                nested_call_node: CallNode = self.__create_call_node(
-                    call_node=atom,
-                    caller_id=caller_id,
-                    callee_id=nested_target_id,
-                )
-                if nested_call_node.identifier not in nodes:
-                    nodes[nested_call_node.identifier] = nested_call_node
-                    self.visited_node_ids.add(nested_call_node.identifier)
-                    self.__add_call_edges(
-                        edges=edges,
-                        caller_id=caller_id,
-                        call_id=nested_call_node.identifier,
-                        callee_id=nested_target_id,
-                    )
-
-                if nested_call_node.identifier not in seen_sources:
-                    source_ids.append(nested_call_node.identifier)
-                    seen_sources.add(nested_call_node.identifier)
-                continue
-
-        for src_id in source_ids:
-            edges.append(
-                DataFlowFlowsTo(
-                    src=src_id,
-                    dst=call_node_id,
-                )
-            )
-
     def __resolve_call_target(self, call_node: TSNode) -> NodeID | None:
         """Resolve a call node's callee to a known FunctionNode identifier."""
 
@@ -362,6 +289,21 @@ class NodeProcessor(BaseModel):
                 or str(resolved).startswith("class:")
             ):
                 return resolved
+        elif function_node.type == "attribute":
+            # Handle method calls like obj.method()
+            attribute_node = function_node.child_by_field_name("attribute")
+            if attribute_node and attribute_node.type == "identifier":
+                method_name = self.__normalize_name(self.__get_snippet(attribute_node))
+                # First try resolving in current scope
+                resolved = self.__resolve_symbol(method_name)
+                if resolved and str(resolved).startswith("function:"):
+                    return resolved
+                # If not found, search globally for any method with this name
+                if method_name in self.__all_functions:
+                    # Return the first match (could be improved with type inference)
+                    candidates = self.__all_functions[method_name]
+                    if candidates:
+                        return candidates[0]
         return None
 
     def __warn_unresolved_call(self, call_node: TSNode) -> None:
@@ -375,12 +317,35 @@ class NodeProcessor(BaseModel):
         self, *, call_node: TSNode, caller_id: NodeID, callee_id: NodeID
     ) -> CallNode:
         snippet: str = self.__normalize_name(self.__get_snippet(call_node))
-        call_id: NodeID = NodeID.create(
-            "call",
-            snippet,
-            str(self.path),
-            call_node.start_byte,
-        )
+        function_node = call_node.child_by_field_name("function")
+
+        # For method calls, use only the method name in the call ID
+        if function_node and function_node.type == "attribute":
+            attribute_node = function_node.child_by_field_name("attribute")
+            if attribute_node:
+                method_name = self.__normalize_name(self.__get_snippet(attribute_node))
+                # Create call ID using the call node's start byte
+                call_id: NodeID = NodeID.create(
+                    "call",
+                    f"{method_name}()",
+                    str(self.path),
+                    call_node.start_byte,
+                )
+            else:
+                call_id = NodeID.create(
+                    "call",
+                    snippet,
+                    str(self.path),
+                    call_node.start_byte,
+                )
+        else:
+            call_id = NodeID.create(
+                "call",
+                snippet,
+                str(self.path),
+                call_node.start_byte,
+            )
+
         return CallNode(
             identifier=call_id,
             caller_id=caller_id,
@@ -412,6 +377,60 @@ class NodeProcessor(BaseModel):
                 dst=callee_id,
             )
         )
+
+    def __iter_call_argument_atoms(
+        self, call_node: TSNode
+    ) -> Iterator[tuple[str, str, TSNode]]:
+        """Yield argument atoms for a call node."""
+        arguments_node: TSNode | None = call_node.child_by_field_name("arguments")
+        if arguments_node is None:
+            return
+        for child in arguments_node.children:
+            yield from self.__iter_source_atoms(child)
+
+    def __add_call_argument_edges(
+        self,
+        *,
+        call_node: TSNode,
+        call_id: NodeID,
+        nodes: dict[NodeID, Node],
+        edges: list[RelationshipBase],
+    ) -> None:
+        """Add data-flow edges from passed argument nodes to the call."""
+        seen_source_ids: set[NodeID] = set()
+        for kind, text, atom in self.__iter_call_argument_atoms(call_node):
+            if not text:
+                continue
+
+            source_id: NodeID | None = None
+            if kind in {"identifier", "attribute"}:
+                resolved = self.__resolve_symbol(text)
+                if resolved is not None:
+                    source_id = resolved
+                # Skip unresolved identifiers - don't create variable_ref nodes
+
+            if kind == "call":
+                target_id = self.__resolve_call_target(atom)
+                if target_id is None:
+                    self.__warn_unresolved_call(atom)
+                    continue
+                nested_snippet: str = self.__normalize_name(self.__get_snippet(atom))
+                source_id = NodeID.create(
+                    "call",
+                    nested_snippet,
+                    str(self.path),
+                    atom.start_byte,
+                )
+
+            if source_id is None or source_id in seen_source_ids:
+                continue
+            edges.append(
+                DataFlowFlowsTo(
+                    src=source_id,
+                    dst=call_id,
+                )
+            )
+            seen_source_ids.add(source_id)
 
     def __collect_parameter_identifiers(
         self, parameters_node: TSNode | None
@@ -520,8 +539,26 @@ class NodeProcessor(BaseModel):
                 nodes[code_block.identifier] = code_block
                 self.visited_node_ids.add(code_block.identifier)
 
-            self.__register_top_level_symbols(node)
+            # First pass: bind classes to register their names
+            for child in node.children:
+                if self.__is_top_level_statement(child):
+                    continue
+                if child.type == "class_definition":
+                    self.__bind_class_symbol(child)
+                elif child.type == "decorated_definition":
+                    # Check if decorated_definition wraps a class
+                    definition = child.child_by_field_name("definition")
+                    if definition and definition.type == "class_definition":
+                        self.__bind_class_symbol(definition)
 
+            # Second pass: bind functions to register their names
+            for child in node.children:
+                if self.__is_top_level_statement(child):
+                    continue
+                if child.type == "function_definition":
+                    self.__bind_function_symbol(child)
+
+            # Third pass: process all definitions (classes, functions, etc.)
             for child in node.children:
                 if self.__is_top_level_statement(child):
                     continue
@@ -686,15 +723,12 @@ class NodeProcessor(BaseModel):
             call_id=call_node.identifier,
             callee_id=callee_id,
         )
-
-        self.__add_argument_dataflow_edges(
-            call_ts_node=node,
-            call_node_id=call_node.identifier,
-            caller_id=caller_id,
+        self.__add_call_argument_edges(
+            call_node=node,
+            call_id=call_node.identifier,
             nodes=nodes,
             edges=edges,
         )
-
         for child in node.children:
             child_nodes, child_edges = self.process(child, block_level=1)
             nodes.update(child_nodes)
@@ -732,10 +766,7 @@ class NodeProcessor(BaseModel):
             # bases=self._extract_class_bases(node),
         )
         self.visited_node_ids.add(node_id)
-
-        # Bind the class name in the enclosing scope so it can be resolved when
-        # passed as an argument (e.g. foo(MyClass)).
-        self.__bind_symbol(self.__normalize_name(name), node_id)
+        self.__bind_symbol(name, node_id)
 
         for children in node.children:
             if children.type not in ProcessableNodeTypes:
@@ -784,17 +815,6 @@ class NodeProcessor(BaseModel):
                     if resolved not in seen_source_ids:
                         source_ids.append(resolved)
                         seen_source_ids.add(resolved)
-                    continue
-
-                # Unresolved symbol (e.g. builtins, imported names, forward refs).
-                ref = self.__create_variable_node(
-                    kind="variable_ref", name=text, node=atom
-                )
-                if ref.identifier not in seen_source_ids:
-                    nodes[ref.identifier] = ref
-                    self.visited_node_ids.add(ref.identifier)
-                    source_ids.append(ref.identifier)
-                    seen_source_ids.add(ref.identifier)
                 continue
 
             if kind == "call":
@@ -824,11 +844,9 @@ class NodeProcessor(BaseModel):
                     call_id=call_node.identifier,
                     callee_id=target_id,
                 )
-
-                self.__add_argument_dataflow_edges(
-                    call_ts_node=atom,
-                    call_node_id=call_node.identifier,
-                    caller_id=caller_id,
+                self.__add_call_argument_edges(
+                    call_node=atom,
+                    call_id=call_node.identifier,
                     nodes=nodes,
                     edges=edges,
                 )
@@ -845,18 +863,6 @@ class NodeProcessor(BaseModel):
                 if resolved_prev and resolved_prev not in seen_source_ids:
                     source_ids.append(resolved_prev)
                     seen_source_ids.add(resolved_prev)
-                    continue
-
-                src_prev = self.__create_variable_node(
-                    kind="variable_ref",
-                    name=target_name,
-                    node=node,
-                )
-                if src_prev.identifier not in seen_source_ids:
-                    nodes[src_prev.identifier] = src_prev
-                    self.visited_node_ids.add(src_prev.identifier)
-                    source_ids.append(src_prev.identifier)
-                    seen_source_ids.add(src_prev.identifier)
 
         for target_name, target_node in targets:
             dst_id, created = self.__get_or_create_defined_variable(

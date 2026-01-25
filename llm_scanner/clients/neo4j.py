@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
 from pydantic import BaseModel
-from typing import Any, Dict, Iterable, LiteralString, Optional
+from typing import Any, Generator, Iterable, LiteralString, Optional
 
 from neo4j import GraphDatabase, Driver
 
@@ -24,15 +25,39 @@ class Neo4jClient:
         self._driver.close()
 
     def run_write(
-        self, query: LiteralString, params: Optional[Dict[str, Any]] = None
+        self, query: LiteralString, params: Optional[dict[str, Any]] = None
     ) -> None:
         with self._driver.session() as session:
             session.execute_write(lambda tx: tx.run(query, **(params or {})))
 
     def run_read(
-        self, query: LiteralString, params: Optional[Dict[str, Any]] = None
-    ) -> Iterable[Dict[str, Any]]:
+        self, query: LiteralString, params: Optional[dict[str, Any]] = None
+    ) -> Iterable[dict[str, Any]]:
         with self._driver.session() as session:
             result = session.execute_read(lambda tx: tx.run(query, **(params or {})))
             for rec in result:
                 yield rec.data()
+
+
+@contextmanager
+def build_client(
+    uri: str, user: str, password: str, /, *, cfg: Neo4jConfig | None = None
+) -> Generator[Neo4jClient, None, None]:
+    """Create a Neo4j client with provided or environment-backed config.
+
+    Args:
+        uri: Bolt URI for the Neo4j instance.
+        user: Username for authentication.
+        password: Password for authentication.
+        cfg: Optional pre-built configuration to reuse.
+
+    Returns:
+        Neo4jClient: Configured Neo4j client ready for queries.
+    """
+    if cfg is None:
+        cfg = Neo4jConfig(uri=uri, user=user, password=password)
+    client = Neo4jClient(cfg)
+
+    yield client
+
+    client.close()

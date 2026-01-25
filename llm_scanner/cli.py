@@ -13,7 +13,8 @@ _PACKAGE_DIR: Final[Path] = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
-from clients.neo4j import Neo4jClient, Neo4jConfig
+from clients.neo4j import build_client
+from clients.neo4j import Neo4jConfig
 from loaders.graph_loader import GraphLoader
 from loaders.dot_loader import DotLoader
 from loaders.yaml_loader import YamlLoader
@@ -38,25 +39,6 @@ DEFAULT_TESTS_DIR: Final[Path] = ROOT_DIR / "tests"
 DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
 DEFAULT_DOT_FILE: Final[Path] = ROOT_DIR / "graph.dot"
-
-
-def _build_client(
-    uri: str, user: str, password: str, /, *, cfg: Neo4jConfig | None = None
-) -> Neo4jClient:
-    """Create a Neo4j client with provided or environment-backed config.
-
-    Args:
-        uri: Bolt URI for the Neo4j instance.
-        user: Username for authentication.
-        password: Password for authentication.
-        cfg: Optional pre-built configuration to reuse.
-
-    Returns:
-        Neo4jClient: Configured Neo4j client ready for queries.
-    """
-    if cfg is None:
-        cfg = Neo4jConfig(uri=uri, user=user, password=password)
-    return Neo4jClient(cfg)
 
 
 @app.command("load-sample")
@@ -113,12 +95,9 @@ def load_sample(
     resolved_path = sample_path.resolve()
     nodes, edges = CPGFileBuilder(path=resolved_path).build()
 
-    client = _build_client(neo4j_uri, neo4j_user, neo4j_password)
-    try:
+    with build_client(neo4j_uri, neo4j_user, neo4j_password) as client:
         loader = GraphLoader(client)
         loader.load(nodes, edges)
-    finally:
-        client.close()
 
     typer.secho(
         f"Loaded {len(nodes)} nodes and {len(edges)} edges from {sample_path}",
@@ -127,7 +106,7 @@ def load_sample(
 
 
 @app.command()
-def load(
+def load_to_yaml(
     input_dir: Annotated[
         Path,
         typer.Argument(
@@ -170,6 +149,55 @@ def load(
         f"into {output_path}",
         fg=typer.colors.GREEN,
     )
+
+
+@app.command()
+def load(
+    dir_path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to the Python project to load into Neo4j.",
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_SAMPLE_FILE,
+    neo4j_uri: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-uri",
+            help="Neo4j bolt URI.",
+            envvar="NEO4J_URI",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().uri,
+    neo4j_user: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-user",
+            help="Neo4j username.",
+            envvar="NEO4J_USER",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().user,
+    neo4j_password: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-password",
+            help="Neo4j password.",
+            envvar="NEO4J_PASSWORD",
+            show_default=False,
+        ),
+    ] = Neo4jConfig().password,
+):
+    """Parse a project directory and load its CPG into Neo4j."""
+    resolved_path = dir_path.resolve()
+    result = CPGDirectoryBuilder(root=resolved_path).build()
+
+    with build_client(neo4j_uri, neo4j_user, neo4j_password) as client:
+        loader = GraphLoader(client)
+        loader.load(*result)
 
 
 @app.command("run-pipeline")
@@ -253,10 +281,5 @@ def visualize(
     )
 
 
-def main() -> None:
-    """Entry point for executing the Typer application."""
-    app()
-
-
 if __name__ == "__main__":
-    main()
+    app()

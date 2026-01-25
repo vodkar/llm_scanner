@@ -20,7 +20,7 @@ def flatten_node_rows(nodes: Mapping[NodeID, Node]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for node_id, node in nodes.items():
         payload = node.model_dump(mode="json")
-        row: dict[str, object] = {"id": node_id, "kind": node.__class__.__name__}
+        row: dict[str, object] = {"id": str(node_id), "kind": node.__class__.__name__}
         row.update(payload)
         rows.append(row)
     return rows
