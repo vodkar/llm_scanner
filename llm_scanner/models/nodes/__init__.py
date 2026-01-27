@@ -1,6 +1,5 @@
 from typing import TypeAlias
 
-from .base import DeprecatedNode, NodeType
 from .call_site import CallNode
 from .code import ClassNode, CodeBlockNode, FunctionNode
 from .finding import FindingNode, FindingSeverity, FindingTool
@@ -22,8 +21,6 @@ Node: TypeAlias = (
 )
 
 __all__ = [
-    "DeprecatedNode",
-    "NodeType",
     "CallNode",
     "ClassNode",
     "CodeBlockNode",

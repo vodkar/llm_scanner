@@ -18,5 +18,16 @@
             "program": "llm_scanner/entrypoints/test.py",
             "console": "integratedTerminal"
         }
+        {
+            "name": "Python Debugger: load data in neo4j",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "llm_scanner/cli.py",
+            "args": [
+                "load",
+                "tests/data"
+            ],
+            "console": "integratedTerminal"
+        }
     ]
 }

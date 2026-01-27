@@ -37,5 +37,3 @@ class GeneralPipeline(BaseModel):
         dlint_report = dlint_scanner.run_scanner()
 
         graph_loader.load(nodes, edges)
-        graph_loader.load_bandit_report(bandit_report)
-        graph_loader.load_dlint_report(dlint_report)

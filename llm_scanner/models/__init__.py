@@ -1,4 +1,3 @@
-from .edges import Edge, EdgeType
 from .nodes import (
     CallNode,
     ClassNode,
@@ -8,8 +7,6 @@ from .nodes import (
     FindingTool,
     FunctionNode,
     ModuleNode,
-    DeprecatedNode,
-    NodeType,
     SanitizerEffectiveness,
     SanitizerNode,
     SanitizerType,
@@ -23,10 +20,6 @@ from .nodes import (
 )
 
 __all__ = [
-    "Edge",
-    "EdgeType",
-    "DeprecatedNode",
-    "NodeType",
     "CallNode",
     "ClassNode",
     "CodeBlockNode",

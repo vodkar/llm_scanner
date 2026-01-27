@@ -16,7 +16,6 @@ from .control_flow import (
     ControlFlowNext,
     ControlFlowRelationshipType,
 )
-from .core import Edge, EdgeType
 from .data_flow import (
     DataFlowDefinedBy,
     DataFlowFlowsTo,
@@ -42,7 +41,5 @@ __all__ = [
     "DataFlowRelationshipType",
     "DataFlowSanitizedBy",
     "DefinitionOperation",
-    "Edge",
-    "EdgeType",
     "RelationshipBase",
 ]

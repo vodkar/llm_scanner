@@ -45,8 +45,7 @@ def graph_node_rows(nodes: Mapping[NodeID, Node]) -> list[dict[str, object]]:
                 "id": node_id,
                 "node_kind": node.__class__.__name__,
                 "name": payload.get("name"),
-                "qualified_name": payload.get("qualified_name"),
-                "file_path": payload.get("file_path"),
+                "file_path": str(node.file_path),
                 "attrs": payload,
             }
         )

@@ -164,10 +164,6 @@ class NodeProcessor(BaseModel):
         end_byte = node.end_byte
         return self.source[start_byte:end_byte].decode("utf-8")
 
-    def __count_tokens(self, node: TSNode) -> int:
-        # TODO: Replace with proper tokenizer for accurate token count
-        return len(self.__get_snippet(node).split()) // 3
-
     def __is_top_level_statement(self, node: TSNode) -> bool:
         if not node.parent or node.parent.type != "module":
             return False
