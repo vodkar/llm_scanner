@@ -1,22 +1,34 @@
+from abc import abstractmethod
 from collections import defaultdict
+from functools import cached_property
 from pathlib import Path
 
 from pydantic import BaseModel
+from clients.analyzers.base import IStaticAnalyzer
 from models.edges.analysis import StaticAnalysisReports
-from models.nodes.finding import BanditFindingNode
-from repositories.bandit import BanditFindingsRepository
+from models.nodes.finding import FindingNode
+from repositories.analyzers.base import IFindingsRepository
 from repositories.graph import GraphRepository
-from clients.analyzers.bandit_scanner import BanditScanner
 
 
-class BanditAnalyzerService(BaseModel):
+class BaseAnalyzerService(BaseModel):
 
+    target: Path
     graph_repository: GraphRepository
-    bandit_findings_repository: BanditFindingsRepository
-    bandit_scanner: BanditScanner
+    findings_repository: IFindingsRepository
+
+    @property
+    @abstractmethod
+    def _finding_node_type(self) -> type[FindingNode]:
+        pass
+
+    @cached_property
+    @abstractmethod
+    def _static_analyzer(self) -> IStaticAnalyzer:
+        pass
 
     def enrich_graph_with_findings(self) -> None:
-        report = self.bandit_scanner.run_scanner()
+        report = self._static_analyzer.run()
 
         issues_in_files_lines: dict[Path, list[int]] = defaultdict(list)
         for issue in report.issues:
@@ -26,15 +38,10 @@ class BanditAnalyzerService(BaseModel):
             issues_in_files_lines
         )
 
-        findings: list[BanditFindingNode] = []
+        findings: list[FindingNode] = []
         edges: list[StaticAnalysisReports] = []
         for issue in report.issues:
-            finding = BanditFindingNode(
-                file=issue.file,
-                line_number=issue.line_number,
-                cwe_id=issue.cwe,
-                severity=issue.severity,
-            )
+            finding = self._finding_node_type(**issue.model_dump())
             findings.append(finding)
             edges.append(
                 StaticAnalysisReports(
@@ -43,5 +50,5 @@ class BanditAnalyzerService(BaseModel):
                 )
             )
 
-        self.bandit_findings_repository.insert_nodes(findings)
-        self.bandit_findings_repository.insert_edges(edges)
+        self.findings_repository.insert_nodes(findings)
+        self.findings_repository.insert_edges(edges)

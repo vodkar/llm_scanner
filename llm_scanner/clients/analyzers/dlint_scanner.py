@@ -4,11 +4,12 @@ import re
 import subprocess
 from pathlib import Path
 
-from repositories.dlint_report import DlintIssue, DlintReport
-from pydantic import BaseModel
+from clients.analyzers.base import IStaticAnalyzer
+from models.base import StaticAnalyzerReport
+from models.dlint_report import DlintIssue
 
 
-class DlintScanner(BaseModel):
+class DlintStaticAnalyzer(IStaticAnalyzer):
     """Run Dlint (via flake8) and parse results.
 
     This invokes `python -m flake8 --select=DUO` against the provided source
@@ -18,7 +19,7 @@ class DlintScanner(BaseModel):
 
     src: Path
 
-    def run_scanner(self) -> DlintReport:
+    def run(self) -> StaticAnalyzerReport[DlintIssue]:  # type: ignore
         report_path: Path = Path("dlint_report.txt")
 
         # Run flake8 with Dlint rules only; We don't fail on non-zero exit as
@@ -52,10 +53,10 @@ class DlintScanner(BaseModel):
                 DlintIssue(
                     code=code,
                     file=file_path,
-                    description=message.strip(),
+                    reason=message.strip(),
                     line_number=line_no,
                     column_number=col_no,
                 )
             )
 
-        return DlintReport(issues=issues)
+        return StaticAnalyzerReport(issues=issues)

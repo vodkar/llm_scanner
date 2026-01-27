@@ -1,7 +1,7 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
-from pydantic import GetCoreSchemaHandler
+from pydantic import BaseModel, GetCoreSchemaHandler
 from pydantic_core import CoreSchema, core_schema
 
 
@@ -19,3 +19,16 @@ class NodeID(str):
         cls, source_type: Any, handler: GetCoreSchemaHandler
     ) -> CoreSchema:
         return core_schema.no_info_after_validator_function(cls, handler(str))
+
+
+class StaticAnalyzerIssue(BaseModel):
+    file: Path
+    line_number: int
+    reason: str
+
+
+T = TypeVar("T", bound=StaticAnalyzerIssue)
+
+
+class StaticAnalyzerReport(BaseModel, Generic[T]):
+    issues: list[T]

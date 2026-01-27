@@ -190,7 +190,6 @@ requires-dist = [
     { name = "dlint", specifier = ">=0.16.0" },
     { name = "flake8", specifier = ">=7.1.1" },
     { name = "neo4j", specifier = ">=5.23.1" },
-    { name = "pydantic", specifier = ">=2.7.0" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "pyyaml", specifier = ">=6.0.1" },
     { name = "shushpy", specifier = ">=0.0.1.dev2" },

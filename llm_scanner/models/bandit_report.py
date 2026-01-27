@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from models.base import StaticAnalyzerIssue, StaticAnalyzerReport
+
 
 class IssueSeverity(StrEnum):
     LOW = "LOW"
@@ -10,16 +12,10 @@ class IssueSeverity(StrEnum):
     HIGH = "HIGH"
 
 
-class BanditIssue(BaseModel):
+class BanditIssue(StaticAnalyzerIssue):
     cwe: int
-    file: Path
     severity: IssueSeverity
-    description: str
     line_number: int
     column_number: int
     line_range: list[int]
     # byte: int
-
-
-class BanditReport(BaseModel):
-    issues: list[BanditIssue]

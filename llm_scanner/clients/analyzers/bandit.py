@@ -2,14 +2,16 @@ import json
 import subprocess
 from pathlib import Path
 
-from models.bandit_report import BanditIssue, BanditReport, IssueSeverity
-from pydantic import BaseModel
+from clients.analyzers.base import IStaticAnalyzer
+from models.bandit_report import BanditIssue, IssueSeverity
+
+from models.base import StaticAnalyzerReport
 
 
-class BanditScanner(BaseModel):
+class BanditStaticAnalyzer(IStaticAnalyzer):
     src: Path
 
-    def run_scanner(self) -> BanditReport:
+    def run(self) -> StaticAnalyzerReport[BanditIssue]:  # type: ignore
         report_path: Path = Path("bandit_report.json")
         subprocess.run(
             ["bandit", "-f", "json", "-o", str(report_path), "-r", str(self.src)]
@@ -26,11 +28,11 @@ class BanditScanner(BaseModel):
                     cwe=report["issue_cwe"]["id"],
                     file=Path(report["filename"]),
                     severity=IssueSeverity(report["issue_severity"]),
-                    description=report["issue_text"],
+                    reason=report["issue_text"],
                     line_number=report["line_number"],
                     column_number=report["column_number"],
                     line_range=report["line_range"],
                 )
             )
 
-        return BanditReport(issues=issues)
+        return StaticAnalyzerReport(issues=issues)

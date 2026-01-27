@@ -12,8 +12,6 @@ from repositories.queries import (
     RELATIONSHIP_QUERY_BY_TYPE,
     is_supported_relationship_type,
 )
-from models.bandit_report import BanditReport
-from repositories.dlint_report import DlintReport
 from models.edges import RelationshipBase
 from models.nodes import Node
 from models.base import NodeID

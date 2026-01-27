@@ -14,3 +14,7 @@ class FindingNode(BaseModel):
 class BanditFindingNode(FindingNode):
     cwe_id: int
     severity: IssueSeverity
+
+
+class DlintFindingNode(FindingNode):
+    issue_id: int

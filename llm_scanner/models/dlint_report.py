@@ -2,12 +2,14 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from models.base import StaticAnalyzerIssue
 
-class DlintIssue(BaseModel):
-    """Single Dlint finding.
+
+class FlakeIssue(StaticAnalyzerIssue):
+    """Single Flake finding.
 
     Attributes:
-        code: Dlint rule ID (e.g., "DUO105").
+        code: flake rule ID (e.g., "DUO105").
         file: Path to the file where the issue was found.
         description: Human-readable description of the issue.
         line_number: Line number where the issue occurs (1-based).
@@ -16,9 +18,13 @@ class DlintIssue(BaseModel):
 
     code: str
     file: Path
-    description: str
-    line_number: int
     column_number: int
+
+
+class DlintIssue(FlakeIssue):
+    @property
+    def id(self) -> int:
+        return int(self.code.strip("DUO"))
 
 
 class DlintReport(BaseModel):
