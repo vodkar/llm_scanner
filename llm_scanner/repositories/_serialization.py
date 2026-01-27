@@ -27,7 +27,7 @@ def flatten_node_rows(nodes: Mapping[NodeID, Node]) -> list[dict[str, object]]:
 
 
 def graph_node_rows(nodes: Mapping[NodeID, Node]) -> list[dict[str, object]]:
-    """Build property rows used by graph loaders.
+    """Build property rows used by graph repositories.
 
     Args:
         nodes: Mapping of node identifiers to structured node instances.

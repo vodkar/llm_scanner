@@ -3,7 +3,7 @@
 # from typing import Any, List, TypedDict, cast
 
 # from entrypoints.base import parse_file_to_cpg
-# from loaders.json_loader import JsonLoader
+# from repositories.json_loader import JsonLoader
 # from tests.consts import SAMPLE_FILE
 
 

@@ -4,7 +4,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from loaders.dlint_report import DlintIssue, DlintReport
+from repositories.dlint_report import DlintIssue, DlintReport
 from pydantic import BaseModel
 
 

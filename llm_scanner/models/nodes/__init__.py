@@ -2,7 +2,7 @@ from typing import TypeAlias
 
 from .call_site import CallNode
 from .code import ClassNode, CodeBlockNode, FunctionNode
-from .finding import FindingNode, FindingSeverity, FindingTool
+from .finding import FindingNode
 from .module_node import ModuleNode
 from .taint import (
     SanitizerEffectiveness,
@@ -26,8 +26,6 @@ __all__ = [
     "CodeBlockNode",
     "FunctionNode",
     "FindingNode",
-    "FindingSeverity",
-    "FindingTool",
     "ModuleNode",
     "SanitizerEffectiveness",
     "SanitizerNode",

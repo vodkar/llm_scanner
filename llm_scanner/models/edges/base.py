@@ -23,3 +23,8 @@ class RelationshipBase(BaseModel):
         """
 
         return self.__class__.__name__
+
+
+class FindingRelationshipBase(BaseModel):
+    src: str = Field(..., description="Source finding node identifier")
+    dst: NodeID = Field(..., description="Destination code node identifier")

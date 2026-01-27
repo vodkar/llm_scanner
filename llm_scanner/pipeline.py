@@ -1,12 +1,12 @@
 from pathlib import Path
 
 from clients.neo4j import Neo4jClient
-from loaders.graph_loader import GraphLoader
+from repositories.graph import GraphRepository
 from models.base import NodeID
 from models.edges import RelationshipBase
 from models.nodes import Node
 from pydantic import BaseModel
-from services.bandit_scanner import BanditScanner
+from clients.analyzers.bandit_scanner import BanditScanner
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
 from services.deadcode import DeadCodeService
 from services.dlint_scanner import DlintScanner
@@ -24,7 +24,7 @@ class GeneralPipeline(BaseModel):
         bandit_scanner = BanditScanner(src=self.src)
         dlint_scanner = DlintScanner(src=self.src)
         client = Neo4jClient()
-        graph_loader = GraphLoader(client=client)
+        graph_loader = GraphRepository(client=client)
 
         comments_remover.remove()
         deadcode_remover.remove()
@@ -34,6 +34,5 @@ class GeneralPipeline(BaseModel):
         edges: list[RelationshipBase]
         nodes, edges = CPGDirectoryBuilder(root=self.src.resolve()).build()
         bandit_report = bandit_scanner.run_scanner()
-        dlint_report = dlint_scanner.run_scanner()
 
         graph_loader.load(nodes, edges)

@@ -15,9 +15,9 @@ if str(_PACKAGE_DIR) not in sys.path:
 
 from clients.neo4j import build_client
 from clients.neo4j import Neo4jConfig
-from loaders.graph_loader import GraphLoader
-from loaders.dot_loader import DotLoader
-from loaders.yaml_loader import YamlLoader
+from repositories.graph import GraphRepository
+from repositories.dot_loader import DotLoader
+from repositories.yaml_loader import YamlLoader
 from models.base import NodeID
 from models.edges import RelationshipBase
 from models.nodes import Node
@@ -96,7 +96,7 @@ def load_sample(
     nodes, edges = CPGFileBuilder(path=resolved_path).build()
 
     with build_client(neo4j_uri, neo4j_user, neo4j_password) as client:
-        loader = GraphLoader(client)
+        loader = GraphRepository(client)
         loader.load(nodes, edges)
 
     typer.secho(
@@ -196,7 +196,7 @@ def load(
     result = CPGDirectoryBuilder(root=resolved_path).build()
 
     with build_client(neo4j_uri, neo4j_user, neo4j_password) as client:
-        loader = GraphLoader(client)
+        loader = GraphRepository(client)
         loader.load(*result)
 
 

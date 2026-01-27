@@ -18,6 +18,7 @@ class BanditIssue(BaseModel):
     line_number: int
     column_number: int
     line_range: list[int]
+    # byte: int
 
 
 class BanditReport(BaseModel):

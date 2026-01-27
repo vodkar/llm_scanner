@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import TypedDict
 
-from loaders._serialization import flatten_node_rows
+from repositories._serialization import flatten_node_rows
 from models.base import NodeID
 from models.edges import RelationshipBase
 from models.nodes import Node

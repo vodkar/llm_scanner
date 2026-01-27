@@ -2,7 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from loaders.bandit_report import BanditIssue, BanditReport, IssueSeverity
+from models.bandit_report import BanditIssue, BanditReport, IssueSeverity
 from pydantic import BaseModel
 
 
@@ -19,6 +19,8 @@ class BanditScanner(BaseModel):
 
         issues: list[BanditIssue] = []
         for report in report_data["results"]:
+            file = Path(report["filename"])
+            file.read_text()
             issues.append(
                 BanditIssue(
                     cwe=report["issue_cwe"]["id"],

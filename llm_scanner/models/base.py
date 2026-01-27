@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 from pydantic import GetCoreSchemaHandler
@@ -8,7 +9,9 @@ class NodeID(str):
     """Unique identifier for a node in the CPG."""
 
     @classmethod
-    def create(cls, type_: str, name: str, path: str, start_byte: int) -> "NodeID":
+    def create(
+        cls, type_: str, name: str, path: str | Path, start_byte: int
+    ) -> "NodeID":
         return cls(f"{type_.lower()}:{name}@{path}:{start_byte}")
 
     @classmethod

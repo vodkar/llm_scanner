@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 import re
 from typing import Final
 
 from clients.neo4j import Neo4jClient
-from loaders._serialization import graph_node_rows
-from loaders.graph_queries import (
+from repositories._serialization import graph_node_rows
+from repositories.queries import (
     NODE_QUERY_BY_LABEL,
     RELATIONSHIP_QUERY_BY_TYPE,
     is_supported_relationship_type,
 )
-from loaders.bandit_report import BanditReport
-from loaders.dlint_report import DlintReport
+from models.bandit_report import BanditReport
+from repositories.dlint_report import DlintReport
 from models.edges import RelationshipBase
 from models.nodes import Node
 from models.base import NodeID
@@ -30,7 +31,7 @@ NODE_KIND_TO_LABEL: Final[dict[str, str]] = {
 }
 
 
-class GraphLoader:
+class GraphRepository(Neo4jClient):
     """Persist CPG nodes and relationships into Neo4j."""
 
     def __init__(self, client: Neo4jClient) -> None:
@@ -133,3 +134,8 @@ class GraphLoader:
         for rel_type, rows in edge_rows_by_type.items():
             query_edges = RELATIONSHIP_QUERY_BY_TYPE[rel_type]
             self.client.run_write(query_edges, {"rows": rows})
+
+    def get_nodes_by_file_and_line_numbers(
+        self, file_line_numbers: dict[Path, list[int]]
+    ) -> dict[Path, dict[int, Node]]:
+        return {}

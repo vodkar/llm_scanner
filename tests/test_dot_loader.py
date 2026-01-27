@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from loaders.dot_loader import DotLoader
+from repositories.dot_loader import DotLoader
 from services.cpg_parser.ts_parser.cpg_builder import CPGFileBuilder
 from tests.consts import TEST_DATA_DIR
 

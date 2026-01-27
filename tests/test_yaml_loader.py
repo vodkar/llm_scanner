@@ -3,7 +3,7 @@
 
 # import yaml
 # from entrypoints.base import parse_file_to_cpg
-# from loaders.yaml_loader import YamlLoader
+# from repositories.yaml_loader import YamlLoader
 # from tests.consts import SAMPLE_FILE
 
 
