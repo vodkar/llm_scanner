@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from collections.abc import Iterator
 from enum import StrEnum
 from pathlib import Path
@@ -23,16 +24,6 @@ from services.cpg_parser.types import ParserResult
 logger = logging.getLogger(__name__)
 
 
-def _caller_stack_factory() -> list[NodeID]:
-    """Create a new caller stack list.
-
-    Returns:
-        A new list for tracking caller node identifiers.
-    """
-
-    return []
-
-
 class ProcessableNodeTypes(StrEnum):
     FUNCTION_DEFINITION = "function_definition"
     CLASS_DEFINITION = "class_definition"
@@ -53,8 +44,10 @@ class NodeProcessor(BaseModel):
     visited_node_ids: set[str] = Field(default_factory=set)
 
     __scope_stack: list[dict[str, NodeID]] = PrivateAttr(default_factory=lambda: [{}])
-    __caller_stack: list[NodeID] = PrivateAttr(default_factory=_caller_stack_factory)
-    __all_functions: dict[str, list[NodeID]] = PrivateAttr(default_factory=dict)
+    __caller_stack: list[NodeID] = PrivateAttr(default_factory=list[NodeID])
+    __all_functions: dict[str, list[NodeID]] = PrivateAttr(
+        default_factory=lambda: defaultdict(list[NodeID])
+    )
 
     def model_post_init(self, __context: object) -> None:
         for name, node_id in self.prebound_symbols.items():
@@ -102,8 +95,6 @@ class NodeProcessor(BaseModel):
 
         # Track all functions globally for method resolution
         if str(node_id).startswith("function:"):
-            if normalized not in self.__all_functions:
-                self.__all_functions[normalized] = []
             self.__all_functions[normalized].append(node_id)
 
     def __bind_class_symbol(self, node: TSNode) -> None:
@@ -122,15 +113,18 @@ class NodeProcessor(BaseModel):
 
         # Also bind all methods in the class for method call resolution
         body_node = node.child_by_field_name("body")
-        if body_node:
-            for child in body_node.children:
-                if child.type == "function_definition":
-                    method_name_node = child.child_by_field_name("name")
-                    if method_name_node:
-                        method_name = self.__normalize_name(self.__get_snippet(method_name_node))
-                        if method_name:
-                            method_id = self.__get_node_id(NodeType.FUNCTION, method_name, child)
-                            self.__bind_symbol(method_name, method_id)
+        if not body_node:
+            return
+
+        for child in filter(
+            lambda child: child.type == ProcessableNodeTypes.FUNCTION_DEFINITION,
+            body_node.children,
+        ):
+            if (method_name_node := child.child_by_field_name("name")) and (
+                method_name := self.__normalize_name(self.__get_snippet(method_name_node))
+            ):
+                method_id = self.__get_node_id(NodeType.FUNCTION, method_name, child)
+                self.__bind_symbol(method_name, method_id)
 
     def __bind_function_symbol(self, node: TSNode) -> None:
         """Bind a function name to the global scope for forward reference resolution."""
@@ -244,11 +238,9 @@ class NodeProcessor(BaseModel):
 
         if node.type == "identifier":
             yield ("identifier", self.__normalize_name(self.__get_snippet(node)), node)
-            return
-        if node.type == "attribute":
+        elif node.type == "attribute":
             yield ("attribute", self.__normalize_name(self.__get_snippet(node)), node)
-            return
-        if node.type == "call":
+        elif node.type == "call":
             yield ("call", self.__normalize_name(self.__get_snippet(node)), node)
 
             # Only recurse into arguments (and other children), but skip the callee
@@ -258,10 +250,9 @@ class NodeProcessor(BaseModel):
                 if callee is not None and child == callee:
                     continue
                 yield from self.__iter_source_atoms(child)
-            return
-
-        for child in node.children:
-            yield from self.__iter_source_atoms(child)
+        else:
+            for child in node.children:
+                yield from self.__iter_source_atoms(child)
 
     def __resolve_call_target(self, call_node: TSNode) -> NodeID | None:
         """Resolve a call node's callee to a known FunctionNode identifier."""
@@ -280,18 +271,17 @@ class NodeProcessor(BaseModel):
         elif function_node.type == "attribute":
             # Handle method calls like obj.method()
             attribute_node = function_node.child_by_field_name("attribute")
-            if attribute_node and attribute_node.type == "identifier":
-                method_name = self.__normalize_name(self.__get_snippet(attribute_node))
-                # First try resolving in current scope
-                resolved = self.__resolve_symbol(method_name)
-                if resolved and str(resolved).startswith("function:"):
-                    return resolved
-                # If not found, search globally for any method with this name
-                if method_name in self.__all_functions:
-                    # Return the first match (could be improved with type inference)
-                    candidates = self.__all_functions[method_name]
-                    if candidates:
-                        return candidates[0]
+            if not attribute_node or attribute_node.type != "identifier":
+                return None
+            method_name = self.__normalize_name(self.__get_snippet(attribute_node))
+            # First try resolving in current scope
+            resolved = self.__resolve_symbol(method_name)
+            if resolved and str(resolved).startswith("function:"):
+                return resolved
+            # Return the first match (could be improved with type inference)
+            candidates = self.__all_functions[method_name]
+            if candidates:
+                return candidates[0]
         return None
 
     def __warn_unresolved_call(self, call_node: TSNode) -> None:
@@ -377,7 +367,6 @@ class NodeProcessor(BaseModel):
         *,
         call_node: TSNode,
         call_id: NodeID,
-        nodes: dict[NodeID, Node],
         edges: list[RelationshipBase],
     ) -> None:
         """Add data-flow edges from passed argument nodes to the call."""
@@ -583,15 +572,6 @@ class NodeProcessor(BaseModel):
             return self._process_assignment(node)
         if node.type == "call":
             return self._process_call(node)
-        # if node.type == "import_statement":
-        #     self._process_import(node)
-        #     return
-        # if node.type == "import_from_statement":
-        #     self._process_import_from(node)
-        #     return
-        # if node.type == "call":
-        #     self._process_call(node)
-        #     return
 
         for child in node.children:
             _nodes, _edges = self.process(child, block_level)
@@ -614,15 +594,9 @@ class NodeProcessor(BaseModel):
         function_node = FunctionNode(
             identifier=node_id,
             name=name,
-            # module_name=module_name,#qual,
-            # code=self.__get_snippet(node),
-            # signature=self.__extract_signature(node.child_by_field_name("parameters")),
             line_start=node.start_point[0] + 1,
             line_end=node.end_point[0] + 1,
             file_path=self.path,
-            # token_count=self.__count_tokens(node),
-            # num_parameters=len(parameter_nodes),
-            # has_decorators=self._has_decorators(node),
         )
         nodes[node_id] = function_node
         self.visited_node_ids.add(node_id)
@@ -706,7 +680,6 @@ class NodeProcessor(BaseModel):
         self.__add_call_argument_edges(
             call_node=node,
             call_id=call_node.identifier,
-            nodes=nodes,
             edges=edges,
         )
         for child in node.children:
@@ -827,7 +800,6 @@ class NodeProcessor(BaseModel):
                 self.__add_call_argument_edges(
                     call_node=atom,
                     call_id=call_node.identifier,
-                    nodes=nodes,
                     edges=edges,
                 )
                 continue

@@ -1,7 +1,6 @@
-from models.edges.analysis import StaticAnalysisReports
 from models.nodes.finding import DlintFindingNode
 from repositories.analyzers.base import IFindingsRepository
-from repositories.queries import finding_node_query, finding_relationship_query
+from repositories.queries import finding_node_query
 
 
 class DlintFindingsRepository(IFindingsRepository):
@@ -30,26 +29,4 @@ class DlintFindingsRepository(IFindingsRepository):
             )
 
         query = finding_node_query("DlintFinding")
-        self.client.run_write(query, {"rows": rows})
-
-    def insert_edges(self, finding_relations: list[StaticAnalysisReports]) -> None:
-        """Insert Dlint finding relationships into Neo4j.
-
-        Args:
-            finding_relations: List of relationships connecting findings to code.
-        """
-
-        if not finding_relations:
-            return
-
-        rows: list[dict[str, str]] = []
-        for rel in finding_relations:
-            rows.append(
-                {
-                    "src": str(rel.src),
-                    "dst": str(rel.dst),
-                }
-            )
-
-        query = finding_relationship_query("REPORTS")
         self.client.run_write(query, {"rows": rows})
