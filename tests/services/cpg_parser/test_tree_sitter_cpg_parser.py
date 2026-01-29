@@ -19,9 +19,7 @@ def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
 
     nodes, _edges = parser.build()
 
-    subtotal_method_id = NodeID.create(
-        "function", "subtotal", str(TEST_CLASS_FILE), 202
-    )
+    subtotal_method_id = NodeID.create("function", "subtotal", str(TEST_CLASS_FILE), 202)
     product_class_id = NodeID.create("class", "Product", str(TEST_CLASS_FILE), 60)
     order_item_class_id = NodeID.create("class", "OrderItem", str(TEST_CLASS_FILE), 132)
 
@@ -93,16 +91,10 @@ def test_tree_sitter_parse__on_variables__returns_correct_nodes_and_edges() -> N
     param1_sb = idx(b"param1", my_function_sb)
     param2_sb = idx(b"param2", my_function_sb)
     str_param_sb = idx(b"str", my_function_sb)
-    param1_def_id = NodeID.create(
-        "variable", "param1", str(TEST_VARIABLES_FILE), param1_sb
-    )
-    param2_def_id = NodeID.create(
-        "variable", "param2", str(TEST_VARIABLES_FILE), param2_sb
-    )
+    param1_def_id = NodeID.create("variable", "param1", str(TEST_VARIABLES_FILE), param1_sb)
+    param2_def_id = NodeID.create("variable", "param2", str(TEST_VARIABLES_FILE), param2_sb)
     # The current parser treats the type annotation identifier `str` as a parameter identifier.
-    str_param_def_id = NodeID.create(
-        "variable", "str", str(TEST_VARIABLES_FILE), str_param_sb
-    )
+    str_param_def_id = NodeID.create("variable", "str", str(TEST_VARIABLES_FILE), str_param_sb)
 
     local_var_sb = idx(b"local_var =")
     local_var_def_id = NodeID.create(
@@ -112,9 +104,7 @@ def test_tree_sitter_parse__on_variables__returns_correct_nodes_and_edges() -> N
     s_def_sb = idx(b"s = my_function(e)")
     s_def_id = NodeID.create("variable", "s", str(TEST_VARIABLES_FILE), s_def_sb)
     digit_def_sb = idx(b"digit = my_function(str(d), '123')")
-    digit_def_id = NodeID.create(
-        "variable", "digit", str(TEST_VARIABLES_FILE), digit_def_sb
-    )
+    digit_def_id = NodeID.create("variable", "digit", str(TEST_VARIABLES_FILE), digit_def_sb)
 
     # --- Variable/literal nodes ---
     assert a_def_id in nodes

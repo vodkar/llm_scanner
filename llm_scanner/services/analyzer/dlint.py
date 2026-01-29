@@ -1,4 +1,5 @@
 from functools import cached_property
+
 from clients.analyzers.dlint_scanner import DlintStaticAnalyzer
 from models.nodes.finding import DlintFindingNode, FindingNode
 from services.analyzer.base import BaseAnalyzerService

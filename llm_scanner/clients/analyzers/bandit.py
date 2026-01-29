@@ -4,7 +4,6 @@ from pathlib import Path
 
 from clients.analyzers.base import IStaticAnalyzer
 from models.bandit_report import BanditIssue, IssueSeverity
-
 from models.base import StaticAnalyzerReport
 
 
@@ -13,9 +12,7 @@ class BanditStaticAnalyzer(IStaticAnalyzer):
 
     def run(self) -> StaticAnalyzerReport[BanditIssue]:  # type: ignore
         report_path: Path = Path("bandit_report.json")
-        subprocess.run(
-            ["bandit", "-f", "json", "-o", str(report_path), "-r", str(self.src)]
-        )
+        subprocess.run(["bandit", "-f", "json", "-o", str(report_path), "-r", str(self.src)])
         json_report = report_path.read_text()
         report_data = json.loads(json_report)
 

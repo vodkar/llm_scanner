@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, GetCoreSchemaHandler
 from pydantic_core import CoreSchema, core_schema
@@ -9,9 +9,7 @@ class NodeID(str):
     """Unique identifier for a node in the CPG."""
 
     @classmethod
-    def create(
-        cls, type_: str, name: str, path: str | Path, start_byte: int
-    ) -> "NodeID":
+    def create(cls, type_: str, name: str, path: str | Path, start_byte: int) -> "NodeID":
         return cls(f"{type_.lower()}:{name}@{path}:{start_byte}")
 
     @classmethod
@@ -30,5 +28,5 @@ class StaticAnalyzerIssue(BaseModel):
 T = TypeVar("T", bound=StaticAnalyzerIssue)
 
 
-class StaticAnalyzerReport(BaseModel, Generic[T]):
+class StaticAnalyzerReport[T](BaseModel):
     issues: list[T]

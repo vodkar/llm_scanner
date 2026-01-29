@@ -3,13 +3,12 @@ from models.nodes import (
     VariableNode,
 )
 from services.cpg_parser.ts_parser.cpg_builder import CPGFileBuilder
-from .consts import TEST_FUNCTION_PARAMS_FILE
 from tests.utils import symbol_byte_index
 
+from .consts import TEST_FUNCTION_PARAMS_FILE
 
-def test_tree_sitter_parse__on_function_params__returns_correct_function_params() -> (
-    None
-):
+
+def test_tree_sitter_parse__on_function_params__returns_correct_function_params() -> None:
     parser = CPGFileBuilder(path=TEST_FUNCTION_PARAMS_FILE)
 
     nodes, _edges = parser.build()

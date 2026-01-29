@@ -4,6 +4,7 @@ from functools import cached_property
 from pathlib import Path
 
 from pydantic import BaseModel
+
 from clients.analyzers.base import IStaticAnalyzer
 from models.edges.analysis import StaticAnalysisReports
 from models.nodes.finding import FindingNode
@@ -12,7 +13,6 @@ from repositories.graph import GraphRepository
 
 
 class BaseAnalyzerService(BaseModel):
-
     target: Path
     graph_repository: GraphRepository
     findings_repository: IFindingsRepository
@@ -34,9 +34,7 @@ class BaseAnalyzerService(BaseModel):
         for issue in report.issues:
             issues_in_files_lines[issue.file].append(issue.line_number)
 
-        nodes = self.graph_repository.get_nodes_by_file_and_line_numbers(
-            issues_in_files_lines
-        )
+        nodes = self.graph_repository.get_nodes_by_file_and_line_numbers(issues_in_files_lines)
 
         findings: list[FindingNode] = []
         edges: list[StaticAnalysisReports] = []

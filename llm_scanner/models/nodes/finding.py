@@ -1,5 +1,6 @@
 from pathlib import Path
 from uuid import UUID, uuid4
+
 from pydantic import BaseModel, Field
 
 from models.bandit_report import IssueSeverity

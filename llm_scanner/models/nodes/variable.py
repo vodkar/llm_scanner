@@ -1,5 +1,6 @@
 from enum import StrEnum
 from pathlib import Path
+
 from pydantic import BaseModel, Field
 
 from models.base import NodeID
@@ -24,12 +25,8 @@ class VariableNode(BaseModel):
     line_start: int = Field(
         ..., ge=1, description="Starting line number of the function definition"
     )
-    line_end: int = Field(
-        ..., ge=1, description="Ending line number of the function definition"
-    )
-    file_path: Path = Field(
-        ..., description="Path to the source file containing the variable"
-    )
+    line_end: int = Field(..., ge=1, description="Ending line number of the function definition")
+    file_path: Path = Field(..., description="Path to the source file containing the variable")
     # is_user_input: bool = Field(
     #     default=False, description="Indicates if value originates from user input"
     # )

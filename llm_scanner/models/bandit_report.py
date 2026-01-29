@@ -1,9 +1,6 @@
 from enum import StrEnum
-from pathlib import Path
 
-from pydantic import BaseModel
-
-from models.base import StaticAnalyzerIssue, StaticAnalyzerReport
+from models.base import StaticAnalyzerIssue
 
 
 class IssueSeverity(StrEnum):

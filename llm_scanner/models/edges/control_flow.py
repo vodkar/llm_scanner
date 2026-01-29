@@ -34,9 +34,7 @@ class ControlFlowContains(RelationshipBase):
         default=ControlFlowRelationshipType.CONTAINS,
         description="Relationship type identifier",
     )
-    position: int = Field(
-        ..., ge=0, description="Order of the code block within the function"
-    )
+    position: int = Field(..., ge=0, description="Order of the code block within the function")
 
 
 class ControlFlowNext(RelationshipBase):
@@ -51,6 +49,4 @@ class ControlFlowNext(RelationshipBase):
         default=ControlFlowRelationshipType.NEXT,
         description="Relationship type identifier",
     )
-    branch_type: BranchType = Field(
-        ..., description="Flow category between code blocks"
-    )
+    branch_type: BranchType = Field(..., description="Flow category between code blocks")

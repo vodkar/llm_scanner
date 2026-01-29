@@ -11,9 +11,6 @@ dependencies = [
     "bandit>=1.8.6",
     "flake8>=7.1.1",
     "dlint>=0.16.0",
-    "deadcode>=2.4.1",
-    "black>=25.1.0",
-    "shushpy>=0.0.1.dev2",
     "tree-sitter-python>=0.25.0",
     "tree-sitter>=0.25.2",
     "typer>=0.15.1",
@@ -21,12 +18,13 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "black>=25.1.0",
+    "isort>=5.13.2",
     "mypy>=1.17.1",
     "pytest>=8.4.1",
     "pre-commit>=3.7.0",
     "deadcode>=2.4.1",
     "types-pyyaml>=6.0.12.20250809",
+    "ruff>=0.9.6",
 ]
 
 [project.scripts]
@@ -53,9 +51,30 @@ exclude = "tests/.*"
 [tool.pytest.ini_options]
 pythonpath = "llm_scanner"
 
-[tool.black]
-extend-exclude = '''
-/(
-  tests/data/
-)
-'''
+[tool.isort]
+profile = "black"
+src_paths = ["llm_scanner"]
+known_first_party = ["llm_scanner", "tests"]
+line_length = 100
+skip = [
+  "tests/data",
+  ".venv",
+  "venv",
+  ".env",
+  "env",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["llm_scanner"]
+extend-exclude = [
+  "tests/data",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+fixable = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["llm_scanner"]

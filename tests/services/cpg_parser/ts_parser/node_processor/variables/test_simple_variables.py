@@ -4,8 +4,9 @@ from models.nodes import (
     VariableNode,
 )
 from services.cpg_parser.ts_parser.cpg_builder import CPGFileBuilder
-from .consts import TEST_SIMPLE_VARIABLES_FILE
 from tests.utils import symbol_byte_index
+
+from .consts import TEST_SIMPLE_VARIABLES_FILE
 
 
 def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
@@ -52,9 +53,7 @@ def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
     )
 
     assert (
-        DataFlowDefinedBy(
-            src=a_def_id, dst=b_def_id, operation=DefinitionOperation.ASSIGNMENT
-        )
+        DataFlowDefinedBy(src=a_def_id, dst=b_def_id, operation=DefinitionOperation.ASSIGNMENT)
         in _edges
     )
 
@@ -67,15 +66,11 @@ def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
         line_end=3,
     )
     assert (
-        DataFlowDefinedBy(
-            src=a_def_id, dst=c_def_id, operation=DefinitionOperation.ASSIGNMENT
-        )
+        DataFlowDefinedBy(src=a_def_id, dst=c_def_id, operation=DefinitionOperation.ASSIGNMENT)
         in _edges
     )
     assert (
-        DataFlowDefinedBy(
-            src=b_def_id, dst=c_def_id, operation=DefinitionOperation.ASSIGNMENT
-        )
+        DataFlowDefinedBy(src=b_def_id, dst=c_def_id, operation=DefinitionOperation.ASSIGNMENT)
         in _edges
     )
 
@@ -88,14 +83,10 @@ def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
         line_end=4,
     )
     assert (
-        DataFlowDefinedBy(
-            src=c_def_id, dst=d_def_id, operation=DefinitionOperation.ASSIGNMENT
-        )
+        DataFlowDefinedBy(src=c_def_id, dst=d_def_id, operation=DefinitionOperation.ASSIGNMENT)
         in _edges
     )
     assert (
-        DataFlowDefinedBy(
-            src=b_def_id, dst=d_def_id, operation=DefinitionOperation.ASSIGNMENT
-        )
+        DataFlowDefinedBy(src=b_def_id, dst=d_def_id, operation=DefinitionOperation.ASSIGNMENT)
         in _edges
     )

@@ -1,4 +1,4 @@
-from __future__ import annotations
+# flake8: noqa E402
 
 import sys
 from pathlib import Path
@@ -13,15 +13,14 @@ _PACKAGE_DIR: Final[Path] = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
-from clients.neo4j import build_client
-from clients.neo4j import Neo4jConfig
-from repositories.graph import GraphRepository
-from repositories.dot_loader import DotLoader
-from repositories.yaml_loader import YamlLoader
+from clients.neo4j import Neo4jConfig, build_client
 from models.base import NodeID
 from models.edges import RelationshipBase
 from models.nodes import Node
 from pipeline import GeneralPipeline
+from repositories.dot_loader import DotLoader
+from repositories.graph import GraphRepository
+from repositories.yaml_loader import YamlLoader
 from services.cpg_parser.ts_parser.cpg_builder import (
     CPGDirectoryBuilder,
     CPGFileBuilder,
@@ -145,8 +144,7 @@ def load_to_yaml(
     loader.load(result_nodes, result_edges)
 
     typer.secho(
-        f"Loaded {len(result_nodes)} nodes and {len(result_edges)} edges"
-        f"into {output_path}",
+        f"Loaded {len(result_nodes)} nodes and {len(result_edges)} edgesinto {output_path}",
         fg=typer.colors.GREEN,
     )
 

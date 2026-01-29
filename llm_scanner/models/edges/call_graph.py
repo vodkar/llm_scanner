@@ -27,9 +27,7 @@ class CallGraphCalls(RelationshipBase):
         description="Relationship type identifier",
     )
     is_direct: bool = Field(..., description="True for direct calls; False otherwise")
-    call_depth: int = Field(
-        ..., ge=0, description="Depth of the call within the call chain"
-    )
+    call_depth: int = Field(..., ge=0, description="Depth of the call within the call chain")
 
 
 class CallGraphCalledBy(RelationshipBase):

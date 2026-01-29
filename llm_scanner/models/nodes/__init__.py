@@ -1,5 +1,3 @@
-from typing import TypeAlias
-
 from .call_site import CallNode
 from .code import ClassNode, CodeBlockNode, FunctionNode
 from .finding import FindingNode
@@ -16,9 +14,7 @@ from .taint import (
 )
 from .variable import VariableNode, VariableScope
 
-Node: TypeAlias = (
-    FunctionNode | ClassNode | CodeBlockNode | ModuleNode | VariableNode | CallNode
-)
+type Node = FunctionNode | ClassNode | CodeBlockNode | ModuleNode | VariableNode | CallNode
 
 __all__ = [
     "CallNode",

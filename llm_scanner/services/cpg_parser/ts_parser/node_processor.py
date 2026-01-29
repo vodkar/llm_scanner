@@ -1,25 +1,24 @@
+import logging
 from collections.abc import Iterator
 from enum import StrEnum
-import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, PrivateAttr
 
+from pydantic import BaseModel, Field, PrivateAttr
 from tree_sitter import Node as TSNode
 
 from models.base import NodeID
 from models.edges.base import RelationshipBase
+from models.edges.call_graph import CallGraphCalledBy, CallGraphCalls
 from models.edges.data_flow import (
     DataFlowDefinedBy,
     DataFlowFlowsTo,
     DataFlowRelationshipType,
     DefinitionOperation,
 )
-from models.edges.call_graph import CallGraphCalledBy, CallGraphCalls
 from models.nodes import CallNode, CodeBlockNode, Node, VariableNode
 from models.nodes.base import NodeType
 from models.nodes.code import ClassNode, FunctionNode
 from services.cpg_parser.types import ParserResult
-
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,6 @@ class ProcessableNodeTypes(StrEnum):
 
 
 class NodeProcessor(BaseModel):
-
     path: Path
     source: bytes
     source_text: str
@@ -109,7 +107,8 @@ class NodeProcessor(BaseModel):
             self.__all_functions[normalized].append(node_id)
 
     def __bind_class_symbol(self, node: TSNode) -> None:
-        """Bind a class name and its methods to the global scope for forward reference resolution."""
+        """Bind a class name and its methods to the global scope for
+        forward reference resolution."""
         name_node = node.child_by_field_name("name")
         if not name_node:
             return
@@ -128,13 +127,9 @@ class NodeProcessor(BaseModel):
                 if child.type == "function_definition":
                     method_name_node = child.child_by_field_name("name")
                     if method_name_node:
-                        method_name = self.__normalize_name(
-                            self.__get_snippet(method_name_node)
-                        )
+                        method_name = self.__normalize_name(self.__get_snippet(method_name_node))
                         if method_name:
-                            method_id = self.__get_node_id(
-                                NodeType.FUNCTION, method_name, child
-                            )
+                            method_id = self.__get_node_id(NodeType.FUNCTION, method_name, child)
                             self.__bind_symbol(method_name, method_id)
 
     def __bind_function_symbol(self, node: TSNode) -> None:
@@ -169,16 +164,14 @@ class NodeProcessor(BaseModel):
             return False
         if not node.is_named:
             return False
-        if node.type in {
+        return node.type not in {
             "module",
             "function_definition",
             "class_definition",
             "import_statement",
             "import_from_statement",
             "decorated_definition",
-        }:
-            return False
-        return True
+        }
 
     def __iter_top_level_blocks(self, module_node: TSNode) -> list[list[TSNode]]:
         blocks: list[list[TSNode]] = []
@@ -281,8 +274,7 @@ class NodeProcessor(BaseModel):
             name = self.__normalize_name(self.__get_snippet(function_node))
             resolved = self.__resolve_symbol(name)
             if resolved and (
-                str(resolved).startswith("function:")
-                or str(resolved).startswith("class:")
+                str(resolved).startswith("function:") or str(resolved).startswith("class:")
             ):
                 return resolved
         elif function_node.type == "attribute":
@@ -305,9 +297,7 @@ class NodeProcessor(BaseModel):
     def __warn_unresolved_call(self, call_node: TSNode) -> None:
         snippet: str = self.__normalize_name(self.__get_snippet(call_node))
         line_number: int = call_node.start_point[0] + 1
-        logger.warning(
-            f"Unresolved call target for '{snippet}' at {self.path}:{line_number}"
-        )
+        logger.warning(f"Unresolved call target for '{snippet}' at {self.path}:{line_number}")
 
     def __create_call_node(
         self, *, call_node: TSNode, caller_id: NodeID, callee_id: NodeID
@@ -374,9 +364,7 @@ class NodeProcessor(BaseModel):
             )
         )
 
-    def __iter_call_argument_atoms(
-        self, call_node: TSNode
-    ) -> Iterator[tuple[str, str, TSNode]]:
+    def __iter_call_argument_atoms(self, call_node: TSNode) -> Iterator[tuple[str, str, TSNode]]:
         """Yield argument atoms for a call node."""
         arguments_node: TSNode | None = call_node.child_by_field_name("arguments")
         if arguments_node is None:
@@ -428,9 +416,7 @@ class NodeProcessor(BaseModel):
             )
             seen_source_ids.add(source_id)
 
-    def __collect_parameter_identifiers(
-        self, parameters_node: TSNode | None
-    ) -> list[TSNode]:
+    def __collect_parameter_identifiers(self, parameters_node: TSNode | None) -> list[TSNode]:
         """Collect distinct parameter identifier nodes in source order."""
 
         if not parameters_node:
@@ -571,9 +557,7 @@ class NodeProcessor(BaseModel):
                 )
                 self.__push_caller(code_block_id)
                 for block_node in block_nodes:
-                    block_nodes_nodes, block_nodes_edges = self.process(
-                        block_node, block_level=1
-                    )
+                    block_nodes_nodes, block_nodes_edges = self.process(block_node, block_level=1)
                     nodes.update(block_nodes_nodes)
                     edges.extend(block_nodes_edges)
                 self.__pop_caller()
@@ -584,7 +568,7 @@ class NodeProcessor(BaseModel):
         if node.type == "class_definition":
             class_node, (nodes, edges) = self._process_class(node)
 
-            for node_id in nodes.keys():
+            for node_id in nodes:
                 edges.append(
                     DataFlowDefinedBy(
                         src=class_node.identifier,
@@ -739,7 +723,8 @@ class NodeProcessor(BaseModel):
         name_node = node.child_by_field_name("name")
         if not name_node:
             raise ValueError(
-                f"Class node missing name field. Node Byte Range: {node.byte_range}, Path: {self.path}"
+                f"Class node missing name field. Node Byte Range: {node.byte_range},"
+                f" Path: {self.path}"
             )
 
         name = self.__get_snippet(name_node)
@@ -807,10 +792,9 @@ class NodeProcessor(BaseModel):
 
             if kind in {"identifier", "attribute"}:
                 resolved = self.__resolve_symbol(text)
-                if resolved:
-                    if resolved not in seen_source_ids:
-                        source_ids.append(resolved)
-                        seen_source_ids.add(resolved)
+                if resolved and resolved not in seen_source_ids:
+                    source_ids.append(resolved)
+                    seen_source_ids.add(resolved)
                 continue
 
             if kind == "call":

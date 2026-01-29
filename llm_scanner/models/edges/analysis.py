@@ -3,7 +3,6 @@ from typing import Literal
 
 from pydantic import Field
 
-
 from .base import FindingRelationshipBase
 
 

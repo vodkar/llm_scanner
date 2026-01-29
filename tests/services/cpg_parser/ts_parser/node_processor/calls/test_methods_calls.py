@@ -6,9 +6,7 @@ from tests.utils import symbol_byte_index
 from .consts import TEST_METHOD_CALLS_FILE
 
 
-def test_tree_sitter_parse__on_class_passed_as_argument__creates_dataflow_edge() -> (
-    None
-):
+def test_tree_sitter_parse__on_class_passed_as_argument__creates_dataflow_edge() -> None:
     parser = CPGFileBuilder(path=TEST_METHOD_CALLS_FILE)
     data: bytes = TEST_METHOD_CALLS_FILE.read_bytes()
 

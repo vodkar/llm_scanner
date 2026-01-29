@@ -43,7 +43,9 @@
 #         assert e["dst"] in node_ids
 #         assert isinstance(e["type"], str)
 
-#     # Readability: ensure at least one node has multi-line code and appears with '|' in YAML
-#     # We can't inspect dumper style post-load, so assert file text contains a literal block
+#     # Readability: ensure at least one node has multi-line code
+#     # and appears with '|' in YAML
+#     # We can't inspect dumper style post-load, so assert file text
+#     # contains a literal block
 #     text = out.read_text(encoding="utf-8")
 #     assert "\n  code: |\n" in text or "\n  code: |-\n" in text

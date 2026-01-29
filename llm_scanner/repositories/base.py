@@ -1,4 +1,5 @@
 from typing import Any
+
 from pydantic import BaseModel
 
 from clients.neo4j import Neo4jClient

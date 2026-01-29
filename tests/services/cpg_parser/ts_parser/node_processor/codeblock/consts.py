@@ -1,11 +1,6 @@
 from tests.consts import TEST_DATA_DIR
 
-
 TEST_CODE_BLOCKS_DATA_DIR = TEST_DATA_DIR / "codeblock"
 TEST_SINGLE_BLOCK_FILE = TEST_CODE_BLOCKS_DATA_DIR / "single_block.py"
-TEST_SINGLE_BLOCK_WITH_MAIN_FILE = (
-    TEST_CODE_BLOCKS_DATA_DIR / "single_block_with_main.py"
-)
-TEST_BLOCKS_SPLITTED_BY_FUNC_FILE = (
-    TEST_CODE_BLOCKS_DATA_DIR / "blocks_splitted_by_func.py"
-)
+TEST_SINGLE_BLOCK_WITH_MAIN_FILE = TEST_CODE_BLOCKS_DATA_DIR / "single_block_with_main.py"
+TEST_BLOCKS_SPLITTED_BY_FUNC_FILE = TEST_CODE_BLOCKS_DATA_DIR / "blocks_splitted_by_func.py"

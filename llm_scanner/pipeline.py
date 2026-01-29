@@ -1,19 +1,14 @@
 from pathlib import Path
 
-from clients.neo4j import Neo4jClient, build_client
+from pydantic import BaseModel
+
+from clients.neo4j import build_client
 from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.graph import GraphRepository
-from models.base import NodeID
-from models.edges import RelationshipBase
-from models.nodes import Node
-from pydantic import BaseModel
-from clients.analyzers.bandit import BanditStaticAnalyzer
 from services.analyzer.bandit import BanditAnalyzerService
 from services.analyzer.dlint import DlintAnalyzerService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
-from clients.analyzers.dlint_scanner import DlintStaticAnalyzer
-from services.remove_comments import RemoveCommentsService
 
 
 class GeneralPipeline(BaseModel):
@@ -38,4 +33,4 @@ class GeneralPipeline(BaseModel):
                 graph_repository=graph_repository,
                 findings_repository=BanditFindingsRepository(client=neo4j_client),
             )
-            bandit_analyzer_service.enrich_graph_with_findings
+            bandit_analyzer_service.enrich_graph_with_findings()

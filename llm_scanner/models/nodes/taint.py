@@ -1,4 +1,5 @@
 from enum import StrEnum
+
 from pydantic import BaseModel, Field
 
 
@@ -50,12 +51,8 @@ class TaintSourceNode(BaseModel):
     """Represents an entry point of untrusted data."""
 
     source_type: TaintSourceType = Field(..., description="Kind of taint source")
-    code_location: str = Field(
-        ..., description="Variable or parameter name where data enters"
-    )
-    line_number: int = Field(
-        ..., ge=1, description="Line number where the taint source appears"
-    )
+    code_location: str = Field(..., description="Variable or parameter name where data enters")
+    line_number: int = Field(..., ge=1, description="Line number where the taint source appears")
     file_path: str = Field(..., description="Path to the file containing the source")
     confidence: float = Field(
         ..., ge=0.0, le=1.0, description="Confidence that this is a taint source"
@@ -69,12 +66,8 @@ class TaintSinkNode(BaseModel):
     """Represents a location where tainted data can cause harm."""
 
     sink_type: TaintSinkType = Field(..., description="Danger category for the sink")
-    function_name: str = Field(
-        ..., description="Function or API at which the sink occurs"
-    )
-    line_number: int = Field(
-        ..., ge=1, description="Line number where the sink is located"
-    )
+    function_name: str = Field(..., description="Function or API at which the sink occurs")
+    line_number: int = Field(..., ge=1, description="Line number where the sink is located")
     file_path: str = Field(..., description="Path to the file containing the sink")
     severity: SeverityLevel = Field(..., description="Risk severity of the sink")
     detected_by: list[str] = Field(
@@ -87,9 +80,7 @@ class SanitizerNode(BaseModel):
 
     sanitizer_type: SanitizerType = Field(..., description="Type of sanitation applied")
     function_name: str = Field(..., description="Function implementing the sanitizer")
-    effectiveness: SanitizerEffectiveness = Field(
-        ..., description="Effectiveness of the sanitizer"
-    )
+    effectiveness: SanitizerEffectiveness = Field(..., description="Effectiveness of the sanitizer")
     line_number: int = Field(
         ..., ge=1, description="Line number where the sanitizer is defined or used"
     )

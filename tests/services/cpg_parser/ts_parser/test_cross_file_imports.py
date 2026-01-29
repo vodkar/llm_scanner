@@ -16,9 +16,7 @@ def test_cpg_directory_builder__links_imported_function_constant_and_class() -> 
     provider_file = IMPORT_LINK_PROJECT_ROOT / "provider.py"
     consumer_file = IMPORT_LINK_PROJECT_ROOT / "consumer.py"
 
-    nodes, edges = CPGDirectoryBuilder(
-        root=IMPORT_LINK_PROJECT_ROOT, link_imports=True
-    ).build()
+    nodes, edges = CPGDirectoryBuilder(root=IMPORT_LINK_PROJECT_ROOT, link_imports=True).build()
 
     provider_data = provider_file.read_bytes()
     consumer_data = consumer_file.read_bytes()

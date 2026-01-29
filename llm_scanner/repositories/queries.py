@@ -47,6 +47,32 @@ NODE_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
     ),
 }
 
+FINDING_NODE_QUERIES: Final[dict[str, LiteralString]] = {
+    "BanditFinding": (
+        "UNWIND $rows AS r "
+        "MERGE (n:Finding:BanditFinding {id: r.id}) "
+        "SET n.file = r.file, "
+        "    n.line_number = r.line_number, "
+        "    n.cwe_id = r.cwe_id, "
+        "    n.severity = r.severity"
+    ),
+    "DlintFinding": (
+        "UNWIND $rows AS r "
+        "MERGE (n:Finding:DlintFinding {id: r.id}) "
+        "SET n.file = r.file, "
+        "    n.line_number = r.line_number, "
+        "    n.issue_id = r.issue_id"
+    ),
+}
+
+FINDING_RELATIONSHIP_QUERIES: Final[dict[str, LiteralString]] = {
+    "REPORTS": (
+        "UNWIND $rows AS r "
+        "MATCH (s:Finding {id:r.src}), (d:Code {id:r.dst}) "
+        "MERGE (s)-[e:REPORTS]->(d)"
+    ),
+}
+
 RELATIONSHIP_QUERY_BY_TYPE: Final[dict[str, LiteralString]] = {
     "CALLS": (
         "UNWIND $rows AS r "
@@ -128,3 +154,29 @@ def is_supported_relationship_type(rel_type: str) -> bool:
     """
 
     return rel_type in RELATIONSHIP_QUERY_BY_TYPE
+
+
+def finding_node_query(finding_type: str) -> LiteralString:
+    """Return a literal query for a finding node type.
+
+    Args:
+        finding_type: Type of finding node (e.g., 'BanditFinding', 'DlintFinding').
+
+    Returns:
+        Literal query for the requested finding type.
+    """
+
+    return FINDING_NODE_QUERIES.get(finding_type, FINDING_NODE_QUERIES["BanditFinding"])
+
+
+def finding_relationship_query(rel_type: str) -> LiteralString:
+    """Return a literal query for a finding relationship type.
+
+    Args:
+        rel_type: Relationship type identifier.
+
+    Returns:
+        Literal query for the requested relationship.
+    """
+
+    return FINDING_RELATIONSHIP_QUERIES.get(rel_type, FINDING_RELATIONSHIP_QUERIES["REPORTS"])

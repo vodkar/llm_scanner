@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from models.nodes import FunctionNode
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
 from tests.consts import SAMPLE_PROJECT_ROOT
@@ -16,14 +14,10 @@ def test_cpg_directory_builder__parses_multiple_files() -> None:
     utils_file = SAMPLE_PROJECT_ROOT / "utils.py"
 
     assert any(
-        isinstance(node, FunctionNode)
-        and node.name == "run"
-        and node.file_path == main_file
+        isinstance(node, FunctionNode) and node.name == "run" and node.file_path == main_file
         for node in nodes.values()
     )
     assert any(
-        isinstance(node, FunctionNode)
-        and node.name == "greet"
-        and node.file_path == utils_file
+        isinstance(node, FunctionNode) and node.name == "greet" and node.file_path == utils_file
         for node in nodes.values()
     )

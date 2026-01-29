@@ -1,21 +1,20 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from pathlib import Path
-import re
 from typing import Final
 
 from clients.neo4j import Neo4jClient
+from models.base import NodeID
+from models.edges import RelationshipBase
+from models.nodes import Node
 from repositories._serialization import graph_node_rows
 from repositories.queries import (
     NODE_QUERY_BY_LABEL,
     RELATIONSHIP_QUERY_BY_TYPE,
     is_supported_relationship_type,
 )
-from models.edges import RelationshipBase
-from models.nodes import Node
-from models.base import NodeID
-
 
 RELATIONSHIP_TYPE_PATTERN: re.Pattern[str] = re.compile(r"^[A-Z][A-Z0-9_]*$")
 DEFAULT_RELATIONSHIP_TYPE: Final[str] = "USED_IN"
@@ -111,9 +110,7 @@ class GraphRepository(Neo4jClient):
 
             rel_type = self._relationship_type_for_edge(str(rel_type_raw))
             query_type = (
-                rel_type
-                if is_supported_relationship_type(rel_type)
-                else DEFAULT_RELATIONSHIP_TYPE
+                rel_type if is_supported_relationship_type(rel_type) else DEFAULT_RELATIONSHIP_TYPE
             )
 
             attrs = dict(payload)

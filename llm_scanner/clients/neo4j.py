@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import os
-from pydantic import BaseModel
-from typing import Any, Generator, Iterable, LiteralString, Optional
+from collections.abc import Generator, Iterable
+from contextlib import contextmanager
+from typing import Any, LiteralString
 
-from neo4j import GraphDatabase, Driver
+from neo4j import Driver, GraphDatabase
+from pydantic import BaseModel
 
 
 class Neo4jConfig(BaseModel):
@@ -15,7 +16,7 @@ class Neo4jConfig(BaseModel):
 
 
 class Neo4jClient:
-    def __init__(self, cfg: Optional[Neo4jConfig] = None):
+    def __init__(self, cfg: Neo4jConfig | None = None):
         self.cfg = cfg or Neo4jConfig()
         self._driver: Driver = GraphDatabase.driver(
             self.cfg.uri, auth=(self.cfg.user, self.cfg.password)
@@ -24,14 +25,12 @@ class Neo4jClient:
     def close(self) -> None:
         self._driver.close()
 
-    def run_write(
-        self, query: LiteralString, params: Optional[dict[str, Any]] = None
-    ) -> None:
+    def run_write(self, query: LiteralString, params: dict[str, Any] | None = None) -> None:
         with self._driver.session() as session:
             session.execute_write(lambda tx: tx.run(query, **(params or {})))
 
     def run_read(
-        self, query: LiteralString, params: Optional[dict[str, Any]] = None
+        self, query: LiteralString, params: dict[str, Any] | None = None
     ) -> Iterable[dict[str, Any]]:
         with self._driver.session() as session:
             result = session.execute_read(lambda tx: tx.run(query, **(params or {})))

@@ -17,9 +17,7 @@ class NodeType(StrEnum):
 
 class BaseCodeNode(BaseModel):
     identifier: NodeID = Field(..., description="Unique identifier")
-    file_path: Path = Field(
-        ..., description="Path to the source file containing the call"
-    )
+    file_path: Path = Field(..., description="Path to the source file containing the call")
     line_start: int = Field(..., ge=1, description="Starting line number of the call")
     line_end: int = Field(..., ge=1, description="Ending line number of the call")
     token_count: int = Field(

@@ -1,4 +1,5 @@
 from functools import cached_property
+
 from clients.analyzers.bandit import BanditStaticAnalyzer
 from models.nodes.finding import BanditFindingNode, FindingNode
 from services.analyzer.base import BaseAnalyzerService

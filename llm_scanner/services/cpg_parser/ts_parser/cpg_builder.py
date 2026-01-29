@@ -1,20 +1,19 @@
-from pathlib import Path
 import ast
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
+import tree_sitter_python as tspython
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from tree_sitter import Language, Parser, Tree
-import tree_sitter_python as tspython
-from models.nodes import Node
-from services.cpg_parser.ts_parser.node_processor import NodeProcessor
-from services.cpg_parser.types import ParserResult
 
 from models.base import NodeID
 from models.edges.base import RelationshipBase
-
+from models.nodes import Node
+from services.cpg_parser.ts_parser.node_processor import NodeProcessor
+from services.cpg_parser.types import ParserResult
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +23,7 @@ class CPGFileBuilder(BaseModel):
 
     path: Path
     prebound_symbols: dict[str, NodeID] = Field(default_factory=dict)
-    __parser: Parser = PrivateAttr(
-        default_factory=lambda: Parser(Language(tspython.language()))
-    )
+    __parser: Parser = PrivateAttr(default_factory=lambda: Parser(Language(tspython.language())))
     __tree: Tree = PrivateAttr()
     __source: bytes = PrivateAttr()
     __source_text: str = PrivateAttr()
@@ -102,9 +99,7 @@ class CPGDirectoryBuilder(BaseModel):
 
         python_files = self._collect_python_files()
 
-        module_by_file = {
-            path: self._module_name_for_path(path) for path in python_files
-        }
+        module_by_file = {path: self._module_name_for_path(path) for path in python_files}
 
         symbol_index: dict[str, dict[str, NodeID]] = {}
         if self.link_imports:
@@ -149,11 +144,7 @@ class CPGDirectoryBuilder(BaseModel):
 
     def _module_name_for_path(self, file_path: Path) -> str:
         rel = file_path.relative_to(self.root)
-        if rel.name == "__init__.py":
-            rel = rel.parent
-        else:
-            rel = rel.with_suffix("")
-
+        rel = rel.parent if rel.name == "__init__.py" else rel.with_suffix("")
         parts = list(rel.parts)
         return ".".join(parts)
 
@@ -205,32 +196,24 @@ class CPGDirectoryBuilder(BaseModel):
             exported = self._parse_exported_names(file_path=file_path)
 
             try:
-                nodes, _edges = CPGFileBuilder(
-                    path=file_path, prebound_symbols={}
-                ).build()
+                nodes, _edges = CPGFileBuilder(path=file_path, prebound_symbols={}).build()
             except Exception:
                 if self.on_error == "raise":
                     raise
-                logger.exception(
-                    "Failed to parse Python file (symbol index): %s", file_path
-                )
+                logger.exception("Failed to parse Python file (symbol index): %s", file_path)
                 continue
 
             module_symbols: dict[str, NodeID] = {}
 
-            for name in exported.functions.keys():
+            for name in exported.functions:
                 for node_id, node in nodes.items():
-                    if getattr(node, "name", None) == name and str(node_id).startswith(
-                        "function:"
-                    ):
+                    if getattr(node, "name", None) == name and str(node_id).startswith("function:"):
                         module_symbols[name] = node_id
                         break
 
-            for name in exported.classes.keys():
+            for name in exported.classes:
                 for node_id, node in nodes.items():
-                    if getattr(node, "name", None) == name and str(node_id).startswith(
-                        "class:"
-                    ):
+                    if getattr(node, "name", None) == name and str(node_id).startswith("class:"):
                         module_symbols[name] = node_id
                         break
 
@@ -305,9 +288,7 @@ class CPGDirectoryBuilder(BaseModel):
         if level < 0:
             return None
 
-        current_package = (
-            current_module.rsplit(".", 1)[0] if "." in current_module else ""
-        )
+        current_package = current_module.rsplit(".", 1)[0] if "." in current_module else ""
 
         # level=0 => absolute import
         if level == 0:
@@ -338,9 +319,7 @@ class CPGDirectoryBuilder(BaseModel):
             for dirpath, dirnames, filenames in os.walk(
                 self.root, followlinks=self.follow_symlinks
             ):
-                dirnames[:] = [
-                    name for name in dirnames if name not in self.exclude_dir_names
-                ]
+                dirnames[:] = [name for name in dirnames if name not in self.exclude_dir_names]
                 for filename in filenames:
                     if not filename.endswith(".py"):
                         continue

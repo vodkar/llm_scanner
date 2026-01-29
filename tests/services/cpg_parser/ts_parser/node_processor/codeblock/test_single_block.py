@@ -2,6 +2,7 @@ from models.base import NodeID
 from models.nodes.code import CodeBlockNode
 from services.cpg_parser.ts_parser.cpg_builder import CPGFileBuilder
 from tests.utils import symbol_byte_index
+
 from .consts import TEST_SINGLE_BLOCK_FILE
 
 

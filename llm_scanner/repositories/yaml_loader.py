@@ -5,10 +5,11 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 import yaml
-from repositories._serialization import flatten_node_rows
+
 from models.base import NodeID
 from models.edges import RelationshipBase
 from models.nodes import Node
+from repositories._serialization import flatten_node_rows
 
 logger = logging.getLogger(__name__)
 
