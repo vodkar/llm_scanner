@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Generator, Iterable
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any, LiteralString
 
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver, GraphDatabase, ManagedTransaction
 from pydantic import BaseModel
 
 
@@ -31,11 +31,14 @@ class Neo4jClient:
 
     def run_read(
         self, query: LiteralString, params: dict[str, Any] | None = None
-    ) -> Iterable[dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         with self._driver.session() as session:
-            result = session.execute_read(lambda tx: tx.run(query, **(params or {})))
-            for rec in result:
-                yield rec.data()
+
+            def _read(tx: ManagedTransaction) -> list[dict[str, Any]]:
+                result = tx.run(query, **(params or {}))
+                return [rec.data() for rec in result]
+
+            return session.execute_read(_read)
 
 
 @contextmanager

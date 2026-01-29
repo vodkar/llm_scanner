@@ -15,6 +15,12 @@ services:
     ports:
       - "7474:7474" # HTTP
       - "7687:7687" # Bolt
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:7474/ > /dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
