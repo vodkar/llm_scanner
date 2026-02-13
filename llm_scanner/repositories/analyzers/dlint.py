@@ -28,7 +28,7 @@ class DlintFindingsRepository(IFindingsRepository):
         rows: list[dict[str, object]] = [
             {
                 "id": str(finding.identifier),
-                "file": self._normalize_file_path(finding.file),
+                "file": str(finding.file),
                 "line_number": finding.line_number,
                 "issue_id": finding.issue_id,
             }

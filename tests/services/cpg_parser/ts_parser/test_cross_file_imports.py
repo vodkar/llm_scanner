@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from models.base import NodeID
 from models.edges.call_graph import CallGraphCalledBy
 from models.edges.data_flow import (
@@ -15,6 +17,8 @@ def test_cpg_directory_builder__links_imported_function_constant_and_class() -> 
 
     provider_file = IMPORT_LINK_PROJECT_ROOT / "provider.py"
     consumer_file = IMPORT_LINK_PROJECT_ROOT / "consumer.py"
+    provider_rel: Path = provider_file.relative_to(IMPORT_LINK_PROJECT_ROOT)
+    consumer_rel: Path = consumer_file.relative_to(IMPORT_LINK_PROJECT_ROOT)
 
     nodes, edges = CPGDirectoryBuilder(root=IMPORT_LINK_PROJECT_ROOT, link_imports=True).build()
 
@@ -30,26 +34,26 @@ def test_cpg_directory_builder__links_imported_function_constant_and_class() -> 
     exported_function_id = NodeID.create(
         "function",
         "exported_function",
-        str(provider_file),
+        str(provider_rel),
         provider_idx(b"def exported_function"),
     )
     exported_const_id = NodeID.create(
         "variable",
         "EXPORTED_CONST",
-        str(provider_file),
+        str(provider_rel),
         provider_idx(b"EXPORTED_CONST ="),
     )
     exported_class_id = NodeID.create(
         "class",
         "ExportedClass",
-        str(provider_file),
+        str(provider_rel),
         provider_idx(b"class ExportedClass"),
     )
 
     const_copy_id = NodeID.create(
         "variable",
         "const_copy",
-        str(consumer_file),
+        str(consumer_rel),
         consumer_idx(b"const_copy ="),
     )
 
@@ -57,7 +61,7 @@ def test_cpg_directory_builder__links_imported_function_constant_and_class() -> 
     function_call_id = NodeID.create(
         "call",
         "exported_function(EXPORTED_CONST)",
-        str(consumer_file),
+        str(consumer_rel),
         function_call_sb,
     )
 
@@ -65,7 +69,7 @@ def test_cpg_directory_builder__links_imported_function_constant_and_class() -> 
     class_call_id = NodeID.create(
         "call",
         "ExportedClass()",
-        str(consumer_file),
+        str(consumer_rel),
         class_call_sb,
     )
 

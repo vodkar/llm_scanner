@@ -22,6 +22,7 @@ class CPGFileBuilder(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     path: Path
+    root: Path | None = None
     prebound_symbols: dict[str, NodeID] = Field(default_factory=dict)
     __parser: Parser = PrivateAttr(default_factory=lambda: Parser(Language(tspython.language())))
     __tree: Tree = PrivateAttr()
@@ -29,20 +30,47 @@ class CPGFileBuilder(BaseModel):
     __source_text: str = PrivateAttr()
     __lines: list[str] = PrivateAttr()
     __processor: NodeProcessor = PrivateAttr()
+    __display_path: Path = PrivateAttr()
 
     def model_post_init(self, context: Any) -> None:
-        self.__source = self.path.read_bytes()
+        absolute_path: Path = self.path.resolve()
+        self.__display_path = self._display_path_for(self.path, absolute_path)
+        self.__source = absolute_path.read_bytes()
         self.__source_text = self.__source.decode("utf-8")
         self.__tree = self.__parser.parse(self.__source)
         self.__lines = self.__source_text.splitlines()
         self.__processor = NodeProcessor(
-            path=self.path,
+            path=self.__display_path,
             source=self.__source,
             source_text=self.__source_text,
             lines=self.__lines,
             prebound_symbols=self.prebound_symbols,
         )
         return super().model_post_init(context)
+
+    def _display_path_for(self, raw_path: Path, absolute_path: Path) -> Path:
+        """Normalize file paths relative to the project root.
+
+        Args:
+            raw_path: Original path provided to the builder.
+            absolute_path: Absolute file system path for the source file.
+
+        Returns:
+            Path to store in nodes and identifiers.
+        """
+
+        if self.root is None:
+            if not raw_path.is_absolute():
+                return Path(raw_path.as_posix())
+            return absolute_path
+
+        root_path: Path = self.root.resolve()
+        try:
+            relative_path: Path = absolute_path.relative_to(root_path)
+            return Path(relative_path.as_posix())
+        except ValueError:
+            rel_str: str = os.path.relpath(absolute_path.as_posix(), root_path.as_posix())
+            return Path(rel_str)
 
     def build(self) -> ParserResult:
         """Build a CPG representation from the file."""
@@ -122,6 +150,7 @@ class CPGDirectoryBuilder(BaseModel):
                     )
                 nodes, edges = CPGFileBuilder(
                     path=file_path,
+                    root=self.root,
                     prebound_symbols=prebound,
                 ).build()
             except Exception:
@@ -196,7 +225,11 @@ class CPGDirectoryBuilder(BaseModel):
             exported = self._parse_exported_names(file_path=file_path)
 
             try:
-                nodes, _edges = CPGFileBuilder(path=file_path, prebound_symbols={}).build()
+                nodes, _edges = CPGFileBuilder(
+                    path=file_path,
+                    root=self.root,
+                    prebound_symbols={},
+                ).build()
             except Exception:
                 if self.on_error == "raise":
                     raise

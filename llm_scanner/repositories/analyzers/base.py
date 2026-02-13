@@ -51,28 +51,6 @@ class IFindingsRepository(Neo4jRepository, ABC):
         query = finding_relationship_query("REPORTS")
         self.client.run_write(query, {"rows": rows})
 
-    def _normalize_file_path(self, file_path: Path) -> str:
-        """Normalize file paths to a stable, relative POSIX string.
-
-        Args:
-            file_path: Input file path to normalize.
-
-        Returns:
-            Relative path string suitable for persistence.
-        """
-
-        if not file_path.is_absolute():
-            return file_path.as_posix().lstrip("./")
-
-        cwd: Path = Path.cwd().resolve()
-        absolute_path: Path = file_path.resolve()
-        try:
-            relative_path: Path = absolute_path.relative_to(cwd)
-        except ValueError:
-            return absolute_path.as_posix().lstrip("/")
-
-        return relative_path.as_posix()
-
     def _iter_findings_for_project(self, project_root: Path) -> list[dict[str, Any]]:
         """Return all findings rows that belong to a project directory.
 

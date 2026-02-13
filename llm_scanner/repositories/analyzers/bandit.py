@@ -28,7 +28,7 @@ class BanditFindingsRepository(IFindingsRepository):
         rows: list[dict[str, object]] = [
             {
                 "id": str(finding.identifier),
-                "file": self._normalize_file_path(finding.file),
+                "file": str(finding.file),
                 "line_number": finding.line_number,
                 "cwe_id": finding.cwe_id,
                 "severity": str(finding.severity),
