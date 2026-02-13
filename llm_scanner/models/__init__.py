@@ -1,3 +1,4 @@
+from .context import CodeContextNode, ContextAssembly, FindingContext
 from .nodes import (
     CallNode,
     ClassNode,
@@ -18,6 +19,9 @@ from .nodes import (
 )
 
 __all__ = [
+    "CodeContextNode",
+    "ContextAssembly",
+    "FindingContext",
     "CallNode",
     "ClassNode",
     "CodeBlockNode",

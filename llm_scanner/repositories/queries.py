@@ -73,6 +73,23 @@ FINDING_RELATIONSHIP_QUERIES: Final[dict[str, LiteralString]] = {
     ),
 }
 
+FINDING_REPORTED_CODE_QUERY: Final[LiteralString] = (
+    "UNWIND $finding_ids AS fid "
+    "MATCH (f:Finding {id: fid})-[:REPORTS]->(c:Code) "
+    "RETURN fid AS finding_id, c.id AS code_id, c.file_path AS file_path, "
+    "c.line_start AS line_start, c.line_end AS line_end, c.name AS name, "
+    "c.node_kind AS node_kind"
+)
+
+CODE_BFS_NODES_QUERY: Final[LiteralString] = (
+    "MATCH p=(start:Code {id: $start_id})-[*0..]-(n:Code) "
+    "WHERE length(p) <= $max_depth "
+    "WITH n, min(length(p)) AS depth "
+    "RETURN n.id AS id, n.file_path AS file_path, n.line_start AS line_start, "
+    "n.line_end AS line_end, n.name AS name, n.node_kind AS node_kind, depth "
+    "ORDER BY depth, n.file_path, n.line_start"
+)
+
 FINDINGS_BY_PROJECT_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
     "BanditFinding": (
         "MATCH (f:Finding:BanditFinding) "
@@ -238,3 +255,23 @@ def findings_by_label_query(finding_label: str) -> LiteralString:
     """
 
     return FINDINGS_BY_LABEL_QUERY_BY_LABEL[finding_label]
+
+
+def finding_reported_code_query() -> LiteralString:
+    """Return a literal query for findings with reported code nodes.
+
+    Returns:
+        Literal query used to fetch reported code nodes.
+    """
+
+    return FINDING_REPORTED_CODE_QUERY
+
+
+def code_bfs_nodes_query() -> LiteralString:
+    """Return a literal query for BFS traversal over code nodes.
+
+    Returns:
+        Literal query used to fetch code nodes within a depth limit.
+    """
+
+    return CODE_BFS_NODES_QUERY

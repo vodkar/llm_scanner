@@ -31,3 +31,8 @@ repos:
         entry: uv run pytest tests/
         language: system
         pass_filenames: false
+      - id: pytest-coverage
+        name: pytest coverage (uv)
+        entry: uv run pytest tests/ --cov=llm_scanner --cov-report=term-missing --cov-fail-under=80
+        language: system
+        pass_filenames: false
