@@ -1,13 +1,20 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any
 
 from models.edges.analysis import StaticAnalysisReports
 from models.nodes.finding import FindingNode
 from repositories.base import Neo4jRepository
-from repositories.queries import finding_relationship_query
+from repositories.queries import finding_relationship_query, findings_by_label_query
 
 
 class IFindingsRepository(Neo4jRepository, ABC):
     """Abstract base repository for security findings."""
+
+    @property
+    @abstractmethod
+    def finding_label(self) -> str:
+        """Return the Neo4j label for the finding node."""
 
     @abstractmethod
     def insert_nodes(self, findings_nodes: list[FindingNode]) -> None:
@@ -43,3 +50,55 @@ class IFindingsRepository(Neo4jRepository, ABC):
 
         query = finding_relationship_query("REPORTS")
         self.client.run_write(query, {"rows": rows})
+
+    def _normalize_file_path(self, file_path: Path) -> str:
+        """Normalize file paths to a stable, relative POSIX string.
+
+        Args:
+            file_path: Input file path to normalize.
+
+        Returns:
+            Relative path string suitable for persistence.
+        """
+
+        if not file_path.is_absolute():
+            return file_path.as_posix().lstrip("./")
+
+        cwd: Path = Path.cwd().resolve()
+        absolute_path: Path = file_path.resolve()
+        try:
+            relative_path: Path = absolute_path.relative_to(cwd)
+        except ValueError:
+            return absolute_path.as_posix().lstrip("/")
+
+        return relative_path.as_posix()
+
+    def _iter_findings_for_project(self, project_root: Path) -> list[dict[str, Any]]:
+        """Return all findings rows that belong to a project directory.
+
+        Args:
+            project_root: Root directory of the project.
+
+        Returns:
+            Raw finding rows whose file paths fall under the provided root.
+
+        Raises:
+            ValueError: When project_root is not provided.
+        """
+
+        if not project_root:
+            raise ValueError("project_root must be provided")
+
+        root_str = project_root.as_posix().lstrip("./")
+        root_parts: list[str] = [part for part in root_str.split("/") if part]
+
+        query = findings_by_label_query(self.finding_label)
+        rows: list[dict[str, Any]] = self.client.run_read(query)
+        filtered_rows: list[dict[str, Any]] = []
+        for row in rows:
+            file_str: str = str(row["file"]).lstrip("./")
+            file_parts: list[str] = [part for part in file_str.split("/") if part]
+            if file_parts[: len(root_parts)] == root_parts:
+                filtered_rows.append(row)
+
+        return filtered_rows

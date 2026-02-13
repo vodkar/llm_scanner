@@ -7,7 +7,7 @@ from models.bandit_report import IssueSeverity
 
 
 class FindingNode(BaseModel):
-    identifier: UUID = Field(default=uuid4())
+    identifier: UUID = Field(default_factory=uuid4)
     file: Path
     line_number: int
 

@@ -3,7 +3,7 @@ from collections import defaultdict
 from functools import cached_property
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from clients.analyzers.base import IStaticAnalyzer
 from models.edges.analysis import StaticAnalysisReports
@@ -13,6 +13,8 @@ from repositories.graph import GraphRepository
 
 
 class BaseAnalyzerService(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     target: Path
     graph_repository: GraphRepository
     findings_repository: IFindingsRepository

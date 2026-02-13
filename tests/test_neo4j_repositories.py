@@ -157,3 +157,70 @@ def test_dlint_findings_repository_inserts_nodes_and_reports(
     )
     assert len(edge_rows) == 1
     assert edge_rows[0]["rel_count"] == 1
+
+
+def test_bandit_findings_repository_iterates_project_findings(
+    neo4j_client: Neo4jClient,
+) -> None:
+    """Verify BanditFindingsRepository returns project-scoped findings."""
+
+    repo: BanditFindingsRepository = BanditFindingsRepository(client=neo4j_client)
+    project_root: Path = Path("src")
+    project_file: Path = project_root / "app.py"
+    outside_file: Path = Path("external") / "app.py"
+
+    findings: list[BanditFindingNode] = [
+        BanditFindingNode(
+            file=project_file,
+            line_number=10,
+            cwe_id=79,
+            severity=IssueSeverity.HIGH,
+        ),
+        BanditFindingNode(
+            file=outside_file,
+            line_number=5,
+            cwe_id=22,
+            severity=IssueSeverity.LOW,
+        ),
+    ]
+
+    repo.insert_nodes(findings)
+
+    project_findings: list[BanditFindingNode] = repo.iter_findings_for_project(project_root)
+
+    assert len(project_findings) == 1
+    assert project_findings[0].file == project_file
+    assert project_findings[0].cwe_id == 79
+    assert project_findings[0].severity == IssueSeverity.HIGH
+
+
+def test_dlint_findings_repository_iterates_project_findings(
+    neo4j_client: Neo4jClient,
+) -> None:
+    """Verify DlintFindingsRepository returns project-scoped findings."""
+
+    repo: DlintFindingsRepository = DlintFindingsRepository(client=neo4j_client)
+    project_root: Path = Path("src")
+    project_file: Path = project_root / "utils.py"
+    outside_file: Path = Path("vendor") / "utils.py"
+
+    findings: list[DlintFindingNode] = [
+        DlintFindingNode(
+            file=project_file,
+            line_number=12,
+            issue_id=501,
+        ),
+        DlintFindingNode(
+            file=outside_file,
+            line_number=1,
+            issue_id=401,
+        ),
+    ]
+
+    repo.insert_nodes(findings)
+
+    project_findings: list[DlintFindingNode] = repo.iter_findings_for_project(project_root)
+
+    assert len(project_findings) == 1
+    assert project_findings[0].file == project_file
+    assert project_findings[0].issue_id == 501

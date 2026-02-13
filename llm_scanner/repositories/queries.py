@@ -73,6 +73,38 @@ FINDING_RELATIONSHIP_QUERIES: Final[dict[str, LiteralString]] = {
     ),
 }
 
+FINDINGS_BY_PROJECT_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
+    "BanditFinding": (
+        "MATCH (f:Finding:BanditFinding) "
+        "WHERE f.file STARTS WITH $root OR f.file STARTS WITH $root_alt "
+        "RETURN f.id AS id, f.file AS file, f.line_number AS line_number, "
+        "f.cwe_id AS cwe_id, f.severity AS severity "
+        "ORDER BY f.file, f.line_number"
+    ),
+    "DlintFinding": (
+        "MATCH (f:Finding:DlintFinding) "
+        "WHERE f.file STARTS WITH $root OR f.file STARTS WITH $root_alt "
+        "RETURN f.id AS id, f.file AS file, f.line_number AS line_number, "
+        "f.issue_id AS issue_id "
+        "ORDER BY f.file, f.line_number"
+    ),
+}
+
+FINDINGS_BY_LABEL_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
+    "BanditFinding": (
+        "MATCH (f:Finding:BanditFinding) "
+        "RETURN f.id AS id, f.file AS file, f.line_number AS line_number, "
+        "f.cwe_id AS cwe_id, f.severity AS severity "
+        "ORDER BY f.file, f.line_number"
+    ),
+    "DlintFinding": (
+        "MATCH (f:Finding:DlintFinding) "
+        "RETURN f.id AS id, f.file AS file, f.line_number AS line_number, "
+        "f.issue_id AS issue_id "
+        "ORDER BY f.file, f.line_number"
+    ),
+}
+
 RELATIONSHIP_QUERY_BY_TYPE: Final[dict[str, LiteralString]] = {
     "CALLS": (
         "UNWIND $rows AS r "
@@ -166,7 +198,7 @@ def finding_node_query(finding_type: str) -> LiteralString:
         Literal query for the requested finding type.
     """
 
-    return FINDING_NODE_QUERIES.get(finding_type, FINDING_NODE_QUERIES["BanditFinding"])
+    return FINDING_NODE_QUERIES[finding_type]
 
 
 def finding_relationship_query(rel_type: str) -> LiteralString:
@@ -180,3 +212,29 @@ def finding_relationship_query(rel_type: str) -> LiteralString:
     """
 
     return FINDING_RELATIONSHIP_QUERIES.get(rel_type, FINDING_RELATIONSHIP_QUERIES["REPORTS"])
+
+
+def findings_by_project_query(finding_label: str) -> LiteralString:
+    """Return a literal query for project-scoped findings by label.
+
+    Args:
+        finding_label: Finding label to scope the query.
+
+    Returns:
+        Literal query used to fetch findings under a project root.
+    """
+
+    return FINDINGS_BY_PROJECT_QUERY_BY_LABEL[finding_label]
+
+
+def findings_by_label_query(finding_label: str) -> LiteralString:
+    """Return a literal query for findings by label.
+
+    Args:
+        finding_label: Finding label to scope the query.
+
+    Returns:
+        Literal query used to fetch findings for a label.
+    """
+
+    return FINDINGS_BY_LABEL_QUERY_BY_LABEL[finding_label]
