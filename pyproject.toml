@@ -79,3 +79,8 @@ fixable = ["ALL"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["llm_scanner"]
+
+[tool.coverage.run]
+omit = [
+  "llm_scanner/services/benchmark/*",
+]

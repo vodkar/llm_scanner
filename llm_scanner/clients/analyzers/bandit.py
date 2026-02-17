@@ -19,7 +19,8 @@ class BanditStaticAnalyzer(IStaticAnalyzer):
         issues: list[BanditIssue] = []
         for report in report_data["results"]:
             file = Path(report["filename"])
-            file.read_text()
+            if file.exists():
+                file.read_text(encoding="utf-8", errors="replace")
             issues.append(
                 BanditIssue(
                     cwe=report["issue_cwe"]["id"],
@@ -27,8 +28,8 @@ class BanditStaticAnalyzer(IStaticAnalyzer):
                     severity=IssueSeverity(report["issue_severity"]),
                     reason=report["issue_text"],
                     line_number=report["line_number"],
-                    column_number=report["column_number"],
-                    line_range=report["line_range"],
+                    column_number=report.get("column_number", 0),
+                    line_range=report.get("line_range", []),
                 )
             )
 

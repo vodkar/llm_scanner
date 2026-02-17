@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Final
 
 from clients.neo4j import Neo4jClient
+from context_assembler import ContextAssemblerService
 from models.bandit_report import IssueSeverity
 from models.base import NodeID
 from models.edges.analysis import StaticAnalysisReports
@@ -16,7 +17,6 @@ from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.context import ContextRepository
 from repositories.graph import GraphRepository
-from services.context_assembler import ContextAssemblerService
 from tests.consts import PROJECT_ROOT
 from tests.utils import symbol_byte_index
 

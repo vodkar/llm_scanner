@@ -36,7 +36,7 @@ class CPGFileBuilder(BaseModel):
         absolute_path: Path = self.path.resolve()
         self.__display_path = self._display_path_for(self.path, absolute_path)
         self.__source = absolute_path.read_bytes()
-        self.__source_text = self.__source.decode("utf-8")
+        self.__source_text = self.__source.decode("utf-8", errors="replace")
         self.__tree = self.__parser.parse(self.__source)
         self.__lines = self.__source_text.splitlines()
         self.__processor = NodeProcessor(

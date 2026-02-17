@@ -1,16 +1,21 @@
+import logging
 import os
 from abc import abstractmethod
 from collections import defaultdict
 from functools import cached_property
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
 from clients.analyzers.base import IStaticAnalyzer
+from models.base import StaticAnalyzerIssue
 from models.edges.analysis import StaticAnalysisReports
 from models.nodes.finding import FindingNode
 from repositories.analyzers.base import IFindingsRepository
 from repositories.graph import GraphRepository
+
+logger = logging.getLogger(__name__)
 
 
 class BaseAnalyzerService(BaseModel):
@@ -29,6 +34,18 @@ class BaseAnalyzerService(BaseModel):
     @abstractmethod
     def _static_analyzer(self) -> IStaticAnalyzer:
         pass
+
+    def _issue_payload(self, issue: StaticAnalyzerIssue) -> dict[str, Any]:
+        """Build finding payload for the given analyzer issue.
+
+        Args:
+            issue: Analyzer issue instance.
+
+        Returns:
+            Payload for the finding node.
+        """
+
+        return issue.model_dump()
 
     def _normalize_issue_path(self, file_path: Path) -> Path:
         """Normalize issue paths relative to the scan target.
@@ -65,14 +82,22 @@ class BaseAnalyzerService(BaseModel):
         edges: list[StaticAnalysisReports] = []
         for issue in report.issues:
             normalized_path = self._normalize_issue_path(issue.file)
-            payload = issue.model_dump()
+            payload = self._issue_payload(issue)
             payload["file"] = normalized_path
             finding = self._finding_node_type(**payload)
             findings.append(finding)
+            file_nodes = nodes.get(finding.file)
+            if not file_nodes or finding.line_number not in file_nodes:
+                logger.debug(
+                    "No code node match for finding at %s:%s",
+                    finding.file,
+                    finding.line_number,
+                )
+                continue
             edges.append(
                 StaticAnalysisReports(
                     src=str(finding.identifier),
-                    dst=nodes[finding.file][finding.line_number].identifier,
+                    dst=file_nodes[finding.line_number].identifier,
                 )
             )
 

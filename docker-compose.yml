@@ -6,10 +6,7 @@ services:
     restart: unless-stopped
     environment:
       - NEO4J_AUTH=neo4j/test
-      - NEO4J_server_memory_pagecache_size=512M
-      - NEO4J_server_memory_heap_initial__size=512M
-      - NEO4J_server_memory_heap_max__size=512M
-      - NEO4JLABS_PLUGINS=["apoc"]
+      - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_auth__enabled=true
       - NEO4J_dbms_security_auth__minimum__password__length=2
     ports:
@@ -22,6 +19,7 @@ services:
       retries: 20
       start_period: 10s
     volumes:
+      - ./neo4j.conf:/conf/neo4j.conf:ro
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_import:/var/lib/neo4j/import

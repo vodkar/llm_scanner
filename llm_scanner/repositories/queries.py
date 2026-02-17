@@ -90,6 +90,17 @@ CODE_BFS_NODES_QUERY: Final[LiteralString] = (
     "ORDER BY depth, n.file_path, n.line_start"
 )
 
+CODE_NODES_BY_FILE_LINE_QUERY: Final[LiteralString] = (
+    "UNWIND $rows AS r "
+    "MATCH (c:Code) "
+    "WHERE c.file_path = r.file_path "
+    "AND r.line_number >= c.line_start "
+    "AND r.line_number <= c.line_end "
+    "RETURN r.file_path AS file_path, r.line_number AS line_number, "
+    "c.id AS id, c.file_path AS node_file_path, c.line_start AS line_start, "
+    "c.line_end AS line_end, c.node_kind AS node_kind"
+)
+
 FINDINGS_BY_PROJECT_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
     "BanditFinding": (
         "MATCH (f:Finding:BanditFinding) "
@@ -275,3 +286,13 @@ def code_bfs_nodes_query() -> LiteralString:
     """
 
     return CODE_BFS_NODES_QUERY
+
+
+def code_nodes_by_file_line_query() -> LiteralString:
+    """Return a literal query for code nodes by file and line.
+
+    Returns:
+        Literal query used to find code nodes containing a line.
+    """
+
+    return CODE_NODES_BY_FILE_LINE_QUERY

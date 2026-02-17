@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from collections import defaultdict
 from collections.abc import Iterator
@@ -48,6 +49,25 @@ class NodeProcessor(BaseModel):
     __all_functions: dict[str, list[NodeID]] = PrivateAttr(
         default_factory=lambda: defaultdict(list[NodeID])
     )
+    __max_node_name_len: int = PrivateAttr(default=256)
+
+    def __compact_node_name(self, name: str) -> str:
+        """Clamp node names to a safe length for Neo4j indexes.
+
+        Args:
+            name: Raw name used in NodeID creation.
+
+        Returns:
+            Possibly truncated name with a hash suffix for uniqueness.
+        """
+
+        normalized = self.__normalize_name(name)
+        if len(normalized) <= self.__max_node_name_len:
+            return normalized
+
+        digest = hashlib.sha1(normalized.encode("utf-8", errors="ignore")).hexdigest()
+        head_len = max(0, self.__max_node_name_len - 10)
+        return f"{normalized[:head_len]}-{digest[:8]}"
 
     def model_post_init(self, __context: object) -> None:
         for name, node_id in self.prebound_symbols.items():
@@ -151,7 +171,7 @@ class NodeProcessor(BaseModel):
         """Extract the source code snippet for a given Tree-sitter node."""
         start_byte = node.start_byte
         end_byte = node.end_byte
-        return self.source[start_byte:end_byte].decode("utf-8")
+        return self.source[start_byte:end_byte].decode("utf-8", errors="replace")
 
     def __is_top_level_statement(self, node: TSNode) -> bool:
         if not node.parent or node.parent.type != "module":
@@ -200,7 +220,7 @@ class NodeProcessor(BaseModel):
         last_node: TSNode = nodes[-1]
         start_line: int = first_node.start_point[0]
         end_line: int = last_node.end_point[0]
-        block_name: str = self.__top_level_block_name(nodes)
+        block_name: str = self.__compact_node_name(self.__top_level_block_name(nodes))
         node_id: NodeID = NodeID.create(
             "code_block",
             block_name,
@@ -292,14 +312,14 @@ class NodeProcessor(BaseModel):
     def __create_call_node(
         self, *, call_node: TSNode, caller_id: NodeID, callee_id: NodeID
     ) -> CallNode:
-        snippet: str = self.__normalize_name(self.__get_snippet(call_node))
+        snippet: str = self.__compact_node_name(self.__get_snippet(call_node))
         function_node = call_node.child_by_field_name("function")
 
         # For method calls, use only the method name in the call ID
         if function_node and function_node.type == "attribute":
             attribute_node = function_node.child_by_field_name("attribute")
             if attribute_node:
-                method_name = self.__normalize_name(self.__get_snippet(attribute_node))
+                method_name = self.__compact_node_name(self.__get_snippet(attribute_node))
                 # Create call ID using the call node's start byte
                 call_id: NodeID = NodeID.create(
                     "call",
@@ -387,7 +407,7 @@ class NodeProcessor(BaseModel):
                 if target_id is None:
                     self.__warn_unresolved_call(atom)
                     continue
-                nested_snippet: str = self.__normalize_name(self.__get_snippet(atom))
+                nested_snippet: str = self.__compact_node_name(self.__get_snippet(atom))
                 source_id = NodeID.create(
                     "call",
                     nested_snippet,
@@ -454,7 +474,7 @@ class NodeProcessor(BaseModel):
     ) -> VariableNode:
         """Create a VariableNode for a definition or reference."""
 
-        normalized_name = self.__normalize_name(name)
+        normalized_name = self.__compact_node_name(name)
         node_id = NodeID.create(kind, normalized_name, str(self.path), node.start_byte)
         variable_node = VariableNode(
             identifier=node_id,
@@ -479,7 +499,7 @@ class NodeProcessor(BaseModel):
         like `b = a + 1` resolve to the same `a` node that was created by `a = ...`.
         """
 
-        normalized = self.__normalize_name(name)
+        normalized = self.__compact_node_name(name)
         existing = self.__scope_stack[-1].get(normalized)
         if existing:
             return existing, None
@@ -495,7 +515,8 @@ class NodeProcessor(BaseModel):
 
     def __get_node_id(self, type_: NodeType, module_name: str, node: TSNode) -> NodeID:
         """Generate a unique identifier for the node based on its position."""
-        return NodeID.create(type_, module_name, str(self.path), node.start_byte)
+        compact_name = self.__compact_node_name(module_name)
+        return NodeID.create(type_, compact_name, str(self.path), node.start_byte)
 
     def process(self, node: TSNode, block_level: int = 0) -> ParserResult:
         """Process a tree-sitter node and its children."""

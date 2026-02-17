@@ -12,7 +12,7 @@ class ContextRepository(BaseModel):
     client: Neo4jClient
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def fetch_reported_code_nodes(self, finding_ids: list[str]) -> list[dict[str, object]]:
+    def fetch_reported_code_nodes(self, finding_ids: list[str]) -> list[dict[str, Any]]:
         """Return code nodes reported by the provided findings.
 
         Args:

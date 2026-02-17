@@ -8,11 +8,12 @@ from typing import Final
 from clients.neo4j import Neo4jClient
 from models.base import NodeID
 from models.edges import RelationshipBase
-from models.nodes import Node
+from models.nodes import CodeBlockNode, Node
 from repositories._serialization import graph_node_rows
 from repositories.queries import (
     NODE_QUERY_BY_LABEL,
     RELATIONSHIP_QUERY_BY_TYPE,
+    code_nodes_by_file_line_query,
     is_supported_relationship_type,
 )
 
@@ -133,4 +134,70 @@ class GraphRepository(Neo4jClient):
     def get_nodes_by_file_and_line_numbers(
         self, file_line_numbers: dict[Path, list[int]]
     ) -> dict[Path, dict[int, Node]]:
-        return {}
+        """Fetch code nodes that contain specific line numbers in files.
+
+        Args:
+            file_line_numbers: Mapping of file paths to line numbers.
+
+        Returns:
+            Mapping of file paths to line-number-keyed nodes.
+        """
+
+        rows: list[dict[str, object]] = []
+        for file_path, line_numbers in file_line_numbers.items():
+            if not line_numbers:
+                continue
+            normalized_path = Path(file_path.as_posix())
+            for line_number in sorted(set(line_numbers)):
+                rows.append(
+                    {
+                        "file_path": str(normalized_path),
+                        "line_number": int(line_number),
+                    }
+                )
+
+        if not rows:
+            return {}
+
+        query = code_nodes_by_file_line_query()
+        result_rows = self.client.run_read(query, {"rows": rows})
+
+        def _coerce_int(value: object | None) -> int:
+            if value is None:
+                return 0
+            try:
+                return int(str(value))
+            except (TypeError, ValueError):
+                return 0
+
+        candidates: dict[tuple[str, int], list[dict[str, object]]] = defaultdict(list)
+        for row in result_rows:
+            file = str(row.get("file_path", ""))
+            line_number = int(row.get("line_number", 0) or 0)
+            if not file or line_number <= 0:
+                continue
+            candidates[(file, line_number)].append(row)
+
+        resolved: dict[Path, dict[int, Node]] = defaultdict(dict)
+        for (file, line_number), options in candidates.items():
+            sorted_options = sorted(
+                options,
+                key=lambda opt: (
+                    _coerce_int(opt.get("line_end")) - _coerce_int(opt.get("line_start")),
+                    str(opt.get("node_kind", "")),
+                ),
+            )
+            chosen = sorted_options[0]
+            line_start = _coerce_int(chosen.get("line_start"))
+            line_end = _coerce_int(chosen.get("line_end"))
+            if line_start <= 0 or line_end <= 0:
+                continue
+            node = CodeBlockNode(
+                identifier=NodeID(str(chosen.get("id"))),
+                file_path=Path(str(chosen.get("node_file_path", file))),
+                line_start=line_start,
+                line_end=line_end,
+            )
+            resolved[Path(file)][line_number] = node
+
+        return resolved

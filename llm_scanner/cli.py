@@ -18,9 +18,9 @@ from models.base import NodeID
 from models.edges import RelationshipBase
 from models.nodes import Node
 from pipeline import GeneralPipeline
-from repositories.dot_loader import DotLoader
 from repositories.graph import GraphRepository
 from repositories.yaml_loader import YamlLoader
+from services.analyzer.cvefixes_benchmark import CVEFixesBenchmarkService
 from services.cpg_parser.ts_parser.cpg_builder import (
     CPGDirectoryBuilder,
     CPGFileBuilder,
@@ -31,6 +31,7 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help="Unified CLI for generating and loading code property graphs.",
+    pretty_exceptions_enable=False,
 )
 
 ROOT_DIR: Final[Path] = Path(__file__).resolve().parents[2]
@@ -38,6 +39,8 @@ DEFAULT_TESTS_DIR: Final[Path] = ROOT_DIR / "tests"
 DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
 DEFAULT_DOT_FILE: Final[Path] = ROOT_DIR / "graph.dot"
+DEFAULT_BENCHMARK_DIR: Final[Path] = ROOT_DIR / "data"
+DEFAULT_REPO_CACHE_DIR: Final[Path] = DEFAULT_BENCHMARK_DIR / "cvefixes_repos"
 
 
 @app.command("load-sample")
@@ -222,59 +225,101 @@ def run_pipeline(
     typer.secho(f"Pipeline completed for {src}", fg=typer.colors.GREEN)
 
 
-@app.command("visualize")
-def visualize(
-    src: Annotated[
+@app.command("build-cvefixes-benchmark")
+def build_cvefixes_benchmark(
+    db_path: Annotated[
         Path,
         typer.Argument(
-            help="Path to a Python file or a project directory to visualize.",
+            help="Path to the CVEFixes SQLite database.",
             exists=True,
             file_okay=True,
-            dir_okay=True,
+            dir_okay=False,
             readable=True,
             resolve_path=True,
         ),
     ],
-    output_path: Annotated[
+    sample_count: Annotated[
+        int,
+        typer.Option("-n", "--samples", help="Number of samples to generate."),
+    ] = 50,
+    output_dir: Annotated[
         Path,
         typer.Option(
-            "--output",
-            "-o",
-            help="Path to write the DOT graph (must end with .dot).",
-            file_okay=True,
-            dir_okay=False,
+            "--output-dir",
+            help="Directory to write benchmark JSON files.",
+            file_okay=False,
+            dir_okay=True,
             writable=True,
             resolve_path=True,
         ),
-    ] = DEFAULT_DOT_FILE,
+    ] = DEFAULT_BENCHMARK_DIR,
+    repo_cache_dir: Annotated[
+        Path,
+        typer.Option(
+            "--repo-cache-dir",
+            help="Directory to cache cloned repositories.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_REPO_CACHE_DIR,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Random seed for sampling."),
+    ] = None,
+    max_call_depth: Annotated[
+        int,
+        typer.Option("--max-call-depth", help="Max call depth for context expansion."),
+    ] = 3,
+    token_budget: Annotated[
+        int,
+        typer.Option("--token-budget", help="Token budget for context assembly."),
+    ] = 2048,
+    neo4j_uri: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-uri",
+            help="Neo4j bolt URI.",
+            envvar="NEO4J_URI",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().uri,
+    neo4j_user: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-user",
+            help="Neo4j username.",
+            envvar="NEO4J_USER",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().user,
+    neo4j_password: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-password",
+            help="Neo4j password.",
+            envvar="NEO4J_PASSWORD",
+            show_default=False,
+        ),
+    ] = Neo4jConfig().password,
 ) -> None:
-    """Export a Graphviz DOT visualization of nodes and edges.
+    """Build the CVEFixes-with-context benchmark dataset."""
 
-    The output is a DOT file only (no rendering). The exported labels include
-    traceability information (node ids, file paths, line ranges, and edge
-    attributes) to quickly identify where each node/edge originates.
-
-    Args:
-        src: Python file or directory to parse.
-        output_path: Destination DOT file path.
-    """
-
-    if output_path.suffix.lower() != ".dot":
-        raise typer.BadParameter("--output must point to a .dot file")
-
-    resolved_src = src.resolve()
-
-    nodes: dict[NodeID, Node]
-    edges: list[RelationshipBase]
-    if resolved_src.is_file():
-        nodes, edges = CPGFileBuilder(path=resolved_src).build()
-    else:
-        nodes, edges = CPGDirectoryBuilder(root=resolved_src).build()
-
-    DotLoader(output_path).load(nodes, edges)
+    service = CVEFixesBenchmarkService(
+        db_path=db_path,
+        output_dir=output_dir,
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
+        max_call_depth=max_call_depth,
+        token_budget=token_budget,
+    )
+    main_path, unassociated_path = service.build()
 
     typer.secho(
-        f"Wrote DOT graph with {len(nodes)} nodes and {len(edges)} edges to {output_path}",
+        f"Wrote benchmark dataset to {main_path} and unassociated samples to {unassociated_path}",
         fg=typer.colors.GREEN,
     )
 
