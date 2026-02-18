@@ -1,0 +1,30 @@
+version: "3.9"
+services:
+  neo4j:
+    image: neo4j:5
+    restart: unless-stopped
+    environment:
+      - NEO4J_AUTH=neo4j/test
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_auth__enabled=true
+      - NEO4J_dbms_security_auth__minimum__password__length=2
+    ports:
+      - "17474:7474" # HTTP
+      - "17687:7687" # Bolt
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:7474/ > /dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - ./neo4j.conf:/conf/neo4j.conf:ro
+      - neo4j_test_data:/data
+      - neo4j_test_logs:/logs
+      - neo4j_test_import:/var/lib/neo4j/import
+      - neo4j_test_plugins:/plugins
+volumes:
+  neo4j_test_data: {}
+  neo4j_test_logs: {}
+  neo4j_test_import: {}
+  neo4j_test_plugins: {}

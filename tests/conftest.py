@@ -17,14 +17,15 @@ from tests.consts import PROJECT_ROOT, SRC_DIR
 
 LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
-NEO4J_BOLT_URI: Final[str] = "bolt://localhost:7687"
-NEO4J_HTTP_URL: Final[str] = "http://localhost:7474"
+NEO4J_BOLT_URI: Final[str] = "bolt://localhost:17687"
+NEO4J_HTTP_URL: Final[str] = "http://localhost:17474"
 NEO4J_PASSWORD: Final[str] = "test"
 NEO4J_USER: Final[str] = "neo4j"
 NEO4J_START_TIMEOUT_SECONDS: Final[float] = 60.0
 NEO4J_POLL_INTERVAL_SECONDS: Final[float] = 1.0
 
-DOCKER_COMPOSE_FILE: Final[Path] = PROJECT_ROOT / "docker-compose.yml"
+DOCKER_COMPOSE_FILE: Final[Path] = PROJECT_ROOT / "tests" / "docker-compose.test.yml"
+DOCKER_COMPOSE_PROJECT_NAME: Final[str] = "llm_scanner_test"
 LLM_SCANNER_SRC_DIR: Final[Path] = PROJECT_ROOT / "llm_scanner"
 CLEAR_DATABASE_QUERY: Final[LiteralString] = "MATCH (n) DETACH DELETE n"
 
@@ -47,7 +48,15 @@ def _run_docker_compose(args: list[str]) -> None:
         RuntimeError: If docker compose exits with a non-zero status.
     """
 
-    command: list[str] = ["docker", "compose", "-f", str(DOCKER_COMPOSE_FILE), *args]
+    command: list[str] = [
+        "docker",
+        "compose",
+        "-p",
+        DOCKER_COMPOSE_PROJECT_NAME,
+        "-f",
+        str(DOCKER_COMPOSE_FILE),
+        *args,
+    ]
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
