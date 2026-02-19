@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+from models.context import FindingContext
+
 
 class BenchmarkMetadata(BaseModel):
     """Top-level metadata for the benchmark dataset."""
@@ -48,4 +50,4 @@ class UnassociatedSample(BaseModel):
 
     entry: BenchmarkSampleMetadata
     reason: str = Field(..., description="Reason for missing association")
-    contexts: list[dict[str, str]] = []
+    contexts: list[FindingContext] = []

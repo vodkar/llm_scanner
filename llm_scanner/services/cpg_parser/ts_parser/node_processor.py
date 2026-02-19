@@ -305,9 +305,10 @@ class NodeProcessor(BaseModel):
         return None
 
     def __warn_unresolved_call(self, call_node: TSNode) -> None:
-        snippet: str = self.__normalize_name(self.__get_snippet(call_node))
-        line_number: int = call_node.start_point[0] + 1
-        logger.warning(f"Unresolved call target for '{snippet}' at {self.path}:{line_number}")
+        pass
+        # snippet: str = self.__normalize_name(self.__get_snippet(call_node))
+        # line_number: int = call_node.start_point[0] + 1
+        # logger.warning(f"Unresolved call target for '{snippet}' at {self.path}:{line_number}")
 
     def __create_call_node(
         self, *, call_node: TSNode, caller_id: NodeID, callee_id: NodeID

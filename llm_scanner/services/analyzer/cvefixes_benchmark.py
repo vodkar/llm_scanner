@@ -83,7 +83,20 @@ class CVEFixesBenchmarkService(BaseModel):
                 continue
 
             context = self._scan_repository(repo_path)
+            logger.info(
+                "Scanned repository for entry %s: found %d contexts",
+                entry.cve_id,
+                len(context.findings),
+            )
+
             associated, non_associated = self._split_associations(entry, context)
+
+            logger.info(
+                "Entry %s: found %d associated and %d non-associated contexts",
+                entry.cve_id,
+                len(associated),
+                len(non_associated),
+            )
 
             if associated:
                 chosen = self._choose_associated(entry, associated)
@@ -110,7 +123,7 @@ class CVEFixesBenchmarkService(BaseModel):
                     UnassociatedSample(
                         entry=self._entry_metadata(entry),
                         reason="no_file_line_match",
-                        contexts=[item.model_dump() for item in non_associated],
+                        contexts=non_associated,
                     )
                 )
                 continue
@@ -137,7 +150,7 @@ class CVEFixesBenchmarkService(BaseModel):
 
         self._write_json(main_path, dataset.model_dump(by_alias=True))
         self._write_json(
-            unassociated_path, [item.model_dump(by_alias=True) for item in unassociated]
+            unassociated_path, [item.model_dump(by_alias=True) for item in unassociated[:2]]
         )
 
         return main_path, unassociated_path
@@ -245,6 +258,4 @@ class CVEFixesBenchmarkService(BaseModel):
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, ensure_ascii=True)
-            handle.write("\n")
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str) + "\n")

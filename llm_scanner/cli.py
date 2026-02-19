@@ -1,5 +1,6 @@
 # flake8: noqa E402
 
+import logging
 import sys
 from pathlib import Path
 from typing import Annotated, Final
@@ -34,13 +35,45 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 
-ROOT_DIR: Final[Path] = Path(__file__).resolve().parents[2]
+ROOT_DIR: Final[Path] = Path(__file__).resolve().parents[1]
 DEFAULT_TESTS_DIR: Final[Path] = ROOT_DIR / "tests"
 DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
 DEFAULT_DOT_FILE: Final[Path] = ROOT_DIR / "graph.dot"
 DEFAULT_BENCHMARK_DIR: Final[Path] = ROOT_DIR / "data"
 DEFAULT_REPO_CACHE_DIR: Final[Path] = DEFAULT_BENCHMARK_DIR / "cvefixes_repos"
+
+
+def _configure_logging(log_level: str) -> None:
+    """Configure application logging.
+
+    Args:
+        log_level: Desired logging level.
+    """
+
+    level_name = log_level.upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+@app.callback()
+def main(
+    log_level: Annotated[
+        str,
+        typer.Option(
+            "--log-level",
+            help="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+            envvar="LOG_LEVEL",
+            show_default=True,
+        ),
+    ] = "INFO",
+) -> None:
+    """Initialize CLI-wide settings before executing a command."""
+
+    _configure_logging(log_level)
 
 
 @app.command("load-sample")

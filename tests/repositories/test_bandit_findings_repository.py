@@ -66,3 +66,35 @@ def test_bandit_findings_repository_iterates_project_findings(
     assert project_findings[0].file == project_file
     assert project_findings[0].cwe_id == 79
     assert project_findings[0].severity == IssueSeverity.HIGH
+
+
+def test_bandit_findings_repository_iterates_project_findings_with_absolute_root(
+    neo4j_client: Neo4jClient,
+    tmp_path: Path,
+) -> None:
+    """Verify absolute project root still returns findings stored with relative file paths."""
+
+    repo: BanditFindingsRepository = BanditFindingsRepository(client=neo4j_client)
+    project_root: Path = tmp_path / "repo"
+
+    findings: list[BanditFindingNode] = [
+        BanditFindingNode(
+            file=Path("src/app.py"),
+            line_number=10,
+            cwe_id=79,
+            severity=IssueSeverity.HIGH,
+        ),
+        BanditFindingNode(
+            file=Path("../outside.py"),
+            line_number=5,
+            cwe_id=22,
+            severity=IssueSeverity.LOW,
+        ),
+    ]
+
+    repo.insert_nodes(findings)
+
+    project_findings: list[BanditFindingNode] = repo.iter_findings_for_project(project_root)
+
+    assert len(project_findings) == 1
+    assert project_findings[0].file == Path("src/app.py")

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,8 @@ from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.context import ContextRepository
 
 TokenEstimator = Callable[[str], int]
+logger = logging.getLogger(__name__)
+LOGGING_INTERVAL = 200
 
 
 class ContextAssemblerService(BaseModel):
@@ -28,6 +32,7 @@ class ContextAssemblerService(BaseModel):
     context_repository: ContextRepository
     max_call_depth: int = 3
     token_budget: int = 2048
+    context_workers: int = 30
     token_estimator: TokenEstimator | None = None
 
     def assemble(self) -> ContextAssembly:
@@ -51,16 +56,23 @@ class ContextAssemblerService(BaseModel):
         for row in reported_rows:
             finding_to_nodes[str(row["finding_id"])].append(row)
 
-        contexts: list[FindingContext] = []
-        for finding in findings:
+        def _assemble_for_finding(finding: FindingNode) -> FindingContext:
             finding_id = str(finding.identifier)
             reported_nodes = finding_to_nodes.get(finding_id, [])
-            contexts.append(
-                self._assemble_finding_context(
-                    finding=finding,
-                    reported_nodes=reported_nodes,
-                )
+            return self._assemble_finding_context(
+                finding=finding,
+                reported_nodes=reported_nodes,
             )
+
+        contexts: list[FindingContext] = []
+        with ThreadPoolExecutor(max_workers=self.context_workers) as executor:
+            for index, context in enumerate(executor.map(_assemble_for_finding, findings), start=1):
+                contexts.append(context)
+                if index % LOGGING_INTERVAL == 0:
+                    logger.info("Assembled %d/%d finding contexts", index, len(findings))
+
+        if contexts and len(contexts) % LOGGING_INTERVAL != 0:
+            logger.info("Assembled %d/%d finding contexts", len(contexts), len(findings))
 
         return ContextAssembly(findings=contexts)
 
@@ -112,14 +124,17 @@ class ContextAssemblerService(BaseModel):
         if not start_node_ids:
             return []
 
+        neighborhood_rows = self.context_repository.fetch_code_neighborhood_batch(
+            start_node_ids,
+            self.max_call_depth,
+        )
+
         nodes_by_id: dict[str, dict[str, Any]] = {}
-        for start_id in start_node_ids:
-            rows = self.context_repository.fetch_code_neighborhood(start_id, self.max_call_depth)
-            for row in rows:
-                node_id = str(row["id"])
-                existing = nodes_by_id.get(node_id)
-                if existing is None or int(row["depth"]) < int(existing.get("depth", 0)):
-                    nodes_by_id[node_id] = row
+        for row in neighborhood_rows:
+            node_id = str(row["id"])
+            existing = nodes_by_id.get(node_id)
+            if existing is None or int(row["depth"]) < int(existing.get("depth", 0)):
+                nodes_by_id[node_id] = row
 
         return sorted(
             nodes_by_id.values(),
@@ -211,7 +226,7 @@ class ContextAssemblerService(BaseModel):
         if not absolute_path.exists():
             return ""
 
-        with absolute_path.open("r", encoding="utf-8") as handle:
+        with absolute_path.open("r", encoding="utf-8", errors="ignore") as handle:
             lines = handle.readlines()
 
         start_index = max(line_start - 1, 0)

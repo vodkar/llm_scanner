@@ -46,7 +46,7 @@ exclude = ["output*", "tests*", "llm_scanner.egg-info*"]
 [tool.mypy]
 explicit_package_bases = true
 mypy_path = "llm_scanner/"
-exclude = "tests/.*"
+exclude = ["tests/.*", "data/.*"]
 
 
 [tool.pytest.ini_options]
@@ -63,6 +63,7 @@ skip = [
   "venv",
   ".env",
   "env",
+  "data",
 ]
 
 [tool.ruff]
