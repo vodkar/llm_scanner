@@ -9,6 +9,7 @@ from clients.neo4j import Neo4jClient
 from context_assembler import ContextAssemblerService
 from models.bandit_report import IssueSeverity
 from models.base import NodeID
+from models.edges import RelationshipBase
 from models.edges.analysis import StaticAnalysisReports
 from models.edges.call_graph import CallGraphCalls
 from models.nodes.code import FunctionNode
@@ -21,6 +22,15 @@ from tests.consts import PROJECT_ROOT
 from tests.utils import symbol_byte_index
 
 CALLS_FILE: Final[Path] = Path("tests/data/calls/function_calls.py")
+
+
+class TestableContextAssemblerService(ContextAssemblerService):
+    """Expose internal selection logic for test assertions."""
+
+    def select_full_context_node_id(self, rows: list[dict[str, object]]) -> str | None:
+        """Proxy to protected full-node selection logic."""
+
+        return self._select_full_context_node_id(rows)
 
 
 def _build_call_graph(neo4j_client: Neo4jClient) -> tuple[NodeID, NodeID]:
@@ -57,7 +67,7 @@ def _build_call_graph(neo4j_client: Neo4jClient) -> tuple[NodeID, NodeID]:
         name="bar",
     )
 
-    edges: list[CallGraphCalls] = [
+    edges: list[RelationshipBase] = [
         CallGraphCalls(src=foo_id, dst=bar_id, is_direct=True, call_depth=1)
     ]
     GraphRepository(neo4j_client).load({foo_id: foo_node, bar_id: bar_node}, edges)
@@ -139,3 +149,89 @@ def test_context_assembler_includes_code_nodes(neo4j_client: Neo4jClient) -> Non
     node_ids = {node.node_id for node in assembly.findings[0].nodes}
     assert str(foo_id) in node_ids
     assert str(bar_id) in node_ids
+
+
+def test_context_assembler_prefers_full_enclosing_node(neo4j_client: Neo4jClient) -> None:
+    """Ensure full enclosing nodes are preferred over single-line nodes."""
+
+    bandit_repo = BanditFindingsRepository(client=neo4j_client)
+    dlint_repo = DlintFindingsRepository(client=neo4j_client)
+    service = TestableContextAssemblerService(
+        project_root=PROJECT_ROOT,
+        bandit_repository=bandit_repo,
+        dlint_repository=dlint_repo,
+        context_repository=ContextRepository(client=neo4j_client),
+    )
+
+    selected_node_id = service.select_full_context_node_id(
+        [
+            {
+                "id": "call-node",
+                "node_kind": "CallNode",
+                "line_start": 12,
+                "line_end": 12,
+            },
+            {
+                "id": "function-node",
+                "node_kind": "FunctionNode",
+                "line_start": 8,
+                "line_end": 32,
+            },
+        ]
+    )
+
+    assert selected_node_id == "function-node"
+
+
+def test_assemble_for_vulnerability_span_filters_before_context(
+    neo4j_client: Neo4jClient,
+) -> None:
+    """Ensure span-filtered assembly returns associated and limited non-associated contexts."""
+
+    foo_id, bar_id = _build_call_graph(neo4j_client)
+
+    associated_finding = BanditFindingNode(
+        file=CALLS_FILE,
+        line_number=6,
+        cwe_id=79,
+        severity=IssueSeverity.HIGH,
+    )
+    non_associated_finding = BanditFindingNode(
+        file=CALLS_FILE,
+        line_number=1,
+        cwe_id=89,
+        severity=IssueSeverity.MEDIUM,
+    )
+
+    bandit_repo = BanditFindingsRepository(client=neo4j_client)
+    dlint_repo = DlintFindingsRepository(client=neo4j_client)
+    bandit_repo.insert_nodes([associated_finding, non_associated_finding])
+    bandit_repo.insert_edges(
+        [
+            StaticAnalysisReports(src=str(associated_finding.identifier), dst=foo_id),
+            StaticAnalysisReports(src=str(non_associated_finding.identifier), dst=bar_id),
+        ]
+    )
+
+    service = ContextAssemblerService(
+        project_root=PROJECT_ROOT,
+        bandit_repository=bandit_repo,
+        dlint_repository=dlint_repo,
+        context_repository=ContextRepository(client=neo4j_client),
+        max_call_depth=3,
+        token_budget=500,
+    )
+
+    associated, non_associated = service.assemble_for_vulnerability_span(
+        target_file=CALLS_FILE,
+        start_line=5,
+        end_line=7,
+        non_associated_limit=1,
+    )
+
+    assert len(associated.findings) == 1
+    assert associated.findings[0].finding_id == str(associated_finding.identifier)
+    assert "def foo" in associated.findings[0].context_text
+
+    assert len(non_associated.findings) == 1
+    assert non_associated.findings[0].finding_id == str(non_associated_finding.identifier)

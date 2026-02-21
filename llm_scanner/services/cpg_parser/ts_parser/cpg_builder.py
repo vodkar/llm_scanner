@@ -1,6 +1,7 @@
 import ast
 import logging
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -177,14 +178,16 @@ class CPGDirectoryBuilder(BaseModel):
         parts = list(rel.parts)
         return ".".join(parts)
 
-    def _parse_exported_names(self, *, file_path: Path) -> _ExportedNames:
+    def _parse_exported_names(self, file_path: Path) -> _ExportedNames:
         try:
             source_text = file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             return _ExportedNames(functions={}, classes={}, variables={})
 
         try:
-            tree = ast.parse(source_text, filename=str(file_path))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(source_text, filename=str(file_path))
         except SyntaxError:
             return _ExportedNames(functions={}, classes={}, variables={})
 
@@ -278,7 +281,9 @@ class CPGDirectoryBuilder(BaseModel):
             return {}
 
         try:
-            tree = ast.parse(source_text, filename=str(file_path))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(source_text, filename=str(file_path))
         except SyntaxError:
             return {}
 

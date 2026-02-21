@@ -6,6 +6,7 @@ from clients.neo4j import Neo4jClient
 from repositories.queries import (
     code_bfs_nodes_batch_query,
     code_bfs_nodes_query,
+    code_nodes_by_file_line_query,
     code_traversal_relationship_types,
     finding_reported_code_query,
 )
@@ -58,6 +59,52 @@ class ContextRepository(BaseModel):
 
         query = finding_reported_code_query()
         return self.client.run_read(query, {"finding_ids": finding_ids})
+
+    def fetch_code_nodes_by_file_lines(
+        self,
+        rows: list[dict[str, object]],
+    ) -> list[dict[str, Any]]:
+        """Return code nodes containing the supplied file/line pairs.
+
+        Args:
+            rows: Items with ``file_path`` and ``line_number`` keys.
+
+        Returns:
+            Rows containing matching code node metadata.
+        """
+
+        if not rows:
+            return []
+
+        normalized_rows: list[dict[str, object]] = []
+        seen_keys: set[tuple[str, int]] = set()
+        for row in rows:
+            file_path = str(row.get("file_path", ""))
+            line_number_raw = row.get("line_number")
+            if not file_path or line_number_raw is None:
+                continue
+            try:
+                line_number = int(str(line_number_raw))
+            except (TypeError, ValueError):
+                continue
+            if line_number < 1:
+                continue
+            key = (file_path, line_number)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            normalized_rows.append(
+                {
+                    "file_path": file_path,
+                    "line_number": line_number,
+                }
+            )
+
+        if not normalized_rows:
+            return []
+
+        query = code_nodes_by_file_line_query()
+        return self.client.run_read(query, {"rows": normalized_rows})
 
     def fetch_code_neighborhood_batch(
         self, start_node_ids: list[str], max_depth: int

@@ -17,7 +17,7 @@ from models.benchmark.benchmark import (
     UnassociatedSample,
 )
 from models.benchmark.cvefixes import CVEFixesEntry
-from models.context import ContextAssembly, FindingContext
+from models.context import FindingContext
 from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.context import ContextRepository
@@ -44,6 +44,7 @@ class CVEFixesBenchmarkService(BaseModel):
     neo4j_config: Neo4jConfig = Field(default_factory=Neo4jConfig)
     max_call_depth: int = 3
     token_budget: int = 2048
+    fallback_context_padding: int = 3
 
     def build(self) -> tuple[Path, Path]:
         """Generate the benchmark JSON files.
@@ -82,14 +83,11 @@ class CVEFixesBenchmarkService(BaseModel):
                 )
                 continue
 
-            context = self._scan_repository(repo_path)
-            logger.info(
-                "Scanned repository for entry %s: found %d contexts",
-                entry.cve_id,
-                len(context.findings),
+            associated, non_associated = self._scan_repository_for_entry(
+                repo_path=repo_path,
+                entry=entry,
             )
-
-            associated, non_associated = self._split_associations(entry, context)
+            fallback_context = self._build_fallback_context(repo_path=repo_path, entry=entry)
 
             logger.info(
                 "Entry %s: found %d associated and %d non-associated contexts",
@@ -99,7 +97,12 @@ class CVEFixesBenchmarkService(BaseModel):
             )
 
             if associated:
-                chosen = self._choose_associated(entry, associated)
+                contexts_with_text = [
+                    finding for finding in associated if finding.context_text.strip()
+                ]
+                chosen = self._choose_associated(entry, contexts_with_text or associated)
+                if not chosen.context_text.strip() and fallback_context is not None:
+                    chosen = fallback_context
                 samples.append(
                     self._to_sample(
                         entry=entry,
@@ -110,11 +113,35 @@ class CVEFixesBenchmarkService(BaseModel):
                 )
                 continue
 
-            if non_associated:
+            if fallback_context is not None:
                 samples.append(
                     self._to_sample(
                         entry=entry,
-                        context=non_associated[0],
+                        context=fallback_context,
+                        label=1,
+                        sample_id=f"ContextAssembler-{len(samples) + 1}",
+                    )
+                )
+                unassociated.append(
+                    UnassociatedSample(
+                        entry=self._entry_metadata(entry),
+                        reason="used_cvefixes_fallback_context",
+                        contexts=[],
+                    )
+                )
+                continue
+
+            if non_associated:
+                contexts_with_text = [
+                    finding for finding in non_associated if finding.context_text.strip()
+                ]
+                chosen_non_associated = (
+                    contexts_with_text[0] if contexts_with_text else non_associated[0]
+                )
+                samples.append(
+                    self._to_sample(
+                        entry=entry,
+                        context=chosen_non_associated,
                         label=0,
                         sample_id=f"ContextAssembler-{len(samples) + 1}",
                     )
@@ -155,7 +182,12 @@ class CVEFixesBenchmarkService(BaseModel):
 
         return main_path, unassociated_path
 
-    def _scan_repository(self, repo_path: Path) -> ContextAssembly:
+    def _scan_repository_for_entry(
+        self,
+        *,
+        repo_path: Path,
+        entry: CVEFixesEntry,
+    ) -> tuple[list[FindingContext], list[FindingContext]]:
         with build_client(
             self.neo4j_config.uri,
             self.neo4j_config.user,
@@ -188,23 +220,57 @@ class CVEFixesBenchmarkService(BaseModel):
                 max_call_depth=self.max_call_depth,
                 token_budget=self.token_budget,
             )
-            return context_service.assemble()
+            associated_assembly, non_associated_assembly = (
+                context_service.assemble_for_vulnerability_span(
+                    target_file=entry.file_path,
+                    start_line=entry.start_line,
+                    end_line=entry.end_line,
+                    non_associated_limit=1,
+                )
+            )
 
-    def _split_associations(
-        self, entry: CVEFixesEntry, context: ContextAssembly
-    ) -> tuple[list[FindingContext], list[FindingContext]]:
-        associated: list[FindingContext] = []
-        non_associated: list[FindingContext] = []
-        target_file = Path(entry.file_path.as_posix())
-        for finding in context.findings:
-            if (
-                finding.file == target_file
-                and entry.start_line <= finding.line_number <= entry.end_line
-            ):
-                associated.append(finding)
-            else:
-                non_associated.append(finding)
-        return associated, non_associated
+            logger.info(
+                (
+                    "Scanned repository for entry %s: assembled %d "
+                    "associated and %d non-associated contexts"
+                ),
+                entry.cve_id,
+                len(associated_assembly.findings),
+                len(non_associated_assembly.findings),
+            )
+
+            return associated_assembly.findings, non_associated_assembly.findings
+
+    def _build_fallback_context(
+        self,
+        *,
+        repo_path: Path,
+        entry: CVEFixesEntry,
+    ) -> FindingContext | None:
+        absolute_path = (repo_path / entry.file_path).resolve()
+        if not absolute_path.exists() or not absolute_path.is_file():
+            return None
+
+        file_lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if not file_lines:
+            return None
+
+        range_start = max(1, entry.start_line - self.fallback_context_padding)
+        range_end = min(len(file_lines), entry.end_line + self.fallback_context_padding)
+        snippet = "\n".join(file_lines[range_start - 1 : range_end]).strip()
+        if not snippet:
+            return None
+
+        return FindingContext(
+            finding_id=f"cvefixes:{entry.cve_id}:{entry.file_path.as_posix()}:{entry.start_line}",
+            finding_type="CVEFixesFallback",
+            file=Path(entry.file_path.as_posix()),
+            line_number=entry.start_line,
+            description=entry.description or "CVEFixes fallback context",
+            nodes=[],
+            context_text=snippet,
+            token_count=len(snippet.split()),
+        )
 
     def _choose_associated(
         self, entry: CVEFixesEntry, candidates: list[FindingContext]
