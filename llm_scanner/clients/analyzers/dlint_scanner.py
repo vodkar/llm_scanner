@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from clients.analyzers.base import IStaticAnalyzer
@@ -26,7 +27,7 @@ class DlintStaticAnalyzer(IStaticAnalyzer):
         # flake8 returns non-zero when issues are found.
         result = subprocess.run(
             [
-                "python",
+                sys.executable,
                 "-m",
                 "flake8",
                 "--select=DUO",

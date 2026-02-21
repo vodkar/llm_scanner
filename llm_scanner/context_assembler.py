@@ -10,7 +10,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
-from models.bandit_report import IssueSeverity
 from models.context import CodeContextNode, ContextAssembly, FindingContext
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
 from repositories.analyzers.bandit import BanditFindingsRepository
@@ -21,6 +20,7 @@ TokenEstimator = Callable[[str], int]
 _LOGGER = logging.getLogger(__name__)
 LOGGING_INTERVAL = 200
 FULL_CONTEXT_NODE_KINDS: tuple[str, ...] = ("FunctionNode", "ClassNode", "CodeBlockNode")
+PREFERRED_RENDER_NODE_KINDS: tuple[str, ...] = ("FunctionNode", "ClassNode")
 
 
 class ContextAssemblerService(BaseModel):
@@ -502,13 +502,11 @@ class ContextAssemblerService(BaseModel):
         parts: list[str] = []
         total_tokens = 0
 
-        for node in nodes:
-            snippet = node.snippet.strip()
-            snippet_header = (
-                f"Node: {node.node_id} ({node.node_kind or 'CodeNode'}) "
-                f"{node.file_path}:{node.line_start}-{node.line_end}"
-            )
-            snippet_block = f"{snippet_header}\n{snippet}" if snippet else snippet_header
+        for node in self._select_render_nodes(nodes):
+            snippet = self._sanitize_snippet(node.snippet)
+            if not self._starts_with_python_anchor(snippet):
+                continue
+            snippet_block = snippet
             if not snippet_block:
                 _LOGGER.warning(
                     "Empty snippet for node %s in file %s",
@@ -523,6 +521,203 @@ class ContextAssemblerService(BaseModel):
             total_tokens = candidate_tokens
 
         return "\n\n".join(parts), total_tokens
+
+    def _select_render_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Select and prioritize nodes to produce complete-looking source snippets."""
+
+        preferred_nodes = [
+            node
+            for node in nodes
+            if self._is_preferred_render_node_kind(node.node_kind)
+            and self._is_renderable_node(node)
+        ]
+        if preferred_nodes:
+            candidate_nodes = preferred_nodes
+        else:
+            candidate_nodes = [node for node in nodes if self._is_renderable_node(node)]
+
+        sorted_nodes = sorted(
+            candidate_nodes,
+            key=lambda node: (
+                node.depth,
+                -self._node_span(node),
+                str(node.file_path),
+                node.line_start or 0,
+            ),
+        )
+
+        unique_nodes: list[CodeContextNode] = []
+        seen_keys: set[tuple[str, int, int, str]] = set()
+        for node in sorted_nodes:
+            snippet = node.snippet.strip()
+            key = (
+                str(node.file_path),
+                node.line_start or 0,
+                node.line_end or 0,
+                snippet,
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            unique_nodes.append(node)
+
+        return unique_nodes
+
+    @staticmethod
+    def _node_span(node: CodeContextNode) -> int:
+        """Return line span for ordering nodes by snippet completeness."""
+
+        if node.line_start is None or node.line_end is None:
+            return 0
+        return max(0, node.line_end - node.line_start)
+
+    @staticmethod
+    def _is_full_context_node_kind(node_kind: str | None) -> bool:
+        """Return whether a node kind represents a complete source structure."""
+
+        return node_kind in FULL_CONTEXT_NODE_KINDS
+
+    @staticmethod
+    def _is_preferred_render_node_kind(node_kind: str | None) -> bool:
+        """Return whether node kind should be prioritized for final text rendering."""
+
+        return node_kind in PREFERRED_RENDER_NODE_KINDS
+
+    @staticmethod
+    def _is_renderable_node(node: CodeContextNode) -> bool:
+        """Return whether node snippet should be rendered into final context text."""
+
+        snippet = node.snippet.strip()
+        if not snippet:
+            return False
+
+        if not ContextAssemblerService._has_python_anchor(snippet):
+            return False
+
+        if ContextAssemblerService._has_dangling_snippet_end(snippet):
+            return False
+
+        return not (node.node_kind in PREFERRED_RENDER_NODE_KINDS and "\n" not in snippet)
+
+    @staticmethod
+    def _has_python_anchor(snippet: str) -> bool:
+        """Return whether snippet contains a clear Python declaration/decorator anchor."""
+
+        for line in snippet.splitlines():
+            stripped = line.lstrip()
+            if (
+                stripped.startswith("@")
+                or stripped.startswith("def ")
+                or stripped.startswith("async def ")
+                or stripped.startswith("class ")
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _has_dangling_snippet_end(snippet: str) -> bool:
+        """Return whether snippet appears to end at an obviously incomplete token."""
+
+        stripped = snippet.rstrip()
+        if not stripped:
+            return True
+
+        return stripped.endswith(("(", "[", "{", ",", "\\"))
+
+    @staticmethod
+    def _starts_with_python_anchor(snippet: str) -> bool:
+        """Return whether snippet begins with a structural Python anchor line."""
+
+        for line in snippet.splitlines():
+            stripped = line.lstrip()
+            if not stripped:
+                continue
+            return ContextAssemblerService._is_python_anchor_line(stripped)
+        return False
+
+    @staticmethod
+    def _is_python_anchor_line(stripped_line: str) -> bool:
+        """Return whether a stripped line starts with a Python structural anchor."""
+
+        return (
+            stripped_line.startswith("@")
+            or stripped_line.startswith("def ")
+            or stripped_line.startswith("async def ")
+            or stripped_line.startswith("class ")
+        )
+
+    @staticmethod
+    def _is_python_signature_line(stripped_line: str) -> bool:
+        """Return whether a stripped line starts with a Python declaration signature."""
+
+        return (
+            stripped_line.startswith("def ")
+            or stripped_line.startswith("async def ")
+            or stripped_line.startswith("class ")
+        )
+
+    @staticmethod
+    def _anchor_has_body(lines: list[str], anchor_index: int) -> bool:
+        """Return whether the declaration line at anchor_index has body lines after it."""
+
+        anchor_line = lines[anchor_index]
+        anchor_indent = len(anchor_line) - len(anchor_line.lstrip())
+        for following_line in lines[anchor_index + 1 :]:
+            stripped = following_line.strip()
+            if not stripped:
+                continue
+            following_indent = len(following_line) - len(following_line.lstrip())
+            return following_indent > anchor_indent
+        return False
+
+    @staticmethod
+    def _sanitize_snippet(snippet: str) -> str:
+        """Trim snippet boundaries so text starts/ends at coherent Python anchors."""
+
+        raw_lines = snippet.strip().splitlines()
+        if not raw_lines:
+            return ""
+
+        lines = raw_lines
+        for index, line in enumerate(raw_lines):
+            stripped = line.lstrip()
+            if ContextAssemblerService._is_python_anchor_line(stripped):
+                lines = raw_lines[index:]
+                break
+
+        while lines and lines[-1].lstrip().startswith("@"):
+            lines.pop()
+
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+        while lines:
+            last_index = len(lines) - 1
+            stripped_last = lines[last_index].lstrip()
+            if not ContextAssemblerService._is_python_signature_line(stripped_last):
+                break
+            if ContextAssemblerService._anchor_has_body(lines, last_index):
+                break
+
+            lines.pop()
+            while lines and lines[-1].lstrip().startswith("@"):
+                lines.pop()
+            while lines and not lines[-1].strip():
+                lines.pop()
+
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def sanitize_python_snippet(snippet: str) -> str:
+        """Public sanitizer for Python-like snippet boundaries."""
+
+        return ContextAssemblerService._sanitize_snippet(snippet)
+
+    @staticmethod
+    def starts_with_python_anchor(snippet: str) -> bool:
+        """Public predicate for structural Python snippet starts."""
+
+        return ContextAssemblerService._starts_with_python_anchor(snippet)
 
     def _read_snippet(self, file_path: Path, line_start: int | None, line_end: int | None) -> str:
         """Read a code snippet for the given file and line range.
@@ -596,10 +791,7 @@ class ContextAssemblerService(BaseModel):
         """
 
         if isinstance(finding, BanditFindingNode):
-            severity = finding.severity
-            severity_label = (
-                severity.value if isinstance(severity, IssueSeverity) else str(severity)
-            )
+            severity_label = finding.severity.value
             return f"cwe={finding.cwe_id} severity={severity_label}"
         if isinstance(finding, DlintFindingNode):
             return f"issue_id={finding.issue_id}"

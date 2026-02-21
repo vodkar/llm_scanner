@@ -258,7 +258,10 @@ class CVEFixesBenchmarkService(BaseModel):
         range_start = max(1, entry.start_line - self.fallback_context_padding)
         range_end = min(len(file_lines), entry.end_line + self.fallback_context_padding)
         snippet = "\n".join(file_lines[range_start - 1 : range_end]).strip()
+        snippet = ContextAssemblerService.sanitize_python_snippet(snippet)
         if not snippet:
+            return None
+        if not ContextAssemblerService.starts_with_python_anchor(snippet):
             return None
 
         return FindingContext(
