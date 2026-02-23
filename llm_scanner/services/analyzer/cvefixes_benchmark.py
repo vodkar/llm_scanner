@@ -96,72 +96,16 @@ class CVEFixesBenchmarkService(BaseModel):
                 len(non_associated),
             )
 
-            if associated:
-                contexts_with_text = [
-                    finding for finding in associated if finding.context_text.strip()
-                ]
-                chosen = self._choose_associated(entry, contexts_with_text or associated)
-                if not chosen.context_text.strip() and fallback_context is not None:
-                    chosen = fallback_context
-                samples.append(
-                    self._to_sample(
-                        entry=entry,
-                        context=chosen,
-                        label=1,
-                        sample_id=f"ContextAssembler-{len(samples) + 1}",
-                    )
-                )
-                continue
-
-            if fallback_context is not None:
-                samples.append(
-                    self._to_sample(
-                        entry=entry,
-                        context=fallback_context,
-                        label=1,
-                        sample_id=f"ContextAssembler-{len(samples) + 1}",
-                    )
-                )
-                unassociated.append(
-                    UnassociatedSample(
-                        entry=self._entry_metadata(entry),
-                        reason="used_cvefixes_fallback_context",
-                        contexts=[],
-                    )
-                )
-                continue
-
-            if non_associated:
-                contexts_with_text = [
-                    finding for finding in non_associated if finding.context_text.strip()
-                ]
-                chosen_non_associated = (
-                    contexts_with_text[0] if contexts_with_text else non_associated[0]
-                )
-                samples.append(
-                    self._to_sample(
-                        entry=entry,
-                        context=chosen_non_associated,
-                        label=0,
-                        sample_id=f"ContextAssembler-{len(samples) + 1}",
-                    )
-                )
-                unassociated.append(
-                    UnassociatedSample(
-                        entry=self._entry_metadata(entry),
-                        reason="no_file_line_match",
-                        contexts=non_associated,
-                    )
-                )
-                continue
-
-            unassociated.append(
-                UnassociatedSample(
-                    entry=self._entry_metadata(entry),
-                    reason="no_findings",
-                    contexts=[],
-                )
+            sample, additional_unassociated = self._select_sample_for_entry(
+                entry=entry,
+                associated=associated,
+                non_associated=non_associated,
+                fallback_context=fallback_context,
+                sample_id=f"ContextAssembler-{len(samples) + 1}",
             )
+            if sample is not None:
+                samples.append(sample)
+            unassociated.extend(additional_unassociated)
 
         if len(samples) < self.sample_count:
             raise ValueError(
@@ -177,7 +121,7 @@ class CVEFixesBenchmarkService(BaseModel):
 
         self._write_json(main_path, dataset.model_dump(by_alias=True))
         self._write_json(
-            unassociated_path, [item.model_dump(by_alias=True) for item in unassociated[:2]]
+            unassociated_path, [item.model_dump(by_alias=True) for item in unassociated]
         )
 
         return main_path, unassociated_path
@@ -282,6 +226,92 @@ class CVEFixesBenchmarkService(BaseModel):
             candidates,
             key=lambda finding: abs(finding.line_number - entry.start_line),
         )
+
+    def _select_sample_for_entry(
+        self,
+        *,
+        entry: CVEFixesEntry,
+        associated: list[FindingContext],
+        non_associated: list[FindingContext],
+        fallback_context: FindingContext | None,
+        sample_id: str,
+    ) -> tuple[BenchmarkSample | None, list[UnassociatedSample]]:
+        """Select one sample for an entry and return auxiliary unassociated records.
+
+        Selection priority:
+        1) Associated finding context (label=1)
+        2) Non-associated finding context (label=0)
+        3) CVEFixes fallback context (label=1)
+        4) No sample
+        """
+
+        unassociated_items: list[UnassociatedSample] = []
+
+        if associated:
+            contexts_with_text = [finding for finding in associated if finding.context_text.strip()]
+            chosen = self._choose_associated(entry, contexts_with_text or associated)
+            if not chosen.context_text.strip() and fallback_context is not None:
+                chosen = fallback_context
+            return (
+                self._to_sample(
+                    entry=entry,
+                    context=chosen,
+                    label=1,
+                    sample_id=sample_id,
+                ),
+                unassociated_items,
+            )
+
+        if non_associated:
+            contexts_with_text = [
+                finding for finding in non_associated if finding.context_text.strip()
+            ]
+            chosen_non_associated = (
+                contexts_with_text[0] if contexts_with_text else non_associated[0]
+            )
+            unassociated_items.append(
+                UnassociatedSample(
+                    entry=self._entry_metadata(entry),
+                    reason="no_file_line_match",
+                    contexts=non_associated,
+                )
+            )
+            return (
+                self._to_sample(
+                    entry=entry,
+                    context=chosen_non_associated,
+                    label=0,
+                    sample_id=sample_id,
+                ),
+                unassociated_items,
+            )
+
+        if fallback_context is not None:
+            unassociated_items.append(
+                UnassociatedSample(
+                    entry=self._entry_metadata(entry),
+                    reason="used_cvefixes_fallback_context",
+                    contexts=[],
+                )
+            )
+            return (
+                self._to_sample(
+                    entry=entry,
+                    context=fallback_context,
+                    label=1,
+                    sample_id=sample_id,
+                ),
+                unassociated_items,
+            )
+
+        unassociated_items.append(
+            UnassociatedSample(
+                entry=self._entry_metadata(entry),
+                reason="no_findings",
+                contexts=[],
+            )
+        )
+        return None, unassociated_items
 
     def _to_sample(
         self,

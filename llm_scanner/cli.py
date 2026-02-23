@@ -39,7 +39,6 @@ ROOT_DIR: Final[Path] = Path(__file__).resolve().parents[1]
 DEFAULT_TESTS_DIR: Final[Path] = ROOT_DIR / "tests"
 DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
-DEFAULT_DOT_FILE: Final[Path] = ROOT_DIR / "graph.dot"
 DEFAULT_BENCHMARK_DIR: Final[Path] = ROOT_DIR / "data"
 DEFAULT_REPO_CACHE_DIR: Final[Path] = DEFAULT_BENCHMARK_DIR / "cvefixes_repos"
 

@@ -15,7 +15,6 @@ from .nodes import (
     TaintSourceNode,
     TaintSourceType,
     VariableNode,
-    VariableScope,
 )
 
 __all__ = [
@@ -37,5 +36,4 @@ __all__ = [
     "TaintSourceNode",
     "TaintSourceType",
     "VariableNode",
-    "VariableScope",
 ]

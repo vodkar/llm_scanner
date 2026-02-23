@@ -1,17 +1,11 @@
 """Utility decorators and helpers."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from functools import wraps
 from time import perf_counter
-from typing import ParamSpec, TypeVar
-
-P = ParamSpec("P")
-R = TypeVar("R")
 
 
-def timed[**P, R](func: Callable[P, R]) -> Callable[P, R]:
+def timed[**P, R](func: Callable[P, R]) -> Callable[P, R]:  # pragma: no cover
     """Print function execution time.
 
     Args:

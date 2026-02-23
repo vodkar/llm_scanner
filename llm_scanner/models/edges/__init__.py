@@ -5,9 +5,7 @@ from .call_graph import (
     CallGraphRelationshipType,
 )
 from .control_flow import (
-    BranchType,
     ControlFlowContains,
-    ControlFlowNext,
     ControlFlowRelationshipType,
 )
 from .data_flow import (
@@ -19,12 +17,10 @@ from .data_flow import (
 )
 
 __all__ = [
-    "BranchType",
     "CallGraphCalledBy",
     "CallGraphCalls",
     "CallGraphRelationshipType",
     "ControlFlowContains",
-    "ControlFlowNext",
     "ControlFlowRelationshipType",
     "DataFlowDefinedBy",
     "DataFlowFlowsTo",

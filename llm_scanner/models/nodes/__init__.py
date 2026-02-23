@@ -12,7 +12,7 @@ from .taint import (
     TaintSourceNode,
     TaintSourceType,
 )
-from .variable import VariableNode, VariableScope
+from .variable import VariableNode
 
 type Node = FunctionNode | ClassNode | CodeBlockNode | ModuleNode | VariableNode | CallNode
 
@@ -32,6 +32,5 @@ __all__ = [
     "TaintSourceNode",
     "TaintSourceType",
     "VariableNode",
-    "VariableScope",
     "Node",
 ]
