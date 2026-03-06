@@ -85,7 +85,7 @@ class CVEFixesBenchmarkService(BaseModel):
                 repo_path=repo_path,
                 entry=entry,
             )
-            logger.info("Scanned repo for %s, found %d contexts", entry.cve_id)
+            logger.info("Scanned repo for %s", entry.cve_id)
             if not context.context_text:
                 logger.warning("No context found for %s", entry.cve_id)
                 continue
