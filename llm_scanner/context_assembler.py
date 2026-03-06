@@ -4,11 +4,12 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
-from models.context import CodeContextNode, ContextAssembly, FileSpans, FindingContext
+from models.base import NodeID
+from models.context import CodeContextNode, Context, ContextAssembly, FileSpans
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
 from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
@@ -39,14 +40,14 @@ class ContextAssemblerService(BaseModel):
     token_budget: int
     context_workers: int = 30
     snippet_cache_max_entries: int = 10000
-    neighborhood_cache_max_entries: int = 2000
     token_estimator: TokenEstimator | None = None
 
     _cache_lock: Lock = PrivateAttr(default_factory=Lock)
-    _file_lines_cache: dict[Path, list[str]] = PrivateAttr(default_factory=dict)
-    _snippet_cache: dict[tuple[Path, int, int], str] = PrivateAttr(default_factory=dict)
-    _neighborhood_cache: dict[tuple[int, tuple[str, ...]], list[dict[str, Any]]] = PrivateAttr(
-        default_factory=dict
+    _file_lines_cache: dict[Path, list[str]] = PrivateAttr(
+        default_factory=lambda: cast(dict[Path, list[str]], {})
+    )
+    _snippet_cache: dict[tuple[Path, int, int], str] = PrivateAttr(
+        default_factory=lambda: cast(dict[tuple[Path, int, int], str], {})
     )
 
     def assemble(self) -> ContextAssembly:
@@ -72,9 +73,9 @@ class ContextAssemblerService(BaseModel):
         ]
 
         contexts = self._assemble_finding_inputs(finding_inputs)
-        return ContextAssembly(findings=contexts)
+        return ContextAssembly(contexts=contexts)
 
-    def assemble_for_spans(self, repo_path: Path, files_spans: list[FileSpans]) -> FindingContext:
+    def assemble_for_spans(self, repo_path: Path, files_spans: list[FileSpans]) -> Context:
         """Assemble context for findings overlapping specific file and line spans."""
 
         _LOGGER.info(
@@ -87,42 +88,32 @@ class ContextAssemblerService(BaseModel):
             if any(end < start for start, end in file_span.line_spans):
                 raise ValueError("end_line must be >= start_line")
 
-        nodes_rows = list(
-            self.context_repository.fetch_code_nodes_by_file_lines(
-                [
-                    {
-                        "file_path": str(file_span.file_path),
-                        "line_number": line_number,
-                    }
-                    for file_span in files_spans
-                    for line_span in file_span.line_spans
-                    for line_number in range(line_span[0], line_span[1] + 1)
-                ]
-            )
+        spans_nodes = self.context_repository.fetch_code_nodes_by_file_lines(
+            [
+                {
+                    "file_path": str(file_span.file_path),
+                    "line_number": line_number,
+                }
+                for file_span in files_spans
+                for line_span in file_span.line_spans
+                for line_number in range(line_span[0], line_span[1] + 1)
+            ]
+        )
+        context_nodes = self.context_repository.fetch_code_neighborhood_batch(
+            [node.node_id for node in spans_nodes],
+            self.max_call_depth,
         )
 
-        unique_nodes: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for row in nodes_rows:
-            node_id = row["id"]
-            if node_id in seen_ids:
-                continue
-            seen_ids.add(node_id)
-            unique_nodes.append(row)
+        context_text, token_count = self._render_context(repo_path, context_nodes)
 
-        nodes = self._build_context_nodes(unique_nodes)
-        context_text, token_count = self._render_context(repo_path, nodes)
-
-        return FindingContext(
+        return Context(
             description="Finding from spans query",
-            nodes=nodes,
             context_text=context_text,
             token_count=token_count,
         )
 
     def assemble_for_vulnerability_span(
         self,
-        *,
         target_file: Path,
         start_line: int,
         end_line: int,
@@ -152,10 +143,10 @@ class ContextAssemblerService(BaseModel):
         finding_to_nodes, line_to_enclosing_nodes = self._load_finding_context_rows(findings)
 
         associated_inputs: list[
-            tuple[FindingNode, list[dict[str, object]], list[dict[str, Any]]]
+            tuple[FindingNode, list[CodeContextNode], list[CodeContextNode]]
         ] = []
         non_associated_inputs: list[
-            tuple[FindingNode, list[dict[str, object]], list[dict[str, Any]]]
+            tuple[FindingNode, list[CodeContextNode], list[CodeContextNode]]
         ] = []
 
         for finding in findings:
@@ -179,8 +170,8 @@ class ContextAssemblerService(BaseModel):
         limited_non_associated = non_associated_inputs[: max(0, non_associated_limit)]
         non_associated_contexts = self._assemble_finding_inputs(limited_non_associated)
 
-        return ContextAssembly(findings=associated_contexts), ContextAssembly(
-            findings=non_associated_contexts
+        return ContextAssembly(contexts=associated_contexts), ContextAssembly(
+            contexts=non_associated_contexts
         )
 
     def _collect_findings(self) -> list[FindingNode]:
@@ -195,14 +186,12 @@ class ContextAssemblerService(BaseModel):
         self,
         findings: list[FindingNode],
     ) -> tuple[
-        dict[str, list[dict[str, object]]],
-        dict[tuple[str, int], list[dict[str, Any]]],
+        dict[str, list[CodeContextNode]],
+        dict[tuple[str, int], list[CodeContextNode]],
     ]:
         """Load and index row data required to assemble finding contexts."""
 
-        finding_ids: list[str] = [str(finding.identifier) for finding in findings]
-        reported_rows = self.context_repository.fetch_reported_code_nodes(finding_ids)
-        enclosing_rows = self.context_repository.fetch_code_nodes_by_file_lines(
+        enclosing_nodes = self.context_repository.fetch_code_nodes_by_file_lines(
             [
                 {
                     "file_path": str(finding.file),
@@ -212,27 +201,32 @@ class ContextAssemblerService(BaseModel):
             ]
         )
 
-        finding_to_nodes: dict[str, list[dict[str, object]]] = defaultdict(list)
-        for row in reported_rows:
-            finding_to_nodes[str(row["finding_id"])].append(row)
+        finding_to_nodes: dict[str, list[CodeContextNode]] = {
+            str(finding.identifier): self.context_repository.fetch_reported_code_nodes(
+                str(finding.identifier)
+            )
+            for finding in findings
+        }
 
-        line_to_enclosing_nodes: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
-        for row in enclosing_rows:
-            file_path = self._coerce_str(row.get("file_path"))
-            line_number = self._coerce_int(row.get("line_number"))
-            if file_path is None or line_number is None:
-                continue
-            line_to_enclosing_nodes[(file_path, line_number)].append(row)
+        nodes_by_file: dict[str, list[CodeContextNode]] = defaultdict(list)
+        for node in enclosing_nodes:
+            nodes_by_file[str(node.file_path)].append(node)
+
+        line_to_enclosing_nodes: dict[tuple[str, int], list[CodeContextNode]] = defaultdict(list)
+        for finding in findings:
+            file_path = str(finding.file)
+            for node in nodes_by_file.get(file_path, []):
+                if node.line_start <= finding.line_number <= node.line_end:
+                    line_to_enclosing_nodes[(file_path, finding.line_number)].append(node)
 
         return finding_to_nodes, line_to_enclosing_nodes
 
     def _finding_input(
         self,
-        *,
         finding: FindingNode,
-        finding_to_nodes: dict[str, list[dict[str, object]]],
-        line_to_enclosing_nodes: dict[tuple[str, int], list[dict[str, Any]]],
-    ) -> tuple[FindingNode, list[dict[str, object]], list[dict[str, Any]]]:
+        finding_to_nodes: dict[str, list[CodeContextNode]],
+        line_to_enclosing_nodes: dict[tuple[str, int], list[CodeContextNode]],
+    ) -> tuple[FindingNode, list[CodeContextNode], list[CodeContextNode]]:
         """Build reusable assembly input tuple for a single finding."""
 
         finding_id = str(finding.identifier)
@@ -245,16 +239,16 @@ class ContextAssemblerService(BaseModel):
 
     def _assemble_finding_inputs(
         self,
-        finding_inputs: list[tuple[FindingNode, list[dict[str, object]], list[dict[str, Any]]]],
-    ) -> list[FindingContext]:
+        finding_inputs: list[tuple[FindingNode, list[CodeContextNode], list[CodeContextNode]]],
+    ) -> list[Context]:
         """Assemble contexts for precomputed finding input tuples."""
 
         if not finding_inputs:
             return []
 
         def _assemble_item(
-            finding_input: tuple[FindingNode, list[dict[str, object]], list[dict[str, Any]]],
-        ) -> FindingContext:
+            finding_input: tuple[FindingNode, list[CodeContextNode], list[CodeContextNode]],
+        ) -> Context:
             finding, reported_nodes, enclosing_nodes = finding_input
             return self._assemble_finding_context(
                 finding=finding,
@@ -262,7 +256,7 @@ class ContextAssemblerService(BaseModel):
                 enclosing_nodes=enclosing_nodes,
             )
 
-        contexts: list[FindingContext] = []
+        contexts: list[Context] = []
         with ThreadPoolExecutor(max_workers=self.context_workers) as executor:
             for index, context in enumerate(
                 executor.map(_assemble_item, finding_inputs),
@@ -280,8 +274,8 @@ class ContextAssemblerService(BaseModel):
     def _finding_overlaps_span(
         self,
         *,
-        reported_nodes: list[dict[str, object]],
-        enclosing_nodes: list[dict[str, Any]],
+        reported_nodes: list[CodeContextNode],
+        enclosing_nodes: list[CodeContextNode],
         target_file: Path,
         start_line: int,
         end_line: int,
@@ -307,34 +301,24 @@ class ContextAssemblerService(BaseModel):
     def _finding_node_spans(
         self,
         *,
-        reported_nodes: list[dict[str, object]],
-        enclosing_nodes: list[dict[str, Any]],
+        reported_nodes: list[CodeContextNode],
+        enclosing_nodes: list[CodeContextNode],
     ) -> list[tuple[Path, int, int]]:
         """Return candidate node spans for a finding using reported rows and fallback."""
 
         spans: list[tuple[Path, int, int]] = []
-        for row in reported_nodes:
-            row_file = self._coerce_str(row.get("file_path"))
-            line_start = self._coerce_int(row.get("line_start"))
-            line_end = self._coerce_int(row.get("line_end"))
-            if row_file is None or line_start is None or line_end is None:
+        for node in reported_nodes:
+            if node.line_end < node.line_start:
                 continue
-            if line_end < line_start:
-                continue
-            spans.append((Path(row_file), line_start, line_end))
+            spans.append((node.file_path, node.line_start, node.line_end))
 
         if spans:
             return spans
 
-        for row in enclosing_nodes:
-            row_file = self._coerce_str(row.get("node_file_path") or row.get("file_path"))
-            line_start = self._coerce_int(row.get("line_start"))
-            line_end = self._coerce_int(row.get("line_end"))
-            if row_file is None or line_start is None or line_end is None:
+        for node in enclosing_nodes:
+            if node.line_end < node.line_start:
                 continue
-            if line_end < line_start:
-                continue
-            spans.append((Path(row_file), line_start, line_end))
+            spans.append((node.file_path, node.line_start, node.line_end))
 
         return spans
 
@@ -370,9 +354,9 @@ class ContextAssemblerService(BaseModel):
         self,
         *,
         finding: FindingNode,
-        reported_nodes: list[dict[str, object]],
-        enclosing_nodes: list[dict[str, Any]],
-    ) -> FindingContext:
+        reported_nodes: list[CodeContextNode],
+        enclosing_nodes: list[CodeContextNode],
+    ) -> Context:
         """Assemble context for a single finding.
 
         Args:
@@ -387,23 +371,22 @@ class ContextAssemblerService(BaseModel):
             reported_nodes=reported_nodes,
             enclosing_nodes=enclosing_nodes,
         )
-        neighborhood_rows = self._expand_neighborhood(start_node_ids)
-
-        nodes = self._build_context_nodes(neighborhood_rows)
+        nodes = self.context_repository.fetch_code_neighborhood_batch(
+            start_node_ids,
+            self.max_call_depth,
+        )
         context_text, token_count = self._render_context(self.project_root, nodes)
 
-        return FindingContext(
+        return Context(
             description=self._finding_description(finding),
-            nodes=nodes,
             context_text=context_text,
             token_count=token_count,
         )
 
     def _resolve_start_node_ids(
         self,
-        *,
-        reported_nodes: list[dict[str, object]],
-        enclosing_nodes: list[dict[str, Any]],
+        reported_nodes: list[CodeContextNode],
+        enclosing_nodes: list[CodeContextNode],
     ) -> list[str]:
         """Resolve traversal start node IDs for a finding.
 
@@ -415,9 +398,7 @@ class ContextAssemblerService(BaseModel):
             Unique start node IDs, including promoted full-node IDs when available.
         """
 
-        start_node_ids: set[str] = {
-            str(row["code_id"]) for row in reported_nodes if row.get("code_id")
-        }
+        start_node_ids: set[str] = {node.node_id for node in reported_nodes}
 
         promoted_id = self._select_full_context_node_id(enclosing_nodes)
         if promoted_id is not None:
@@ -425,105 +406,25 @@ class ContextAssemblerService(BaseModel):
 
         return sorted(start_node_ids)
 
-    def _select_full_context_node_id(self, rows: list[dict[str, Any]]) -> str | None:
+    def _select_full_context_node_id(self, rows: list[CodeContextNode]) -> str | None:
         """Pick the best enclosing code node for full snippet context."""
 
         best_id: str | None = None
         best_rank: tuple[int, int] | None = None
 
-        for row in rows:
-            node_id = self._coerce_str(row.get("id"))
-            node_kind = self._coerce_str(row.get("node_kind"))
-            line_start = self._coerce_int(row.get("line_start"))
-            line_end = self._coerce_int(row.get("line_end"))
-            if node_id is None or line_start is None or line_end is None:
-                continue
-            if line_end < line_start:
+        for node in rows:
+            if node.line_end < node.line_start:
                 continue
 
-            span = line_end - line_start
-            is_preferred_kind = int(node_kind in FULL_CONTEXT_NODE_KINDS)
+            span = node.line_end - node.line_start
+            is_preferred_kind = int(node.node_kind in FULL_CONTEXT_NODE_KINDS)
             rank = (is_preferred_kind, span)
 
             if best_rank is None or rank > best_rank:
                 best_rank = rank
-                best_id = node_id
+                best_id = node.node_id
 
         return best_id
-
-    def _expand_neighborhood(self, start_node_ids: list[str]) -> list[dict[str, Any]]:
-        """Expand code nodes with BFS traversal across code relationships.
-
-        Args:
-            start_node_ids: List of code node identifiers.
-
-        Returns:
-            Unique code node rows ordered by traversal depth.
-        """
-
-        if not start_node_ids:
-            return []
-
-        unique_start_ids: tuple[str, ...] = tuple(sorted(set(start_node_ids)))
-        cache_key = (self.max_call_depth, unique_start_ids)
-
-        with self._cache_lock:
-            cached_rows = self._neighborhood_cache.get(cache_key)
-        if cached_rows is not None:
-            return cached_rows
-
-        neighborhood_rows = self.context_repository.fetch_code_neighborhood_batch(
-            list(unique_start_ids),
-            self.max_call_depth,
-        )
-
-        nodes_by_id: dict[str, dict[str, Any]] = {}
-        for row in neighborhood_rows:
-            node_id = str(row["id"])
-            existing = nodes_by_id.get(node_id)
-            if existing is None or int(row["depth"]) < int(existing.get("depth", 0)):
-                nodes_by_id[node_id] = row
-
-        sorted_nodes = sorted(
-            nodes_by_id.values(),
-            key=lambda row: (int(row.get("depth", 0)), str(row.get("file_path", ""))),
-        )
-
-        with self._cache_lock:
-            if len(self._neighborhood_cache) >= self.neighborhood_cache_max_entries:
-                self._neighborhood_cache.clear()
-            self._neighborhood_cache[cache_key] = sorted_nodes
-
-        return sorted_nodes
-
-    def _build_context_nodes(self, rows: list[dict[str, Any]]) -> list[CodeContextNode]:
-        """Convert Neo4j rows into context nodes with snippets.
-
-        Args:
-            rows: Neo4j rows for code nodes.
-
-        Returns:
-            List of context nodes with snippet content.
-        """
-
-        nodes: list[CodeContextNode] = []
-        for row in rows:
-            file_path = Path(str(row.get("file_path", "")))
-            line_start = row["line_start"]
-            line_end = row["line_end"]
-            nodes.append(
-                CodeContextNode(
-                    node_id=str(row["id"]),
-                    node_kind=self._coerce_str(row.get("node_kind")),
-                    name=self._coerce_str(row.get("name")),
-                    file_path=file_path,
-                    line_start=line_start,
-                    line_end=line_end,
-                    depth=int(row.get("depth", 0)),
-                )
-            )
-
-        return nodes
 
     def _render_context(self, repo_path: Path, nodes: list[CodeContextNode]) -> tuple[str, int]:
         """Render text context for a finding and enforce token budget.
@@ -533,10 +434,11 @@ class ContextAssemblerService(BaseModel):
             nodes: Context nodes to render.
 
         Returns:
-            Tuple of rendered context text and token count.
+            Tuple of rendered context text, token count, and context nodes.
         """
         _LOGGER.debug("Rendering context for %d nodes", len(nodes))
 
+        # Zero pass, sorting and prioritization
         nodes = self._select_render_nodes(nodes)
 
         # First pass to determine which lines to read, then read each file once and cache lines.
@@ -560,6 +462,8 @@ class ContextAssemblerService(BaseModel):
         for node in nodes:
             snippet_lines: list[str] = []
             for line_number in range(node.line_start, node.line_end + 1):
+                if line_number in lines_to_keep[node.file_path]:
+                    continue
                 line = read_lines[node.file_path][line_number]
                 if line:
                     lines_to_keep[node.file_path].add(line_number)
@@ -611,27 +515,30 @@ class ContextAssemblerService(BaseModel):
         )
 
     def _select_render_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
-        """Select and prioritize nodes to produce complete-looking source snippets."""
+        """
+        Select and prioritize nodes to produce complete-looking source snippets.
+        This removes duplicate nodes and promotes nodes of preferred kinds.
+        Prioritization is based on node kind, depth, and repetition.
+        """
 
-        candidate_nodes = [
-            node for node in nodes if self._is_preferred_render_node_kind(node.node_kind)
-        ]
+        candidate_nodes: dict[NodeID, CodeContextNode] = {}
+        for node in nodes:
+            if self._is_preferred_render_node_kind(node.node_kind):
+                if node.node_id in candidate_nodes:
+                    candidate_nodes[node.node_id].repeats += 1
+                    candidate_nodes[node.node_id].depth = min(
+                        candidate_nodes[node.node_id].depth, node.depth
+                    )
+                else:
+                    candidate_nodes[node.node_id] = node
 
         return sorted(
-            candidate_nodes,
+            candidate_nodes.values(),
             key=lambda node: (
                 node.depth,
-                -self._node_span(node),
-                str(node.file_path),
-                node.line_start,
+                node.repeats,
             ),
         )
-
-    @staticmethod
-    def _node_span(node: CodeContextNode) -> int:
-        """Return line span for ordering nodes by snippet completeness."""
-
-        return max(0, node.line_end - node.line_start)
 
     @staticmethod
     def _is_preferred_render_node_kind(node_kind: str | None) -> bool:

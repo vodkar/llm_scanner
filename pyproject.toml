@@ -79,7 +79,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 fixable = ["ALL"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["llm_scanner"]
+known-first-party = ["llm_scanner", "tests"]
 
 [tool.coverage.run]
 omit = [

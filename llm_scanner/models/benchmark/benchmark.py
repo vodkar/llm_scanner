@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 
-from models.context import FindingContext
+from models.context import Context
 
 
 class BenchmarkMetadata(BaseModel):
@@ -49,4 +49,4 @@ class UnassociatedSample(BaseModel):
 
     entry: BenchmarkSampleMetadata
     reason: str = Field(..., description="Reason for missing association")
-    contexts: list[FindingContext] = []
+    contexts: list[Context] = []

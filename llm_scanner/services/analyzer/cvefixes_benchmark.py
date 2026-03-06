@@ -17,7 +17,7 @@ from models.benchmark.benchmark import (
     UnassociatedSample,
 )
 from models.benchmark.cvefixes import CVEFixesEntry
-from models.context import FindingContext
+from models.context import Context
 from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.context import ContextRepository
@@ -85,8 +85,8 @@ class CVEFixesBenchmarkService(BaseModel):
                 repo_path=repo_path,
                 entry=entry,
             )
-            logger.info("Scanned repo for %s, found %d contexts", entry.cve_id, len(context.nodes))
-            if not context.nodes or not context.context_text:
+            logger.info("Scanned repo for %s, found %d contexts", entry.cve_id)
+            if not context.context_text:
                 logger.warning("No context found for %s", entry.cve_id)
                 continue
 
@@ -111,7 +111,7 @@ class CVEFixesBenchmarkService(BaseModel):
         *,
         repo_path: Path,
         entry: CVEFixesEntry,
-    ) -> FindingContext:
+    ) -> Context:
         with build_client(
             self.neo4j_config.uri,
             self.neo4j_config.user,
@@ -135,7 +135,7 @@ class CVEFixesBenchmarkService(BaseModel):
     def _to_sample(
         self,
         entry: CVEFixesEntry,
-        context: FindingContext,
+        context: Context,
         sample_id: str,
     ) -> BenchmarkSample:
         return BenchmarkSample(

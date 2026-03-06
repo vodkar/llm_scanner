@@ -1,8 +1,12 @@
-from typing import Any, LiteralString
+from pathlib import Path
+from threading import Lock
+from typing import Any, LiteralString, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from clients.neo4j import Neo4jClient
+from models.base import NodeID
+from models.context import CodeContextNode
 from repositories.queries import (
     code_bfs_nodes_batch_query,
     code_bfs_nodes_query,
@@ -26,7 +30,13 @@ class ContextRepository(BaseModel):
 
     client: Neo4jClient
     traversal_relationship_types: tuple[str, ...] = ()
+    neighborhood_cache_max_entries: int = 2000
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    _cache_lock: Lock = PrivateAttr(default_factory=Lock)
+    _neighborhood_cache: dict[tuple[int, tuple[str, ...]], list[dict[str, Any]]] = PrivateAttr(
+        default_factory=lambda: cast(dict[tuple[int, tuple[str, ...]], list[dict[str, Any]]], {})
+    )
 
     def model_post_init(self, __context: Any) -> None:
         """Ensure indexes used by context queries exist."""
@@ -44,33 +54,49 @@ class ContextRepository(BaseModel):
             rel_type for rel_type in configured_types if rel_type in available_types
         )
 
-    def fetch_reported_code_nodes(self, finding_ids: list[str]) -> list[dict[str, Any]]:
-        """Return code nodes reported by the provided findings.
+    def fetch_reported_code_nodes(self, finding_id: str) -> list[CodeContextNode]:
+        """Return code nodes reported by a finding.
 
         Args:
-            finding_ids: List of finding identifiers.
+            finding_id: Finding identifier.
 
         Returns:
-            Rows containing finding and code node metadata.
+            Reported code nodes.
         """
 
-        if not finding_ids:
+        if not finding_id:
             return []
 
         query = finding_reported_code_query()
-        return self.client.run_read(query, {"finding_ids": finding_ids})
+        rows = self.client.run_read(query, {"finding_ids": [finding_id]})
+
+        nodes: list[CodeContextNode] = []
+        for row in rows:
+            nodes.append(
+                CodeContextNode(
+                    node_id=NodeID(str(row["code_id"])),
+                    node_kind=self._coerce_str(row.get("node_kind")),
+                    name=self._coerce_str(row.get("name")),
+                    file_path=Path(str(row.get("file_path", ""))),
+                    line_start=int(row["line_start"]),
+                    line_end=int(row["line_end"]),
+                    depth=0,
+                )
+            )
+
+        return nodes
 
     def fetch_code_nodes_by_file_lines(
         self,
         rows: list[dict[str, object]],
-    ) -> list[dict[str, Any]]:
+    ) -> list[CodeContextNode]:
         """Return code nodes containing the supplied file/line pairs.
 
         Args:
             rows: Items with ``file_path`` and ``line_number`` keys.
 
         Returns:
-            Rows containing matching code node metadata.
+            Matching code nodes.
         """
 
         if not rows:
@@ -104,11 +130,11 @@ class ContextRepository(BaseModel):
             return []
 
         query = code_nodes_by_file_line_query()
-        return self.client.run_read(query, {"rows": normalized_rows})
+        return self._build_context_nodes(self.client.run_read(query, {"rows": normalized_rows}))
 
     def fetch_code_neighborhood_batch(
         self, start_node_ids: list[str], max_depth: int
-    ) -> list[dict[str, Any]]:
+    ) -> list[CodeContextNode]:
         """Return BFS expansion of code nodes from multiple start nodes.
 
         Args:
@@ -116,17 +142,23 @@ class ContextRepository(BaseModel):
             max_depth: Maximum traversal depth.
 
         Returns:
-            Rows describing neighboring code nodes with depth and origin start node.
+            Neighboring code nodes with traversal depth.
         """
 
         if not start_node_ids:
             return []
 
-        unique_start_ids = sorted(set(start_node_ids))
+        unique_start_ids: tuple[str, ...] = tuple(sorted(set(start_node_ids)))
+        cache_key = (max_depth, unique_start_ids)
+
+        with self._cache_lock:
+            cached_rows = self._neighborhood_cache.get(cache_key)
+        if cached_rows is not None:
+            return self._build_context_nodes(cached_rows)
 
         if len(unique_start_ids) == 1:
             query = code_bfs_nodes_query(max_depth, self.traversal_relationship_types)
-            return self.client.run_read(
+            rows = self.client.run_read(
                 query,
                 {
                     "start_id": unique_start_ids[0],
@@ -134,11 +166,58 @@ class ContextRepository(BaseModel):
                 },
             )
 
-        query = code_bfs_nodes_batch_query(max_depth, self.traversal_relationship_types)
-        return self.client.run_read(
-            query,
-            {
-                "start_ids": unique_start_ids,
-                "max_depth": max_depth,
-            },
-        )
+        else:
+            query = code_bfs_nodes_batch_query(max_depth, self.traversal_relationship_types)
+            rows = self.client.run_read(
+                query,
+                {
+                    "start_ids": list(unique_start_ids),
+                    "max_depth": max_depth,
+                },
+            )
+
+        with self._cache_lock:
+            if len(self._neighborhood_cache) >= self.neighborhood_cache_max_entries:
+                self._neighborhood_cache.clear()
+            self._neighborhood_cache[cache_key] = rows
+
+        return self._build_context_nodes(rows)
+
+    def _build_context_nodes(self, rows: list[dict[str, Any]]) -> list[CodeContextNode]:
+        """Convert Neo4j rows into context nodes.
+
+        Args:
+            rows: Neo4j rows for code nodes.
+
+        Returns:
+            Unique context nodes preserving first-seen order.
+        """
+
+        nodes_by_id: dict[NodeID, CodeContextNode] = {}
+        ordered_node_ids: list[NodeID] = []
+
+        for row in rows:
+            node_id = NodeID(str(row["id"]))
+            if node_id in nodes_by_id:
+                continue
+
+            nodes_by_id[node_id] = CodeContextNode(
+                node_id=node_id,
+                node_kind=self._coerce_str(row.get("node_kind")),
+                name=self._coerce_str(row.get("name")),
+                file_path=Path(str(row.get("node_file_path") or row.get("file_path", ""))),
+                line_start=int(row["line_start"]),
+                line_end=int(row["line_end"]),
+                depth=int(row.get("depth", 0)),
+            )
+            ordered_node_ids.append(node_id)
+
+        return [nodes_by_id[node_id] for node_id in ordered_node_ids]
+
+    @staticmethod
+    def _coerce_str(value: Any | None) -> str | None:
+        """Convert a value to string when possible."""
+
+        if value is None:
+            return None
+        return str(value)

@@ -11,4 +11,4 @@ wheels/
 
 output/
 .coverage
-data/
+data/*
