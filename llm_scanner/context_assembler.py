@@ -474,6 +474,10 @@ class ContextAssemblerService(BaseModel):
             candidate_text = "\n".join([*parts, snippet])
             candidate_tokens = self._estimate_tokens(candidate_text)
             if candidate_tokens > self.token_budget:
+                # exclude current node and stop processing further nodes, as we run out of budget
+                for line_number in range(node.line_start, node.line_end + 1):
+                    if line_number in lines_to_keep[node.file_path]:
+                        lines_to_keep[node.file_path].remove(line_number)
                 break
             parts.append(snippet)
 
