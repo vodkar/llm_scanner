@@ -605,7 +605,7 @@ class ContextAssemblerService(BaseModel):
         estimator = self.token_estimator
         if estimator is not None:
             return estimator(text)
-        return max(1, int(len(text) * 0.25)) if text else 0
+        return max(1, len(text) // 3) if text else 0
 
     def _finding_description(self, finding: FindingNode) -> str:
         """Build a short description for the finding.
