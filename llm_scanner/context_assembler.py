@@ -470,13 +470,6 @@ class ContextAssemblerService(BaseModel):
                     snippet_lines.append(line)
 
             snippet = "\n".join(snippet_lines)
-            if not snippet:
-                _LOGGER.warning(
-                    "Empty snippet for node %s in file %s",
-                    node.node_id,
-                    node.file_path,
-                )
-                continue
 
             candidate_text = "\n".join([*parts, snippet])
             candidate_tokens = self._estimate_tokens(candidate_text)
@@ -491,6 +484,9 @@ class ContextAssemblerService(BaseModel):
                 parts.append(read_lines[file_to_read][line_number])
 
         candidate_text = "\n".join(parts)
+
+        if not candidate_text:
+            _LOGGER.warning("Empty snippet for project %s", repo_path)
 
         return candidate_text, self._estimate_tokens(candidate_text)
 
