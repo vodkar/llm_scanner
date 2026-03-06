@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 from collections import defaultdict
 from collections.abc import Callable
@@ -10,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
-from models.context import CodeContextNode, ContextAssembly, FindingContext
+from models.context import CodeContextNode, ContextAssembly, FileSpans, FindingContext
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
 from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
@@ -20,7 +18,12 @@ TokenEstimator = Callable[[str], int]
 _LOGGER = logging.getLogger(__name__)
 LOGGING_INTERVAL = 200
 FULL_CONTEXT_NODE_KINDS: tuple[str, ...] = ("FunctionNode", "ClassNode", "CodeBlockNode")
-PREFERRED_RENDER_NODE_KINDS: tuple[str, ...] = ("FunctionNode", "ClassNode")
+PREFERRED_RENDER_NODE_KINDS: tuple[str, ...] = (
+    "FunctionNode",
+    "ClassNode",
+    "VariableNode",
+    "CodeBlockNode",
+)
 
 
 class ContextAssemblerService(BaseModel):
@@ -32,8 +35,8 @@ class ContextAssemblerService(BaseModel):
     bandit_repository: BanditFindingsRepository
     dlint_repository: DlintFindingsRepository
     context_repository: ContextRepository
-    max_call_depth: int = 3
-    token_budget: int = 8192
+    max_call_depth: int
+    token_budget: int
     context_workers: int = 30
     snippet_cache_max_entries: int = 10000
     neighborhood_cache_max_entries: int = 2000
@@ -70,6 +73,52 @@ class ContextAssemblerService(BaseModel):
 
         contexts = self._assemble_finding_inputs(finding_inputs)
         return ContextAssembly(findings=contexts)
+
+    def assemble_for_spans(self, repo_path: Path, files_spans: list[FileSpans]) -> FindingContext:
+        """Assemble context for findings overlapping specific file and line spans."""
+
+        _LOGGER.info(
+            "Assembling context for %d file spans in repository: %s", len(files_spans), repo_path
+        )
+
+        for file_span in files_spans:
+            if any(start < 1 for start, _ in file_span.line_spans):
+                raise ValueError("start_line must be >= 1")
+            if any(end < start for start, end in file_span.line_spans):
+                raise ValueError("end_line must be >= start_line")
+
+        nodes_rows = list(
+            self.context_repository.fetch_code_nodes_by_file_lines(
+                [
+                    {
+                        "file_path": str(file_span.file_path),
+                        "line_number": line_number,
+                    }
+                    for file_span in files_spans
+                    for line_span in file_span.line_spans
+                    for line_number in range(line_span[0], line_span[1] + 1)
+                ]
+            )
+        )
+
+        unique_nodes: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for row in nodes_rows:
+            node_id = row["id"]
+            if node_id in seen_ids:
+                continue
+            seen_ids.add(node_id)
+            unique_nodes.append(row)
+
+        nodes = self._build_context_nodes(unique_nodes)
+        context_text, token_count = self._render_context(repo_path, nodes)
+
+        return FindingContext(
+            description="Finding from spans query",
+            nodes=nodes,
+            context_text=context_text,
+            token_count=token_count,
+        )
 
     def assemble_for_vulnerability_span(
         self,
@@ -110,22 +159,21 @@ class ContextAssemblerService(BaseModel):
         ] = []
 
         for finding in findings:
-            finding_input = self._finding_input(
+            _, reported_nodes, enclosing_nodes = self._finding_input(
                 finding=finding,
                 finding_to_nodes=finding_to_nodes,
                 line_to_enclosing_nodes=line_to_enclosing_nodes,
             )
             if self._finding_overlaps_span(
-                finding=finding,
-                reported_nodes=finding_input[1],
-                enclosing_nodes=finding_input[2],
+                reported_nodes=reported_nodes,
+                enclosing_nodes=enclosing_nodes,
                 target_file=target_file,
                 start_line=start_line,
                 end_line=end_line,
             ):
-                associated_inputs.append(finding_input)
+                associated_inputs.append((finding, reported_nodes, enclosing_nodes))
             else:
-                non_associated_inputs.append(finding_input)
+                non_associated_inputs.append((finding, reported_nodes, enclosing_nodes))
 
         associated_contexts = self._assemble_finding_inputs(associated_inputs)
         limited_non_associated = non_associated_inputs[: max(0, non_associated_limit)]
@@ -232,7 +280,6 @@ class ContextAssemblerService(BaseModel):
     def _finding_overlaps_span(
         self,
         *,
-        finding: FindingNode,
         reported_nodes: list[dict[str, object]],
         enclosing_nodes: list[dict[str, Any]],
         target_file: Path,
@@ -242,7 +289,6 @@ class ContextAssemblerService(BaseModel):
         """Check whether a finding's code node range overlaps a target span."""
 
         node_spans = self._finding_node_spans(
-            finding=finding,
             reported_nodes=reported_nodes,
             enclosing_nodes=enclosing_nodes,
         )
@@ -261,7 +307,6 @@ class ContextAssemblerService(BaseModel):
     def _finding_node_spans(
         self,
         *,
-        finding: FindingNode,
         reported_nodes: list[dict[str, object]],
         enclosing_nodes: list[dict[str, Any]],
     ) -> list[tuple[Path, int, int]]:
@@ -291,10 +336,7 @@ class ContextAssemblerService(BaseModel):
                 continue
             spans.append((Path(row_file), line_start, line_end))
 
-        if spans:
-            return spans
-
-        return [(finding.file, finding.line_number, finding.line_number)]
+        return spans
 
     @staticmethod
     def _path_parts(path: Path) -> tuple[str, ...]:
@@ -348,13 +390,9 @@ class ContextAssemblerService(BaseModel):
         neighborhood_rows = self._expand_neighborhood(start_node_ids)
 
         nodes = self._build_context_nodes(neighborhood_rows)
-        context_text, token_count = self._render_context(nodes)
+        context_text, token_count = self._render_context(self.project_root, nodes)
 
         return FindingContext(
-            finding_id=str(finding.identifier),
-            finding_type=finding.__class__.__name__,
-            file=finding.file,
-            line_number=finding.line_number,
             description=self._finding_description(finding),
             nodes=nodes,
             context_text=context_text,
@@ -471,9 +509,8 @@ class ContextAssemblerService(BaseModel):
         nodes: list[CodeContextNode] = []
         for row in rows:
             file_path = Path(str(row.get("file_path", "")))
-            line_start = self._coerce_int(row.get("line_start"))
-            line_end = self._coerce_int(row.get("line_end"))
-            snippet = self._read_snippet(file_path, line_start, line_end)
+            line_start = row["line_start"]
+            line_end = row["line_end"]
             nodes.append(
                 CodeContextNode(
                     node_id=str(row["id"]),
@@ -483,192 +520,83 @@ class ContextAssemblerService(BaseModel):
                     line_start=line_start,
                     line_end=line_end,
                     depth=int(row.get("depth", 0)),
-                    snippet=snippet,
                 )
             )
 
         return nodes
 
-    def _render_context(self, nodes: list[CodeContextNode]) -> tuple[str, int]:
+    def _render_context(self, repo_path: Path, nodes: list[CodeContextNode]) -> tuple[str, int]:
         """Render text context for a finding and enforce token budget.
 
         Args:
+            repo_path: Path to the repository root.
             nodes: Context nodes to render.
 
         Returns:
             Tuple of rendered context text and token count.
         """
+        _LOGGER.debug("Rendering context for %d nodes", len(nodes))
 
+        nodes = self._select_render_nodes(nodes)
+
+        # First pass to determine which lines to read, then read each file once and cache lines.
+        file_lines_to_read: dict[Path, set[int]] = defaultdict(set)
+        for node in nodes:
+            for line_number in range(node.line_start, node.line_end + 1):
+                file_lines_to_read[node.file_path].add(line_number)
+
+        # Second pass to read lines
+        read_lines: dict[Path, dict[int, str]] = defaultdict(dict)
+        for file_path, line_numbers in file_lines_to_read.items():
+            lines = (
+                (repo_path / file_path).read_text(encoding="utf-8", errors="ignore").splitlines()
+            )
+            for line_number in line_numbers:
+                read_lines[file_path][line_number] = self._sanitize_line(lines[line_number - 1])
+
+        # Third pass to build context parts while enforcing token budget
         parts: list[str] = []
-        total_tokens = 0
+        lines_to_keep: dict[Path, set[int]] = defaultdict(set)
+        for node in nodes:
+            snippet_lines: list[str] = []
+            for line_number in range(node.line_start, node.line_end + 1):
+                line = read_lines[node.file_path][line_number]
+                if line:
+                    lines_to_keep[node.file_path].add(line_number)
+                    snippet_lines.append(line)
 
-        for node in self._select_render_nodes(nodes):
-            snippet = self._sanitize_snippet(node.snippet)
-            if not self._starts_with_python_anchor(snippet):
-                continue
-            snippet_block = snippet
-            if not snippet_block:
+            snippet = "\n".join(snippet_lines)
+            if not snippet:
                 _LOGGER.warning(
                     "Empty snippet for node %s in file %s",
                     node.node_id,
                     node.file_path,
                 )
-            candidate_text = "\n\n".join([*parts, snippet_block])
+                continue
+
+            candidate_text = "\n".join([*parts, snippet])
             candidate_tokens = self._estimate_tokens(candidate_text)
             if candidate_tokens > self.token_budget:
                 break
-            parts.append(snippet_block)
-            total_tokens = candidate_tokens
+            parts.append(snippet)
 
-        return "\n\n".join(parts), total_tokens
+        # Forth pass to build final context text with only the lines that fit in the token budget
+        parts = []
+        for file_to_read, line_to_keep in lines_to_keep.items():
+            for line_number in sorted(line_to_keep):
+                parts.append(read_lines[file_to_read][line_number])
 
-    def _select_render_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
-        """Select and prioritize nodes to produce complete-looking source snippets."""
+        candidate_text = "\n".join(parts)
 
-        preferred_nodes = [
-            node
-            for node in nodes
-            if self._is_preferred_render_node_kind(node.node_kind)
-            and self._is_renderable_node(node)
-        ]
-        if preferred_nodes:
-            candidate_nodes = preferred_nodes
-        else:
-            candidate_nodes = [node for node in nodes if self._is_renderable_node(node)]
-
-        sorted_nodes = sorted(
-            candidate_nodes,
-            key=lambda node: (
-                node.depth,
-                -self._node_span(node),
-                str(node.file_path),
-                node.line_start or 0,
-            ),
-        )
-
-        unique_nodes: list[CodeContextNode] = []
-        seen_keys: set[tuple[str, int, int, str]] = set()
-        for node in sorted_nodes:
-            snippet = node.snippet.strip()
-            key = (
-                str(node.file_path),
-                node.line_start or 0,
-                node.line_end or 0,
-                snippet,
-            )
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            unique_nodes.append(node)
-
-        return unique_nodes
+        return candidate_text, self._estimate_tokens(candidate_text)
 
     @staticmethod
-    def _node_span(node: CodeContextNode) -> int:
-        """Return line span for ordering nodes by snippet completeness."""
+    def _sanitize_line(line: str) -> str:
+        """Trim a line to remove leading/trailing whitespace and comment markers."""
 
-        if node.line_start is None or node.line_end is None:
-            return 0
-        return max(0, node.line_end - node.line_start)
-
-    @staticmethod
-    def _is_full_context_node_kind(node_kind: str | None) -> bool:
-        """Return whether a node kind represents a complete source structure."""
-
-        return node_kind in FULL_CONTEXT_NODE_KINDS
-
-    @staticmethod
-    def _is_preferred_render_node_kind(node_kind: str | None) -> bool:
-        """Return whether node kind should be prioritized for final text rendering."""
-
-        return node_kind in PREFERRED_RENDER_NODE_KINDS
-
-    @staticmethod
-    def _is_renderable_node(node: CodeContextNode) -> bool:
-        """Return whether node snippet should be rendered into final context text."""
-
-        snippet = node.snippet.strip()
-        if not snippet:
-            return False
-
-        if not ContextAssemblerService._has_python_anchor(snippet):
-            return False
-
-        if ContextAssemblerService._has_dangling_snippet_end(snippet):
-            return False
-
-        return not (node.node_kind in PREFERRED_RENDER_NODE_KINDS and "\n" not in snippet)
-
-    @staticmethod
-    def _has_python_anchor(snippet: str) -> bool:
-        """Return whether snippet contains a clear Python declaration/decorator anchor."""
-
-        for line in snippet.splitlines():
-            stripped = line.lstrip()
-            if (
-                stripped.startswith("@")
-                or stripped.startswith("def ")
-                or stripped.startswith("async def ")
-                or stripped.startswith("class ")
-            ):
-                return True
-        return False
-
-    @staticmethod
-    def _has_dangling_snippet_end(snippet: str) -> bool:
-        """Return whether snippet appears to end at an obviously incomplete token."""
-
-        stripped = snippet.rstrip()
-        if not stripped:
-            return True
-
-        return stripped.endswith(("(", "[", "{", ",", "\\"))
-
-    @staticmethod
-    def _starts_with_python_anchor(snippet: str) -> bool:
-        """Return whether snippet begins with a structural Python anchor line."""
-
-        for line in snippet.splitlines():
-            stripped = line.lstrip()
-            if not stripped:
-                continue
-            return ContextAssemblerService._is_python_anchor_line(stripped)
-        return False
-
-    @staticmethod
-    def _is_python_anchor_line(stripped_line: str) -> bool:
-        """Return whether a stripped line starts with a Python structural anchor."""
-
-        return (
-            stripped_line.startswith("@")
-            or stripped_line.startswith("def ")
-            or stripped_line.startswith("async def ")
-            or stripped_line.startswith("class ")
-        )
-
-    @staticmethod
-    def _is_python_signature_line(stripped_line: str) -> bool:
-        """Return whether a stripped line starts with a Python declaration signature."""
-
-        return (
-            stripped_line.startswith("def ")
-            or stripped_line.startswith("async def ")
-            or stripped_line.startswith("class ")
-        )
-
-    @staticmethod
-    def _anchor_has_body(lines: list[str], anchor_index: int) -> bool:
-        """Return whether the declaration line at anchor_index has body lines after it."""
-
-        anchor_line = lines[anchor_index]
-        anchor_indent = len(anchor_line) - len(anchor_line.lstrip())
-        for following_line in lines[anchor_index + 1 :]:
-            stripped = following_line.strip()
-            if not stripped:
-                continue
-            following_indent = len(following_line) - len(following_line.lstrip())
-            return following_indent > anchor_indent
-        return False
+        if "#" not in line:
+            return line.rstrip()
+        return line[: line.index("#")].rstrip()
 
     @staticmethod
     def _sanitize_snippet(snippet: str) -> str:
@@ -678,46 +606,38 @@ class ContextAssemblerService(BaseModel):
         if not raw_lines:
             return ""
 
-        lines = raw_lines
-        for index, line in enumerate(raw_lines):
-            stripped = line.lstrip()
-            if ContextAssemblerService._is_python_anchor_line(stripped):
-                lines = raw_lines[index:]
-                break
+        return "\n".join(
+            line for line in raw_lines if line.strip() and not line.strip().startswith("#")
+        )
 
-        while lines and lines[-1].lstrip().startswith("@"):
-            lines.pop()
+    def _select_render_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Select and prioritize nodes to produce complete-looking source snippets."""
 
-        while lines and not lines[-1].strip():
-            lines.pop()
+        candidate_nodes = [
+            node for node in nodes if self._is_preferred_render_node_kind(node.node_kind)
+        ]
 
-        while lines:
-            last_index = len(lines) - 1
-            stripped_last = lines[last_index].lstrip()
-            if not ContextAssemblerService._is_python_signature_line(stripped_last):
-                break
-            if ContextAssemblerService._anchor_has_body(lines, last_index):
-                break
-
-            lines.pop()
-            while lines and lines[-1].lstrip().startswith("@"):
-                lines.pop()
-            while lines and not lines[-1].strip():
-                lines.pop()
-
-        return "\n".join(lines).strip()
+        return sorted(
+            candidate_nodes,
+            key=lambda node: (
+                node.depth,
+                -self._node_span(node),
+                str(node.file_path),
+                node.line_start,
+            ),
+        )
 
     @staticmethod
-    def sanitize_python_snippet(snippet: str) -> str:
-        """Public sanitizer for Python-like snippet boundaries."""
+    def _node_span(node: CodeContextNode) -> int:
+        """Return line span for ordering nodes by snippet completeness."""
 
-        return ContextAssemblerService._sanitize_snippet(snippet)
+        return max(0, node.line_end - node.line_start)
 
     @staticmethod
-    def starts_with_python_anchor(snippet: str) -> bool:
-        """Public predicate for structural Python snippet starts."""
+    def _is_preferred_render_node_kind(node_kind: str | None) -> bool:
+        """Return whether node kind should be prioritized for final text rendering."""
 
-        return ContextAssemblerService._starts_with_python_anchor(snippet)
+        return node_kind in PREFERRED_RENDER_NODE_KINDS
 
     def _read_snippet(self, file_path: Path, line_start: int | None, line_end: int | None) -> str:
         """Read a code snippet for the given file and line range.

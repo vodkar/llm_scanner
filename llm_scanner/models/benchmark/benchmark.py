@@ -19,8 +19,7 @@ class BenchmarkSampleMetadata(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    original_filename: str = Field(..., description="Original file path")
-    cwefixes_number: str = Field(..., alias="CWEFixes-Number", description="CVEFixes identifier")
+    cvefixes_number: str = Field(..., alias="CVEFixes-Number", description="CVEFixes identifier")
     description: str = Field(default="", description="CVE description")
     cwe_number: int | None = Field(default=None, description="Numeric CWE identifier")
 

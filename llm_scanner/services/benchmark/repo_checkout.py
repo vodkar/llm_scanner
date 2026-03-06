@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
-logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 
 class RepoCheckoutService(BaseModel):
@@ -29,6 +29,7 @@ class RepoCheckoutService(BaseModel):
         Returns:
             Path to the checked-out repository.
         """
+        _LOGGER.info("Checking out repo %s at fix hash %s", repo_url, fix_hash)
 
         repo_path = self._repo_path_for_url(repo_url)
         if not repo_path.exists():
@@ -52,12 +53,15 @@ class RepoCheckoutService(BaseModel):
 
     def _clone_repo(self, repo_url: str, repo_path: Path) -> None:
         repo_path.parent.mkdir(parents=True, exist_ok=True)
+        _LOGGER.info("Cloning repository %s into %s", repo_url, repo_path)
         self._run_git(["clone", "--quiet", repo_url, str(repo_path)])
 
     def _fetch_repo(self, repo_path: Path) -> None:
+        _LOGGER.info("Fetching updates for repository %s", repo_path)
         self._run_git(["-C", str(repo_path), "fetch", "--all", "--tags", "--prune"])
 
     def _checkout_commit(self, repo_path: Path, commit_hash: str) -> None:
+        _LOGGER.info("Checking out commit %s in repository %s", commit_hash, repo_path)
         self._run_git(["-C", str(repo_path), "checkout", "--quiet", commit_hash])
 
     def _resolve_parent_hash(self, repo_path: Path, fix_hash: str) -> str:
@@ -74,8 +78,9 @@ class RepoCheckoutService(BaseModel):
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=60,
             )
         except subprocess.CalledProcessError as exc:
-            logger.exception("Git command failed: %s", " ".join([self.git_executable, *args]))
+            _LOGGER.exception("Git command failed: %s", " ".join([self.git_executable, *args]))
             raise RuntimeError(exc.stderr.strip() or str(exc)) from exc
         return result.stdout

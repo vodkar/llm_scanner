@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import mkstemp
 
 from clients.analyzers.base import IStaticAnalyzer
 from models.bandit_report import BanditIssue, IssueSeverity
@@ -12,7 +13,7 @@ class BanditStaticAnalyzer(IStaticAnalyzer):
     src: Path
 
     def run(self) -> StaticAnalyzerReport[BanditIssue]:  # type: ignore
-        report_path: Path = Path("bandit_report.json")
+        report_path: Path = Path(mkstemp("bandit_report.json")[1])
         subprocess.run(
             [
                 sys.executable,
@@ -24,10 +25,11 @@ class BanditStaticAnalyzer(IStaticAnalyzer):
                 str(report_path),
                 "-r",
                 str(self.src),
+                "-q",
             ]
         )
-        json_report = report_path.read_text()
-        report_data = json.loads(json_report)
+        report_data = json.loads(report_path.read_text())
+        report_path.unlink()
 
         issues: list[BanditIssue] = []
         for report in report_data["results"]:

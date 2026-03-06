@@ -22,8 +22,6 @@ from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.context import ContextRepository
 from repositories.graph import GraphRepository
-from services.analyzer.bandit import BanditAnalyzerService
-from services.analyzer.dlint import DlintAnalyzerService
 from services.benchmark.cvefixes_loader import CVEFixesLoaderService
 from services.benchmark.repo_checkout import RepoCheckoutService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
@@ -42,8 +40,8 @@ class CVEFixesBenchmarkService(BaseModel):
     sample_count: int
     seed: int | None = None
     neo4j_config: Neo4jConfig = Field(default_factory=Neo4jConfig)
-    max_call_depth: int = 3
-    token_budget: int = 2048
+    max_call_depth: int = Field(ge=0, description="Maximum call graph depth for context assembly")
+    token_budget: int = 8192
     fallback_context_padding: int = 3
 
     def build(self) -> tuple[Path, Path]:
@@ -83,34 +81,16 @@ class CVEFixesBenchmarkService(BaseModel):
                 )
                 continue
 
-            associated, non_associated = self._scan_repository_for_entry(
+            context = self._scan_repository_for_entry(
                 repo_path=repo_path,
                 entry=entry,
             )
-            fallback_context = self._build_fallback_context(repo_path=repo_path, entry=entry)
+            logger.info("Scanned repo for %s, found %d contexts", entry.cve_id, len(context.nodes))
+            if not context.nodes or not context.context_text:
+                logger.warning("No context found for %s", entry.cve_id)
+                continue
 
-            logger.info(
-                "Entry %s: found %d associated and %d non-associated contexts",
-                entry.cve_id,
-                len(associated),
-                len(non_associated),
-            )
-
-            sample, additional_unassociated = self._select_sample_for_entry(
-                entry=entry,
-                associated=associated,
-                non_associated=non_associated,
-                fallback_context=fallback_context,
-                sample_id=f"ContextAssembler-{len(samples) + 1}",
-            )
-            if sample is not None:
-                samples.append(sample)
-            unassociated.extend(additional_unassociated)
-
-        if len(samples) < self.sample_count:
-            raise ValueError(
-                f"Only collected {len(samples)} samples (requested {self.sample_count})"
-            )
+            samples.append(self._to_sample(entry, context, f"ContextAssembler-{len(samples) + 1}"))
 
         dataset = BenchmarkDataset(
             metadata=self._build_metadata(samples),
@@ -131,7 +111,7 @@ class CVEFixesBenchmarkService(BaseModel):
         *,
         repo_path: Path,
         entry: CVEFixesEntry,
-    ) -> tuple[list[FindingContext], list[FindingContext]]:
+    ) -> FindingContext:
         with build_client(
             self.neo4j_config.uri,
             self.neo4j_config.user,
@@ -140,20 +120,6 @@ class CVEFixesBenchmarkService(BaseModel):
             graph_repository = GraphRepository(neo4j_client)
             nodes, edges = CPGDirectoryBuilder(root=repo_path).build()
             graph_repository.load(nodes, edges)
-
-            dlint_service = DlintAnalyzerService(
-                target=repo_path,
-                graph_repository=graph_repository,
-                findings_repository=DlintFindingsRepository(client=neo4j_client),
-            )
-            dlint_service.enrich_graph_with_findings()
-
-            bandit_service = BanditAnalyzerService(
-                target=repo_path,
-                graph_repository=graph_repository,
-                findings_repository=BanditFindingsRepository(client=neo4j_client),
-            )
-            bandit_service.enrich_graph_with_findings()
 
             context_repository = ContextRepository(client=neo4j_client)
             context_service = ContextAssemblerService(
@@ -164,167 +130,18 @@ class CVEFixesBenchmarkService(BaseModel):
                 max_call_depth=self.max_call_depth,
                 token_budget=self.token_budget,
             )
-            associated_assembly, non_associated_assembly = (
-                context_service.assemble_for_vulnerability_span(
-                    target_file=entry.file_path,
-                    start_line=entry.start_line,
-                    end_line=entry.end_line,
-                    non_associated_limit=1,
-                )
-            )
-
-            logger.info(
-                (
-                    "Scanned repository for entry %s: assembled %d "
-                    "associated and %d non-associated contexts"
-                ),
-                entry.cve_id,
-                len(associated_assembly.findings),
-                len(non_associated_assembly.findings),
-            )
-
-            return associated_assembly.findings, non_associated_assembly.findings
-
-    def _build_fallback_context(
-        self,
-        *,
-        repo_path: Path,
-        entry: CVEFixesEntry,
-    ) -> FindingContext | None:
-        absolute_path = (repo_path / entry.file_path).resolve()
-        if not absolute_path.exists() or not absolute_path.is_file():
-            return None
-
-        file_lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        if not file_lines:
-            return None
-
-        range_start = max(1, entry.start_line - self.fallback_context_padding)
-        range_end = min(len(file_lines), entry.end_line + self.fallback_context_padding)
-        snippet = "\n".join(file_lines[range_start - 1 : range_end]).strip()
-        snippet = ContextAssemblerService.sanitize_python_snippet(snippet)
-        if not snippet:
-            return None
-        if not ContextAssemblerService.starts_with_python_anchor(snippet):
-            return None
-
-        return FindingContext(
-            finding_id=f"cvefixes:{entry.cve_id}:{entry.file_path.as_posix()}:{entry.start_line}",
-            finding_type="CVEFixesFallback",
-            file=Path(entry.file_path.as_posix()),
-            line_number=entry.start_line,
-            description=entry.description or "CVEFixes fallback context",
-            nodes=[],
-            context_text=snippet,
-            token_count=len(snippet.split()),
-        )
-
-    def _choose_associated(
-        self, entry: CVEFixesEntry, candidates: list[FindingContext]
-    ) -> FindingContext:
-        return min(
-            candidates,
-            key=lambda finding: abs(finding.line_number - entry.start_line),
-        )
-
-    def _select_sample_for_entry(
-        self,
-        *,
-        entry: CVEFixesEntry,
-        associated: list[FindingContext],
-        non_associated: list[FindingContext],
-        fallback_context: FindingContext | None,
-        sample_id: str,
-    ) -> tuple[BenchmarkSample | None, list[UnassociatedSample]]:
-        """Select one sample for an entry and return auxiliary unassociated records.
-
-        Selection priority:
-        1) Associated finding context (label=1)
-        2) Non-associated finding context (label=0)
-        3) CVEFixes fallback context (label=1)
-        4) No sample
-        """
-
-        unassociated_items: list[UnassociatedSample] = []
-
-        if associated:
-            contexts_with_text = [finding for finding in associated if finding.context_text.strip()]
-            chosen = self._choose_associated(entry, contexts_with_text or associated)
-            if not chosen.context_text.strip() and fallback_context is not None:
-                chosen = fallback_context
-            return (
-                self._to_sample(
-                    entry=entry,
-                    context=chosen,
-                    label=1,
-                    sample_id=sample_id,
-                ),
-                unassociated_items,
-            )
-
-        if non_associated:
-            contexts_with_text = [
-                finding for finding in non_associated if finding.context_text.strip()
-            ]
-            chosen_non_associated = (
-                contexts_with_text[0] if contexts_with_text else non_associated[0]
-            )
-            unassociated_items.append(
-                UnassociatedSample(
-                    entry=self._entry_metadata(entry),
-                    reason="no_file_line_match",
-                    contexts=non_associated,
-                )
-            )
-            return (
-                self._to_sample(
-                    entry=entry,
-                    context=chosen_non_associated,
-                    label=0,
-                    sample_id=sample_id,
-                ),
-                unassociated_items,
-            )
-
-        if fallback_context is not None:
-            unassociated_items.append(
-                UnassociatedSample(
-                    entry=self._entry_metadata(entry),
-                    reason="used_cvefixes_fallback_context",
-                    contexts=[],
-                )
-            )
-            return (
-                self._to_sample(
-                    entry=entry,
-                    context=fallback_context,
-                    label=1,
-                    sample_id=sample_id,
-                ),
-                unassociated_items,
-            )
-
-        unassociated_items.append(
-            UnassociatedSample(
-                entry=self._entry_metadata(entry),
-                reason="no_findings",
-                contexts=[],
-            )
-        )
-        return None, unassociated_items
+            return context_service.assemble_for_spans(repo_path, entry.files_spans)
 
     def _to_sample(
         self,
-        *,
         entry: CVEFixesEntry,
         context: FindingContext,
-        label: int,
         sample_id: str,
     ) -> BenchmarkSample:
         return BenchmarkSample(
             id=sample_id,
             code=context.context_text,
-            label=label,
+            label=int(entry.is_vulnerable),
             metadata=self._entry_metadata(entry),
             cwe_types=[],
             severity=entry.severity or "unknown",
@@ -332,8 +149,7 @@ class CVEFixesBenchmarkService(BaseModel):
 
     def _entry_metadata(self, entry: CVEFixesEntry) -> BenchmarkSampleMetadata:
         payload: dict[str, object] = {
-            "original_filename": entry.file_path.as_posix(),
-            "CWEFixes-Number": entry.cve_id,
+            "CVEFixes-Number": entry.cve_id,
             "description": entry.description,
             "cwe_number": entry.cwe_id,
         }

@@ -17,7 +17,7 @@
             "request": "launch",
             "program": "llm_scanner/entrypoints/test.py",
             "console": "integratedTerminal"
-        }
+        },
         {
             "name": "Python Debugger: load data in neo4j",
             "type": "debugpy",
@@ -26,6 +26,23 @@
             "args": [
                 "load",
                 "tests/data"
+            ],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Python Debugger: build CVEFixes benchmark",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "llm_scanner/cli.py",
+            "args": [
+                "build-cvefixes-benchmark",
+                "/Users/somen/Downloads/CVEfixes_v1.0.8/Data/CVEfixes.db",
+                "-n",
+                "300",
+                "--max-call-depth",
+                "12",
+                "--token-budget",
+                "16000"
             ],
             "console": "integratedTerminal"
         }

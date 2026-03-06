@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -27,6 +28,8 @@ NODE_KIND_TO_LABEL: Final[dict[str, str]] = {
     "VariableNode": "Variable",
     "CallNode": "Call",
 }
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class GraphRepository(Neo4jClient):
@@ -90,6 +93,7 @@ class GraphRepository(Neo4jClient):
         """
 
         self._clear_database()
+        _LOGGER.info("Start loading %d nodes and %d edges into Neo4j.", len(nodes), len(edges))
         node_rows = graph_node_rows(nodes)
         nodes_by_label: dict[str, list[dict[str, object]]] = defaultdict(list)
         for row in node_rows:

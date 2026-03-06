@@ -3,6 +3,7 @@
 import logging
 import sys
 from pathlib import Path
+from tempfile import gettempdir
 from typing import Annotated, Final
 
 import typer
@@ -40,7 +41,7 @@ DEFAULT_TESTS_DIR: Final[Path] = ROOT_DIR / "tests"
 DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
 DEFAULT_BENCHMARK_DIR: Final[Path] = ROOT_DIR / "data"
-DEFAULT_REPO_CACHE_DIR: Final[Path] = DEFAULT_BENCHMARK_DIR / "cvefixes_repos"
+DEFAULT_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cvefixes_repos"
 
 
 def _configure_logging(log_level: str) -> None:

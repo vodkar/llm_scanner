@@ -94,7 +94,7 @@ def test_context_assembler_renders_snippet_and_respects_budget(
     bandit_repo.insert_edges([StaticAnalysisReports(src=str(finding.identifier), dst=foo_id)])
 
     def estimator(text: str) -> int:
-        return max(1, text.count("\n\n") + 1)
+        return max(1, text.count("\n") + 1)
 
     service = ContextAssemblerService(
         project_root=PROJECT_ROOT,
@@ -102,7 +102,7 @@ def test_context_assembler_renders_snippet_and_respects_budget(
         dlint_repository=dlint_repo,
         context_repository=ContextRepository(client=neo4j_client),
         max_call_depth=3,
-        token_budget=2,
+        token_budget=6,
         token_estimator=estimator,
     )
 
@@ -110,12 +110,11 @@ def test_context_assembler_renders_snippet_and_respects_budget(
 
     assert len(assembly.findings) == 1
     context = assembly.findings[0]
-    assert context.finding_id == str(finding.identifier)
     assert context.description == "cwe=79 severity=HIGH"
     assert "def foo" in context.context_text
     assert "Node:" not in context.context_text
     assert "def bar" in context.context_text
-    assert context.token_count == 2
+    assert context.token_count == 5
 
 
 def test_context_assembler_includes_code_nodes(neo4j_client: Neo4jClient) -> None:
@@ -162,6 +161,8 @@ def test_context_assembler_prefers_full_enclosing_node(neo4j_client: Neo4jClient
         bandit_repository=bandit_repo,
         dlint_repository=dlint_repo,
         context_repository=ContextRepository(client=neo4j_client),
+        max_call_depth=3,
+        token_budget=500,
     )
 
     selected_node_id = service.select_full_context_node_id(
@@ -231,32 +232,6 @@ def test_assemble_for_vulnerability_span_filters_before_context(
     )
 
     assert len(associated.findings) == 1
-    assert associated.findings[0].finding_id == str(associated_finding.identifier)
     assert "def foo" in associated.findings[0].context_text
 
     assert len(non_associated.findings) == 1
-    assert non_associated.findings[0].finding_id == str(non_associated_finding.identifier)
-
-
-def test_sanitize_python_snippet_removes_trailing_incomplete_declaration() -> None:
-    """Sanitizer should remove trailing declarations that have no body in snippet."""
-
-    snippet = "def first():\n    return 1\n\n\ndef second(arg):"
-
-    sanitized = ContextAssemblerService.sanitize_python_snippet(snippet)
-
-    assert "def first():" in sanitized
-    assert "return 1" in sanitized
-    assert "def second(arg):" not in sanitized
-
-
-def test_sanitize_python_snippet_keeps_complete_trailing_declaration() -> None:
-    """Sanitizer should keep trailing declarations that include a body."""
-
-    snippet = "def first():\n    return 1\n\ndef second(arg):\n    return arg\n"
-
-    sanitized = ContextAssemblerService.sanitize_python_snippet(snippet)
-
-    assert "def first():" in sanitized
-    assert "def second(arg):" in sanitized
-    assert "return arg" in sanitized

@@ -16,7 +16,7 @@ from models.nodes import Node
 from services.cpg_parser.ts_parser.node_processor import NodeProcessor
 from services.cpg_parser.types import ParserResult
 
-logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 
 class CPGFileBuilder(BaseModel):
@@ -108,6 +108,8 @@ class CPGDirectoryBuilder(BaseModel):
             "venv",
             ".mypy_cache",
             ".pytest_cache",
+            "tests",
+            "test",
         }
     )
     on_error: Literal["raise", "skip"] = "raise"
@@ -125,6 +127,7 @@ class CPGDirectoryBuilder(BaseModel):
                 collisions are detected.
             Exception: Re-raises any parse error if `on_error="raise"`.
         """
+        _LOGGER.info("Start building CPG for directory: %s", self.root)
 
         python_files = self._collect_python_files()
 
@@ -157,7 +160,7 @@ class CPGDirectoryBuilder(BaseModel):
             except Exception:
                 if self.on_error == "raise":
                     raise
-                logger.exception("Failed to parse Python file: %s", file_path)
+                _LOGGER.exception("Failed to parse Python file: %s", file_path)
                 continue
 
             for node_id, node in nodes.items():
@@ -169,6 +172,14 @@ class CPGDirectoryBuilder(BaseModel):
                 merged_nodes[node_id] = node
 
             merged_edges.extend(edges)
+
+        _LOGGER.info(
+            "Finished building CPG for directory: %s. Parsed %d files with %d nodes and %d edges.",
+            self.root,
+            len(python_files),
+            len(merged_nodes),
+            len(merged_edges),
+        )
 
         return merged_nodes, merged_edges
 
@@ -236,7 +247,7 @@ class CPGDirectoryBuilder(BaseModel):
             except Exception:
                 if self.on_error == "raise":
                     raise
-                logger.exception("Failed to parse Python file (symbol index): %s", file_path)
+                _LOGGER.exception("Failed to parse Python file (symbol index): %s", file_path)
                 continue
 
             module_symbols: dict[str, NodeID] = {}
