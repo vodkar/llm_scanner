@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import json
 import logging
 import random
 import sqlite3
@@ -49,23 +51,8 @@ class CVEFixesLoaderService(BaseModel):
         grouped: dict[tuple[str, str, str, bool], _EntryAccumulator] = {}
 
         for row in rows:
-            before_change = self._parse_bool(self._get_row_value(row, "before_change"))
-            if before_change is None:
-                continue
-            is_vulnerable = before_change
-
-            start_line = self._parse_int(self._get_row_value(row, "start_line"))
-            end_line = self._parse_int(self._get_row_value(row, "end_line"))
-            if start_line is None or end_line is None:
-                continue
-
-            file_path = self._resolve_span_file_path(
-                is_vulnerable,
-                self._get_row_value(row, "old_path"),
-                self._get_row_value(row, "new_path"),
-                self._get_row_value(row, "filename"),
-            )
-            if file_path is None:
+            diff_parsed = self._parse_diff_parsed(self._get_row_value(row, "diff_parsed"))
+            if diff_parsed is None:
                 continue
 
             cwe_id = self._parse_cwe_id(self._get_row_value(row, "cwe_id"))
@@ -82,24 +69,39 @@ class CVEFixesLoaderService(BaseModel):
             if not cve_id or not repo_url or not fix_hash:
                 continue
 
-            group_key = (cve_id, repo_url, fix_hash, is_vulnerable)
-            if group_key not in grouped:
-                grouped[group_key] = _EntryAccumulator(
-                    cve_id=cve_id,
-                    repo_url=repo_url,
-                    fix_hash=fix_hash,
-                    is_vulnerable=is_vulnerable,
+            for is_vulnerable in (True, False):
+                line_spans = self._extract_diff_line_spans(diff_parsed, is_vulnerable)
+                if not line_spans:
+                    continue
+
+                file_path = self._resolve_span_file_path(
+                    is_vulnerable,
+                    self._get_row_value(row, "old_path"),
+                    self._get_row_value(row, "new_path"),
+                    self._get_row_value(row, "filename"),
                 )
+                if file_path is None:
+                    continue
 
-            accumulator = grouped[group_key]
-            accumulator.file_spans[file_path].add((start_line, end_line))
+                group_key = (cve_id, repo_url, fix_hash, is_vulnerable)
+                if group_key not in grouped:
+                    grouped[group_key] = _EntryAccumulator(
+                        cve_id=cve_id,
+                        repo_url=repo_url,
+                        fix_hash=fix_hash,
+                        is_vulnerable=is_vulnerable,
+                    )
 
-            if not accumulator.description and description:
-                accumulator.description = description
-            if accumulator.cwe_id is None and cwe_id is not None:
-                accumulator.cwe_id = cwe_id
-            if accumulator.severity is None and severity is not None:
-                accumulator.severity = severity
+                accumulator = grouped[group_key]
+                for start_line, end_line in line_spans:
+                    accumulator.file_spans[file_path].add((start_line, end_line))
+
+                if not accumulator.description and description:
+                    accumulator.description = description
+                if accumulator.cwe_id is None and cwe_id is not None:
+                    accumulator.cwe_id = cwe_id
+                if accumulator.severity is None and severity is not None:
+                    accumulator.severity = severity
 
         entries: list[CVEFixesEntry] = []
         for key in sorted(grouped.keys()):
@@ -107,7 +109,7 @@ class CVEFixesLoaderService(BaseModel):
             files_spans = [
                 FileSpans(
                     file_path=file_path,
-                    line_spans=sorted(spans),
+                    line_spans=self._merge_spans(spans),
                 )
                 for file_path, spans in sorted(
                     accumulator.file_spans.items(), key=lambda item: item[0].as_posix()
@@ -156,19 +158,15 @@ class CVEFixesLoaderService(BaseModel):
         query = (
             "SELECT f.cve_id AS cve_id, f.hash AS fix_hash, f.repo_url AS repo_url, "
             "fc.filename AS filename, fc.old_path AS old_path, fc.new_path AS new_path, "
-            "mc.start_line AS start_line, mc.end_line AS end_line, "
-            "mc.before_change AS before_change, "
+            "fc.diff_parsed AS diff_parsed, "
             "c.description AS description, c.cvss3_base_severity AS cvss3_base_severity, "
             "c.severity AS severity, cc.cwe_id AS cwe_id "
             "FROM fixes f "
             "JOIN file_change fc ON fc.hash = f.hash "
-            "JOIN method_change mc ON mc.file_change_id = fc.file_change_id "
             "LEFT JOIN cve c ON c.cve_id = f.cve_id "
             "LEFT JOIN cwe_classification cc ON cc.cve_id = f.cve_id "
             "WHERE fc.programming_language = 'Python' "
-            "AND mc.start_line IS NOT NULL "
-            "AND mc.end_line IS NOT NULL "
-            "AND mc.before_change IS NOT NULL"
+            "AND fc.diff_parsed IS NOT NULL"
         )
 
         connection = sqlite3.connect(self.db_path)
@@ -218,6 +216,91 @@ class CVEFixesLoaderService(BaseModel):
         if text.isdigit():
             return int(text)
         return None
+
+    @classmethod
+    def _parse_diff_parsed(cls, value: object | None) -> dict[str, object] | None:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return value
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        try:
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except (SyntaxError, ValueError):
+            pass
+
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except (TypeError, ValueError):
+            return None
+
+        return None
+
+    @classmethod
+    def _extract_diff_line_spans(
+        cls, diff_parsed: dict[str, object], is_vulnerable: bool
+    ) -> list[tuple[int, int]]:
+        key = "deleted" if is_vulnerable else "added"
+        chunks = diff_parsed.get(key)
+        if not isinstance(chunks, list):
+            return []
+
+        lines: list[int] = []
+        for chunk in chunks:
+            if isinstance(chunk, (list, tuple)) and chunk:
+                parsed_line = cls._parse_int(chunk[0])
+                if parsed_line is not None and parsed_line > 0:
+                    lines.append(parsed_line)
+
+        return cls._collapse_lines_to_spans(lines)
+
+    @staticmethod
+    def _collapse_lines_to_spans(lines: list[int]) -> list[tuple[int, int]]:
+        if not lines:
+            return []
+
+        unique_sorted_lines = sorted(set(lines))
+        spans: list[tuple[int, int]] = []
+
+        span_start = unique_sorted_lines[0]
+        span_end = unique_sorted_lines[0]
+        for line in unique_sorted_lines[1:]:
+            if line == span_end + 1:
+                span_end = line
+                continue
+            spans.append((span_start, span_end))
+            span_start = line
+            span_end = line
+        spans.append((span_start, span_end))
+
+        return spans
+
+    @staticmethod
+    def _merge_spans(spans: set[tuple[int, int]]) -> list[tuple[int, int]]:
+        if not spans:
+            return []
+
+        ordered = sorted(spans)
+        merged: list[tuple[int, int]] = []
+
+        current_start, current_end = ordered[0]
+        for start, end in ordered[1:]:
+            if start <= current_end + 1:
+                current_end = max(current_end, end)
+                continue
+            merged.append((current_start, current_end))
+            current_start, current_end = start, end
+
+        merged.append((current_start, current_end))
+        return merged
 
     @staticmethod
     def _normalize_severity(*values: object | None) -> str | None:

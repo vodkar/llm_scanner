@@ -15,6 +15,7 @@ from models.edges.data_flow import (
     DataFlowDefinedBy,
     DataFlowFlowsTo,
     DataFlowRelationshipType,
+    DataFlowUsedBy,
     DefinitionOperation,
 )
 from models.nodes import CallNode, CodeBlockNode, Node, VariableNode
@@ -50,6 +51,7 @@ class NodeProcessor(BaseModel):
         default_factory=lambda: defaultdict(list[NodeID])
     )
     __max_node_name_len: int = PrivateAttr(default=256)
+    __used_by_emitted: set[tuple[NodeID, NodeID]] = PrivateAttr(default_factory=set)
 
     def __compact_node_name(self, name: str) -> str:
         """Clamp node names to a safe length for Neo4j indexes.
@@ -159,6 +161,56 @@ class NodeProcessor(BaseModel):
         function_id = self.__get_node_id(NodeType.FUNCTION, function_name, node)
         self.__bind_symbol(function_name, function_id)
 
+    def __prebind_top_level_variables(
+        self, top_level_blocks: list[list[TSNode]]
+    ) -> dict[NodeID, Node]:
+        """Pre-bind top-level assignment targets so functions can resolve them.
+
+        Creates VariableNode objects early and binds their names in the module
+        scope. Returns the created nodes so callers can merge them into the
+        result dict.
+        """
+        nodes: dict[NodeID, Node] = {}
+        for block_nodes in top_level_blocks:
+            for block_node in block_nodes:
+                # Unwrap expression_statement → assignment when present.
+                actual = block_node
+                if block_node.type == "expression_statement":
+                    for child in block_node.children:
+                        if child.type in {
+                            "assignment",
+                            "augmented_assignment",
+                            "annotated_assignment",
+                        }:
+                            actual = child
+                            break
+                if actual.type not in {
+                    "assignment",
+                    "augmented_assignment",
+                    "annotated_assignment",
+                }:
+                    continue
+                left = actual.child_by_field_name("left")
+                if not left:
+                    continue
+                type_hint = ""
+                annotation = actual.child_by_field_name("type")
+                if annotation:
+                    type_hint = self.__normalize_name(self.__get_snippet(annotation))
+                for target_name, target_node in self.__iter_assignment_targets(left):
+                    if not target_name:
+                        continue
+                    var = self.__create_variable_node(
+                        kind="variable",
+                        name=target_name,
+                        node=target_node,
+                        type_hint=type_hint,
+                    )
+                    self.__bind_symbol(var.name, var.identifier)
+                    nodes[var.identifier] = var
+                    self.visited_node_ids.add(var.identifier)
+        return nodes
+
     def __resolve_symbol(self, name: str) -> NodeID | None:
         normalized = self.__normalize_name(name)
         for scope in reversed(self.__scope_stack):
@@ -166,6 +218,45 @@ class NodeProcessor(BaseModel):
             if node_id:
                 return node_id
         return None
+
+    def __resolve_symbol_with_depth(self, name: str) -> tuple[NodeID | None, int]:
+        """Resolve a symbol name and return its scope depth.
+
+        Returns:
+            A tuple of (resolved NodeID or None, scope depth index).
+            Depth 0 is the module-level scope. Returns (None, -1) if unresolved.
+        """
+        normalized = self.__normalize_name(name)
+        for depth_from_top, scope in enumerate(reversed(self.__scope_stack)):
+            node_id = scope.get(normalized)
+            if node_id:
+                actual_depth = len(self.__scope_stack) - 1 - depth_from_top
+                return node_id, actual_depth
+        return None, -1
+
+    def __maybe_emit_used_by(
+        self,
+        *,
+        resolved_id: NodeID,
+        resolved_depth: int,
+        caller_id: NodeID,
+        edges: list[RelationshipBase],
+    ) -> None:
+        """Emit a USED_BY edge if a variable is referenced from an outer scope.
+
+        Only emits for variable nodes (not function/class references).
+        Deduplicates to avoid repeated edges for the same (src, dst) pair.
+        """
+        current_depth = len(self.__scope_stack) - 1
+        if resolved_depth >= current_depth:
+            return
+        if not str(resolved_id).startswith("variable:"):
+            return
+        key = (resolved_id, caller_id)
+        if key in self.__used_by_emitted:
+            return
+        self.__used_by_emitted.add(key)
+        edges.append(DataFlowUsedBy(src=resolved_id, dst=caller_id))
 
     def __get_snippet(self, node: TSNode) -> str:
         """Extract the source code snippet for a given Tree-sitter node."""
@@ -392,15 +483,23 @@ class NodeProcessor(BaseModel):
     ) -> None:
         """Add data-flow edges from passed argument nodes to the call."""
         seen_source_ids: set[NodeID] = set()
+        caller_id = self.__current_caller_id()
         for kind, text, atom in self.__iter_call_argument_atoms(call_node):
             if not text:
                 continue
 
             source_id: NodeID | None = None
             if kind in {"identifier", "attribute"}:
-                resolved = self.__resolve_symbol(text)
+                resolved, depth = self.__resolve_symbol_with_depth(text)
                 if resolved is not None:
                     source_id = resolved
+                    if caller_id is not None:
+                        self.__maybe_emit_used_by(
+                            resolved_id=resolved,
+                            resolved_depth=depth,
+                            caller_id=caller_id,
+                            edges=edges,
+                        )
                 # Skip unresolved identifiers - don't create variable_ref nodes
 
             if kind == "call":
@@ -551,6 +650,10 @@ class NodeProcessor(BaseModel):
                 if child.type == "function_definition":
                     self.__bind_function_symbol(child)
 
+            # Pre-bind top-level variable names so inner scopes can resolve them.
+            prebound_vars = self.__prebind_top_level_variables(top_level_blocks)
+            nodes.update(prebound_vars)
+
             # Third pass: process all definitions (classes, functions, etc.)
             for child in node.children:
                 if self.__is_top_level_statement(child):
@@ -594,6 +697,21 @@ class NodeProcessor(BaseModel):
             return self._process_assignment(node)
         if node.type == "call":
             return self._process_call(node)
+
+        # Track outer-scope variable usage for bare identifier references
+        # (e.g. ``return outer_var``, ``if outer_var:``, ``for x in outer_var:``).
+        if node.type == "identifier":
+            caller_id = self.__current_caller_id()
+            if caller_id is not None:
+                text = self.__normalize_name(self.__get_snippet(node))
+                resolved, depth = self.__resolve_symbol_with_depth(text)
+                if resolved is not None:
+                    self.__maybe_emit_used_by(
+                        resolved_id=resolved,
+                        resolved_depth=depth,
+                        caller_id=caller_id,
+                        edges=edges,
+                    )
 
         for child in node.children:
             _nodes, _edges = self.process(child, block_level)
@@ -680,6 +798,21 @@ class NodeProcessor(BaseModel):
         caller_id: NodeID | None = self.__current_caller_id()
         if caller_id is None:
             return (nodes, edges)
+
+        # Scan call arguments for outer-scope variable usage even if
+        # the callee is unresolved (e.g. built-in ``print``).
+        for kind, text, _atom in self.__iter_call_argument_atoms(node):
+            if not text:
+                continue
+            if kind in {"identifier", "attribute"}:
+                resolved, depth = self.__resolve_symbol_with_depth(text)
+                if resolved is not None:
+                    self.__maybe_emit_used_by(
+                        resolved_id=resolved,
+                        resolved_depth=depth,
+                        caller_id=caller_id,
+                        edges=edges,
+                    )
 
         callee_id: NodeID | None = self.__resolve_call_target(node)
         if callee_id is None:
@@ -781,15 +914,24 @@ class NodeProcessor(BaseModel):
         source_ids: list[NodeID] = []
         seen_source_ids: set[NodeID] = set()
 
+        current_caller_id = self.__current_caller_id()
+
         for kind, text, atom in self.__iter_source_atoms(right):
             if not text:
                 continue
 
             if kind in {"identifier", "attribute"}:
-                resolved = self.__resolve_symbol(text)
+                resolved, depth = self.__resolve_symbol_with_depth(text)
                 if resolved and resolved not in seen_source_ids:
                     source_ids.append(resolved)
                     seen_source_ids.add(resolved)
+                    if current_caller_id is not None:
+                        self.__maybe_emit_used_by(
+                            resolved_id=resolved,
+                            resolved_depth=depth,
+                            caller_id=current_caller_id,
+                            edges=edges,
+                        )
                 continue
 
             if kind == "call":

@@ -74,3 +74,16 @@ class DataFlowSanitizedBy(RelationshipBase):
         description="Relationship type identifier",
     )
     at_line: int = Field(..., ge=1, description="Line number where sanitization occurs")
+
+
+class DataFlowUsedBy(RelationshipBase):
+    """Captures how a variable is used by another variable or call site.
+
+    Attributes:
+        type: Relationship type identifier fixed to USED_BY.
+    """
+
+    type: Literal[DataFlowRelationshipType.USED_BY] = Field(
+        default=DataFlowRelationshipType.USED_BY,
+        description="Relationship type identifier",
+    )

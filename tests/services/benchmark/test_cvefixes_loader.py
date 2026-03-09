@@ -16,9 +16,10 @@ def test_fetch_python_entries_aggregates_spans_and_vulnerability_labels(
             "old_path": "src/vuln.py",
             "new_path": "src/safe.py",
             "filename": "src/vuln.py",
-            "start_line": 10,
-            "end_line": 12,
-            "before_change": 1,
+            "diff_parsed": (
+                "{'added': [(30, 'safe_call()'), (31, 'return')], "
+                "'deleted': [(10, 'bad_call()'), (11, 'x=1'), (12, 'y=2')]}"
+            ),
             "description": "sample",
             "cvss3_base_severity": "HIGH",
             "severity": None,
@@ -31,9 +32,9 @@ def test_fetch_python_entries_aggregates_spans_and_vulnerability_labels(
             "old_path": "src/vuln.py",
             "new_path": "src/safe.py",
             "filename": "src/vuln.py",
-            "start_line": 20,
-            "end_line": 21,
-            "before_change": True,
+            "diff_parsed": (
+                "{'added': [], 'deleted': [(20, 'var = user_input'), (21, 'sink(var)')]}"
+            ),
             "description": "sample",
             "cvss3_base_severity": "HIGH",
             "severity": None,
@@ -46,9 +47,7 @@ def test_fetch_python_entries_aggregates_spans_and_vulnerability_labels(
             "old_path": "src/vuln.py",
             "new_path": "src/safe.py",
             "filename": "src/vuln.py",
-            "start_line": 10,
-            "end_line": 12,
-            "before_change": 0,
+            "diff_parsed": "{'added': [(30, 'safe_call()')], 'deleted': []}",
             "description": "sample",
             "cvss3_base_severity": "HIGH",
             "severity": None,
@@ -78,7 +77,7 @@ def test_fetch_python_entries_aggregates_spans_and_vulnerability_labels(
     assert non_vulnerable_entry.files_spans == [
         (
             Path("src/safe.py"),
-            [(10, 12)],
+            [(30, 31)],
         )
     ]
 
@@ -92,9 +91,7 @@ def test_fetch_python_entries_deduplicates_identical_spans(monkeypatch: MonkeyPa
             "old_path": "pkg/a.py",
             "new_path": "pkg/a.py",
             "filename": "pkg/a.py",
-            "start_line": 3,
-            "end_line": 4,
-            "before_change": True,
+            "diff_parsed": "{'added': [], 'deleted': [(3, 'x = 1'), (4, 'do(x)')]}",
             "description": "dup test",
             "cvss3_base_severity": "LOW",
             "severity": None,
@@ -107,9 +104,7 @@ def test_fetch_python_entries_deduplicates_identical_spans(monkeypatch: MonkeyPa
             "old_path": "pkg/a.py",
             "new_path": "pkg/a.py",
             "filename": "pkg/a.py",
-            "start_line": 3,
-            "end_line": 4,
-            "before_change": True,
+            "diff_parsed": "{'added': [], 'deleted': [(3, 'x = 1'), (4, 'do(x)')]}",
             "description": "dup test",
             "cvss3_base_severity": "LOW",
             "severity": None,

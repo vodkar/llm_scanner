@@ -19,6 +19,37 @@ class RepoCheckoutService(BaseModel):
     cache_dir: Path = Field(..., description="Directory to store cloned repositories")
     git_executable: str = Field(default="git", description="Git executable to use")
 
+    def checkout_repo(self, repo_url: str, fix_hash: str, is_vulnerable: bool) -> Path:
+        """Ensure repository is cloned and checked out to a target commit.
+
+        Args:
+            repo_url: Repository URL.
+            fix_hash: Fix commit hash.
+            is_vulnerable: Whether to checkout vulnerable (parent) or fixed commit.
+
+        Returns:
+            Path to the checked-out repository.
+        """
+
+        _LOGGER.info(
+            "Checking out repo %s at %s revision for fix hash %s",
+            repo_url,
+            "vulnerable" if is_vulnerable else "fixed",
+            fix_hash,
+        )
+
+        repo_path = self._repo_path_for_url(repo_url)
+        if not repo_path.exists():
+            self._clone_repo(repo_url, repo_path)
+        else:
+            self._fetch_repo(repo_path)
+
+        target_hash = fix_hash
+        if is_vulnerable:
+            target_hash = self._resolve_parent_hash(repo_path, fix_hash)
+        self._checkout_commit(repo_path, target_hash)
+        return repo_path
+
     def checkout_vulnerable_repo(self, repo_url: str, fix_hash: str) -> Path:
         """Ensure repository is cloned and checked out to vulnerable commit.
 
@@ -29,17 +60,7 @@ class RepoCheckoutService(BaseModel):
         Returns:
             Path to the checked-out repository.
         """
-        _LOGGER.info("Checking out repo %s at fix hash %s", repo_url, fix_hash)
-
-        repo_path = self._repo_path_for_url(repo_url)
-        if not repo_path.exists():
-            self._clone_repo(repo_url, repo_path)
-        else:
-            self._fetch_repo(repo_path)
-
-        parent_hash = self._resolve_parent_hash(repo_path, fix_hash)
-        self._checkout_commit(repo_path, parent_hash)
-        return repo_path
+        return self.checkout_repo(repo_url=repo_url, fix_hash=fix_hash, is_vulnerable=True)
 
     def _repo_path_for_url(self, repo_url: str) -> Path:
         parsed = urlparse(repo_url)
@@ -78,7 +99,7 @@ class RepoCheckoutService(BaseModel):
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=360,
             )
         except subprocess.CalledProcessError as exc:
             _LOGGER.exception("Git command failed: %s", " ".join([self.git_executable, *args]))

@@ -65,11 +65,18 @@ class CVEFixesBenchmarkService(BaseModel):
         repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir)
 
         for entry in candidates:
+            if entry.cve_id != "CVE-2020-26280":
+                continue
+
             if len(samples) >= self.sample_count:
                 break
 
             try:
-                repo_path = repo_service.checkout_vulnerable_repo(entry.repo_url, entry.fix_hash)
+                repo_path = repo_service.checkout_repo(
+                    repo_url=entry.repo_url,
+                    fix_hash=entry.fix_hash,
+                    is_vulnerable=entry.is_vulnerable,
+                )
             except Exception:
                 logger.exception("Failed to checkout %s at %s", entry.repo_url, entry.fix_hash)
                 unassociated.append(
