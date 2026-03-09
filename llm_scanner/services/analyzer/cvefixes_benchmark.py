@@ -65,9 +65,6 @@ class CVEFixesBenchmarkService(BaseModel):
         repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir)
 
         for entry in candidates:
-            if entry.cve_id != "CVE-2020-26280":
-                continue
-
             if len(samples) >= self.sample_count:
                 break
 
