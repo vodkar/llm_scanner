@@ -23,6 +23,12 @@ class BaseCodeNode(BaseModel):
     token_count: int = Field(
         default=0, ge=0, description="Approximate token count for LLM budgeting"
     )
+    score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Relevance score for ranking in context assembly",
+    )
 
     @model_validator(mode="after")
     def validate_line_range(self) -> Self:
@@ -31,3 +37,7 @@ class BaseCodeNode(BaseModel):
         if self.line_end < self.line_start:
             raise ValueError("line_end must be greater than or equal to line_start")
         return self
+
+    def update_score(self, new_score: float) -> "BaseCodeNode":
+        """Return a new instance with an updated relevance score."""
+        return self.model_copy(update={"score": new_score})

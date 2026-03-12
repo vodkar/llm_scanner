@@ -14,11 +14,16 @@ from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNod
 from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.context import ContextRepository
+from services.context_assembler.ranking import NodeRelevanceRankingService
 
 TokenEstimator = Callable[[str], int]
 _LOGGER = logging.getLogger(__name__)
 LOGGING_INTERVAL = 200
-FULL_CONTEXT_NODE_KINDS: tuple[str, ...] = ("FunctionNode", "ClassNode", "CodeBlockNode")
+FULL_CONTEXT_NODE_KINDS: tuple[str, ...] = (
+    "FunctionNode",
+    "ClassNode",
+    "CodeBlockNode",
+)
 PREFERRED_RENDER_NODE_KINDS: tuple[str, ...] = (
     "FunctionNode",
     "ClassNode",
@@ -79,7 +84,9 @@ class ContextAssemblerService(BaseModel):
         """Assemble context for findings overlapping specific file and line spans."""
 
         _LOGGER.info(
-            "Assembling context for %d file spans in repository: %s", len(files_spans), repo_path
+            "Assembling context for %d file spans in repository: %s",
+            len(files_spans),
+            repo_path,
         )
 
         for file_span in files_spans:
@@ -375,6 +382,15 @@ class ContextAssemblerService(BaseModel):
             start_node_ids,
             self.max_call_depth,
         )
+        nodes = NodeRelevanceRankingService(
+            project_root=self.project_root,
+            snippet_reader=self._read_snippet,
+        ).rank_context_nodes(
+            nodes=nodes,
+            reported_nodes=reported_nodes,
+            enclosing_nodes=enclosing_nodes,
+            finding=finding,
+        )
         context_text, token_count = self._render_context(self.project_root, nodes)
 
         return Context(
@@ -535,8 +551,11 @@ class ContextAssemblerService(BaseModel):
         return sorted(
             candidate_nodes.values(),
             key=lambda node: (
+                -node.score,
                 node.depth,
-                node.repeats,
+                -node.repeats,
+                str(node.file_path),
+                node.line_start,
             ),
         )
 

@@ -8,7 +8,6 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from clients.neo4j import Neo4jConfig, build_client
-from context_assembler import ContextAssemblerService
 from models.benchmark.benchmark import (
     BenchmarkDataset,
     BenchmarkMetadata,
@@ -24,6 +23,7 @@ from repositories.context import ContextRepository
 from repositories.graph import GraphRepository
 from services.benchmark.cvefixes_loader import CVEFixesLoaderService
 from services.benchmark.repo_checkout import RepoCheckoutService
+from services.context_assembler.context_assembler import ContextAssemblerService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
 
 logger = logging.getLogger(__name__)

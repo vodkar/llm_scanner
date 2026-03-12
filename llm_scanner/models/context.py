@@ -20,8 +20,15 @@ class CodeContextNode(BaseModel):
     repeats: int = Field(
         default=0, ge=0, description="Number of times this node is repeated in context"
     )
+    score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Relevance score for ranking in context assembly",
+    )
     findings: list[FindingNode] = Field(
-        default_factory=list[FindingNode], description="Findings associated with this node"
+        default_factory=list[FindingNode],
+        description="Findings associated with this node",
     )
 
 
