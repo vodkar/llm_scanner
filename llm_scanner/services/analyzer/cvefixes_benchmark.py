@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 LOGGING_INTERVAL = 10
 CLEAR_DATABASE_QUERY: Final[str] = "MATCH (n) DETACH DELETE n"
 CURRENT_STRATEGY_NAME: Final[str] = "current"
-DEPTH_SWEEP_SIZES: Final[tuple[int, ...]] = (2, 4, 6, 8, 10)
+DEPTH_SWEEP_SIZES: Final[tuple[int, ...]] = (2, 3, 4, 5, 6)
 
 RankingStrategyFactory = Callable[[Path], ContextNodeRankingStrategy]
 DatasetPathFactory = Callable[[str], Path]

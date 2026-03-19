@@ -499,10 +499,6 @@ def build_cvefixes_benchmark_compare_depth_sizes(
         int | None,
         typer.Option("--seed", help="Random seed for sampling."),
     ] = None,
-    max_call_depth: Annotated[
-        int,
-        typer.Option("--max-call-depth", help="Max call depth for context expansion."),
-    ] = 3,
     token_budget: Annotated[
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
@@ -544,7 +540,7 @@ def build_cvefixes_benchmark_compare_depth_sizes(
         sample_count=sample_count,
         seed=seed,
         neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
-        max_call_depth=max_call_depth,
+        max_call_depth=0,  # Will be overridden in build_all_depth_sizes
         token_budget=token_budget,
     )
     dataset_paths, unassociated_path = service.build_all_depth_sizes()

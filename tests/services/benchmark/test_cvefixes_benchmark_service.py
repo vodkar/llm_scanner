@@ -349,9 +349,9 @@ def test_build_all_depth_sizes_writes_depth_specific_datasets(
 
     dataset_paths, unassociated_paths = service.build_all_depth_sizes()
 
-    assert set(dataset_paths) == {2, 4, 6, 8, 10}
-    assert set(unassociated_paths) == {2, 4, 6, 8, 10}
-    assert sorted(set(observed_depths)) == [2, 4, 6, 8, 10]
+    assert set(dataset_paths) == {2, 3, 4, 5, 6}
+    assert set(unassociated_paths) == {2, 3, 4, 5, 6}
+    assert sorted(set(observed_depths)) == [2, 3, 4, 5, 6]
 
     for depth, dataset_path in dataset_paths.items():
         payload = json.loads(dataset_path.read_text(encoding="utf-8"))
