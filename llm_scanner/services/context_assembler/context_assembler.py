@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict
 from models.base import NodeID
 from models.context import CodeContextNode, Context, FileSpans
 from repositories.context import ContextRepository
-from services.context_assembler.ranking import NodeRelevanceRankingService
+from services.context_assembler.ranking import (
+    ContextNodeRankingStrategy,
+)
 
 TokenEstimator = Callable[[str], int]
 _LOGGER = logging.getLogger(__name__)
@@ -38,6 +40,12 @@ class ContextAssemblerService(BaseModel):
     context_workers: int = 30
     snippet_cache_max_entries: int = 10000
     token_estimator: TokenEstimator | None = None
+    ranking_strategy: ContextNodeRankingStrategy
+
+    def model_post_init(self, __context: object) -> None:
+        """Initialize default ranking strategy when one is not injected."""
+
+        del __context
 
     def assemble_for_spans(self, repo_path: Path, files_spans: list[FileSpans]) -> Context:
         """Assemble context for findings overlapping specific file and line spans."""
@@ -94,11 +102,7 @@ class ContextAssemblerService(BaseModel):
 
         _LOGGER.debug("Rendering context for %d nodes", len(nodes))
 
-        # Zero pass, sorting and prioritization
-        ranking_service = NodeRelevanceRankingService(project_root=self.project_root)
-        nodes = ranking_service.calculate_final_score(ranking_service.rank_context_nodes(nodes))
-        # Respects root nodes first, then score
-        nodes.sort(key=lambda item: (item.depth == 0, item.score), reverse=True)
+        nodes = self.ranking_strategy.rank_nodes(nodes)
 
         # First pass to determine which lines to read, then read each file once and cache lines.
         file_lines_to_read: dict[Path, set[int]] = defaultdict(set)

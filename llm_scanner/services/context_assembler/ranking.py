@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from pathlib import Path
 from typing import Final
@@ -88,7 +90,22 @@ GENERATED_HEADER_MARKERS: Final[tuple[str, ...]] = (
 )
 
 
-class NodeRelevanceRankingService(BaseModel):
+class ContextNodeRankingStrategy(ABC):
+    """Rank context nodes into a ready-to-render order."""
+
+    @abstractmethod
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return context nodes in ready-to-use ranked order.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+
+class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     """Calculate security, context, and final ranking scores for one context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -145,6 +162,23 @@ class NodeRelevanceRankingService(BaseModel):
             )
 
         return scored_nodes
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by the current root-first and final-score strategy.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
+        return sorted(
+            ranked_nodes,
+            key=lambda item: (item.depth == 0, item.score, -item.depth),
+            reverse=True,
+        )
 
     def rank_context_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
         """Calculate context-only scores for a single already-retrieved context.
@@ -392,3 +426,95 @@ class NodeRelevanceRankingService(BaseModel):
         """Clamp and round a score to the expected range."""
 
         return max(0.0, min(1.0, round(score, 6)))
+
+
+class DepthRepeatsContextNodeRankingStrategy(NodeRelevanceRankingService):
+    """Rank nodes by depth, repeats, and context score."""
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by root priority, depth, repeats, and context score.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        ranked_nodes = self.rank_context_nodes(nodes)
+        return sorted(
+            ranked_nodes,
+            key=lambda item: (
+                item.depth != 0,
+                item.depth,
+                -item.repeats,
+                -item.context_score,
+                str(item.file_path),
+                item.line_start,
+            ),
+        )
+
+
+class RandomNodeRankingStrategy(NodeRelevanceRankingService):
+    """Shuffle nodes while keeping root nodes ahead of non-root nodes."""
+
+    random_seed: int | None = None
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes shuffled within root and non-root groups.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        aggregated_nodes = self._aggregate_context_nodes(nodes)
+        rng = random.Random(self.random_seed)
+        root_nodes = [node for node in aggregated_nodes if node.depth == 0]
+        other_nodes = [node for node in aggregated_nodes if node.depth != 0]
+        rng.shuffle(root_nodes)
+        rng.shuffle(other_nodes)
+        return [*root_nodes, *other_nodes]
+
+
+class SecurityScoreNodeRankingStrategy(NodeRelevanceRankingService):
+    """Rank nodes by root priority and security-path score only."""
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by root priority and security score.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        aggregated_nodes = self._aggregate_context_nodes(nodes)
+        return sorted(
+            aggregated_nodes,
+            key=lambda item: (
+                item.depth != 0,
+                -item.security_path_score,
+                str(item.file_path),
+                item.line_start,
+            ),
+        )
+
+
+class DummyNodeRankingStrategy(ContextNodeRankingStrategy):
+    """Return nodes exactly as provided."""
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return the original list unchanged.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            The same node list instance.
+        """
+
+        return nodes

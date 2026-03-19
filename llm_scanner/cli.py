@@ -357,5 +357,203 @@ def build_cvefixes_benchmark(
     )
 
 
+@app.command()
+def build_cvefixes_benchmark_compare_rankings(
+    db_path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to the CVEFixes SQLite database.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ],
+    sample_count: Annotated[
+        int,
+        typer.Option("-n", "--samples", help="Number of samples to generate."),
+    ] = 50,
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            help="Directory to write benchmark JSON files.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_BENCHMARK_DIR,
+    repo_cache_dir: Annotated[
+        Path,
+        typer.Option(
+            "--repo-cache-dir",
+            help="Directory to cache cloned repositories.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_REPO_CACHE_DIR,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Random seed for sampling."),
+    ] = None,
+    max_call_depth: Annotated[
+        int,
+        typer.Option("--max-call-depth", help="Max call depth for context expansion."),
+    ] = 3,
+    token_budget: Annotated[
+        int,
+        typer.Option("--token-budget", help="Token budget for context assembly."),
+    ] = 2048,
+    neo4j_uri: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-uri",
+            help="Neo4j bolt URI.",
+            envvar="NEO4J_URI",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().uri,
+    neo4j_user: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-user",
+            help="Neo4j username.",
+            envvar="NEO4J_USER",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().user,
+    neo4j_password: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-password",
+            help="Neo4j password.",
+            envvar="NEO4J_PASSWORD",
+            show_default=False,
+        ),
+    ] = Neo4jConfig().password,
+) -> None:
+    """Build the CVEFixes-with-context benchmark dataset."""
+
+    service = CVEFixesBenchmarkService(
+        db_path=db_path,
+        output_dir=output_dir,
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
+        max_call_depth=max_call_depth,
+        token_budget=token_budget,
+    )
+    dataset_paths, unassociated_path = service.build_all_ranking_strategies()
+
+    typer.secho(
+        f"Wrote benchmark dataset to {dataset_paths} and unassociated samples to {unassociated_path}",
+        fg=typer.colors.GREEN,
+    )
+
+
+@app.command()
+def build_cvefixes_benchmark_compare_depth_sizes(
+    db_path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to the CVEFixes SQLite database.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ],
+    sample_count: Annotated[
+        int,
+        typer.Option("-n", "--samples", help="Number of samples to generate."),
+    ] = 50,
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            help="Directory to write benchmark JSON files.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_BENCHMARK_DIR,
+    repo_cache_dir: Annotated[
+        Path,
+        typer.Option(
+            "--repo-cache-dir",
+            help="Directory to cache cloned repositories.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_REPO_CACHE_DIR,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Random seed for sampling."),
+    ] = None,
+    max_call_depth: Annotated[
+        int,
+        typer.Option("--max-call-depth", help="Max call depth for context expansion."),
+    ] = 3,
+    token_budget: Annotated[
+        int,
+        typer.Option("--token-budget", help="Token budget for context assembly."),
+    ] = 2048,
+    neo4j_uri: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-uri",
+            help="Neo4j bolt URI.",
+            envvar="NEO4J_URI",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().uri,
+    neo4j_user: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-user",
+            help="Neo4j username.",
+            envvar="NEO4J_USER",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().user,
+    neo4j_password: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-password",
+            help="Neo4j password.",
+            envvar="NEO4J_PASSWORD",
+            show_default=False,
+        ),
+    ] = Neo4jConfig().password,
+) -> None:
+    """Build the CVEFixes-with-context benchmark dataset."""
+
+    service = CVEFixesBenchmarkService(
+        db_path=db_path,
+        output_dir=output_dir,
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
+        max_call_depth=max_call_depth,
+        token_budget=token_budget,
+    )
+    dataset_paths, unassociated_path = service.build_all_depth_sizes()
+
+    typer.secho(
+        f"Wrote benchmark dataset to {dataset_paths} and unassociated samples to {unassociated_path}",
+        fg=typer.colors.GREEN,
+    )
+
+
 if __name__ == "__main__":
     app()
