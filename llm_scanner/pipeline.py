@@ -2,35 +2,48 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from clients.neo4j import build_client
+from clients.neo4j import Neo4jClient
 from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.graph import GraphRepository
 from services.analyzer.bandit import BanditAnalyzerService
 from services.analyzer.dlint import DlintAnalyzerService
+from services.context_assembler.ranking import NodeRelevanceRankingService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
 
 
 class GeneralPipeline(BaseModel):
     src: Path
+    neo4j_client: Neo4jClient
+
+    class Config:
+        arbitrary_types_allowed = True
 
     def run(self) -> None:
-        with build_client("", "", "") as neo4j_client:
-            graph_repository = GraphRepository(neo4j_client)
+        project_root = self.src.resolve()
 
-            nodes, edges = CPGDirectoryBuilder(root=self.src.resolve()).build()
-            graph_repository.load(nodes, edges)
+        graph_repository = GraphRepository(self.neo4j_client)
+        dlint_findings_repository = DlintFindingsRepository(client=self.neo4j_client)
+        bandit_findings_repository = BanditFindingsRepository(client=self.neo4j_client)
 
-            dlint_analyzer_service = DlintAnalyzerService(
-                target=self.src,
-                graph_repository=graph_repository,
-                findings_repository=DlintFindingsRepository(client=neo4j_client),
-            )
-            dlint_analyzer_service.enrich_graph_with_findings()
+        ranking_service = NodeRelevanceRankingService(project_root=project_root)
+        dlint_service = DlintAnalyzerService(
+            project_root=project_root,
+            graph_repository=graph_repository,
+            findings_repository=dlint_findings_repository,
+        )
+        bandit_service = BanditAnalyzerService(
+            project_root=project_root,
+            graph_repository=graph_repository,
+            findings_repository=bandit_findings_repository,
+        )
 
-            bandit_analyzer_service = BanditAnalyzerService(
-                target=self.src,
-                graph_repository=graph_repository,
-                findings_repository=BanditFindingsRepository(client=neo4j_client),
-            )
-            bandit_analyzer_service.enrich_graph_with_findings()
+        nodes, edges = CPGDirectoryBuilder(root=project_root).build()
+        dlint_findings, dlint_edges = dlint_service.get_findings_with_edges(list(nodes.values()))
+        bandit_findings, bandit_edges = bandit_service.get_findings_with_edges(list(nodes.values()))
+        _nodes = ranking_service.calculate_security_score(
+            list(nodes.values()), dlint_findings + bandit_findings, dlint_edges + bandit_edges
+        )
+        nodes = {node.identifier: node for node in _nodes}
+
+        graph_repository.load(nodes, edges)

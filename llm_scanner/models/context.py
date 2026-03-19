@@ -4,13 +4,12 @@ from typing import NamedTuple
 from pydantic import BaseModel, Field
 
 from models.base import NodeID
-from models.nodes.finding import FindingNode
 
 
 class CodeContextNode(BaseModel):
     """Represents a code node included in LLM context."""
 
-    node_id: NodeID = Field(..., description="Code node identifier")
+    identifier: NodeID = Field(..., description="Code node identifier")
     node_kind: str | None = Field(default=None, description="Type of code node")
     name: str | None = Field(default=None, description="Optional node name")
     file_path: Path = Field(..., description="Relative path to the source file")
@@ -26,9 +25,23 @@ class CodeContextNode(BaseModel):
         le=1.0,
         description="Relevance score for ranking in context assembly",
     )
-    findings: list[FindingNode] = Field(
-        default_factory=list[FindingNode],
-        description="Findings associated with this node",
+    finding_evidence_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Finding-derived evidence score for ranking",
+    )
+    security_path_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Security path score for ranking",
+    )
+    context_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Context-only relevance score for ranking",
     )
 
 
@@ -41,12 +54,6 @@ class Context(BaseModel):
     # )
     context_text: str = Field(default="", description="Rendered LLM context")
     token_count: int = Field(default=0, ge=0, description="Estimated token count")
-
-
-class ContextAssembly(BaseModel):
-    """Context bundle for all findings in a project."""
-
-    contexts: list[Context] = Field(default_factory=list[Context])
 
 
 class FileSpans(NamedTuple):

@@ -23,11 +23,17 @@ class BaseCodeNode(BaseModel):
     token_count: int = Field(
         default=0, ge=0, description="Approximate token count for LLM budgeting"
     )
-    score: float = Field(
+    finding_evidence_score: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Relevance score for ranking in context assembly",
+        description="Finding-derived evidence score for ranking",
+    )
+    security_path_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Security path score for ranking",
     )
 
     @model_validator(mode="after")
@@ -38,6 +44,11 @@ class BaseCodeNode(BaseModel):
             raise ValueError("line_end must be greater than or equal to line_start")
         return self
 
-    def update_score(self, new_score: float) -> "BaseCodeNode":
+    def update_scores(self, finding_evidence_score: float, security_path_score: float) -> Self:
         """Return a new instance with an updated relevance score."""
-        return self.model_copy(update={"score": new_score})
+        return self.model_copy(
+            update={
+                "finding_evidence_score": finding_evidence_score,
+                "security_path_score": security_path_score,
+            }
+        )

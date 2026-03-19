@@ -234,28 +234,28 @@ def load(
         loader.load(*result)
 
 
-@app.command("run-pipeline")
-def run_pipeline(
-    src: Annotated[
-        Path,
-        typer.Argument(
-            help="Path to the project root to scan.",
-            exists=True,
-            file_okay=False,
-            dir_okay=True,
-            readable=True,
-            resolve_path=True,
-        ),
-    ],
-) -> None:
-    """Run the full analysis pipeline against a project directory.
+# @app.command("run-pipeline")
+# def run_pipeline(
+#     src: Annotated[
+#         Path,
+#         typer.Argument(
+#             help="Path to the project root to scan.",
+#             exists=True,
+#             file_okay=False,
+#             dir_okay=True,
+#             readable=True,
+#             resolve_path=True,
+#         ),
+#     ],
+# ) -> None:
+#     """Run the full analysis pipeline against a project directory.
 
-    Args:
-        src: Project root to scan and load into Neo4j.
-    """
-    pipeline = GeneralPipeline(src=src)
-    pipeline.run()
-    typer.secho(f"Pipeline completed for {src}", fg=typer.colors.GREEN)
+#     Args:
+#         src: Project root to scan and load into Neo4j.
+#     """
+#     pipeline = GeneralPipeline(src=src)
+#     pipeline.run()
+#     typer.secho(f"Pipeline completed for {src}", fg=typer.colors.GREEN)
 
 
 @app.command("build-cvefixes-benchmark")

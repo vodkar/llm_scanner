@@ -14,7 +14,7 @@ from .taint import (
 )
 from .variable import VariableNode
 
-type Node = FunctionNode | ClassNode | CodeBlockNode | ModuleNode | VariableNode | CallNode
+type Node = FunctionNode | ClassNode | CodeBlockNode | VariableNode | CallNode
 
 __all__ = [
     "CallNode",

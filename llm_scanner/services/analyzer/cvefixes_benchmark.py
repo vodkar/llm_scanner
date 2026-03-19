@@ -17,16 +17,14 @@ from models.benchmark.benchmark import (
 )
 from models.benchmark.cvefixes import CVEFixesEntry
 from models.context import Context
-from repositories.analyzers.bandit import BanditFindingsRepository
-from repositories.analyzers.dlint import DlintFindingsRepository
+from pipeline import GeneralPipeline
 from repositories.context import ContextRepository
-from repositories.graph import GraphRepository
 from services.benchmark.cvefixes_loader import CVEFixesLoaderService
 from services.benchmark.repo_checkout import RepoCheckoutService
 from services.context_assembler.context_assembler import ContextAssemblerService
-from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
 
 logger = logging.getLogger(__name__)
+LOGGING_INTERVAL = 10
 
 
 class CVEFixesBenchmarkService(BaseModel):
@@ -85,6 +83,9 @@ class CVEFixesBenchmarkService(BaseModel):
                 )
                 continue
 
+            if len(samples) % LOGGING_INTERVAL == 0:
+                logger.info("Processing sample %d/%d", len(samples) + 1, self.sample_count)
+
             context = self._scan_repository_for_entry(
                 repo_path=repo_path,
                 entry=entry,
@@ -112,7 +113,6 @@ class CVEFixesBenchmarkService(BaseModel):
 
     def _scan_repository_for_entry(
         self,
-        *,
         repo_path: Path,
         entry: CVEFixesEntry,
     ) -> Context:
@@ -121,15 +121,11 @@ class CVEFixesBenchmarkService(BaseModel):
             self.neo4j_config.user,
             self.neo4j_config.password,
         ) as neo4j_client:
-            graph_repository = GraphRepository(neo4j_client)
-            nodes, edges = CPGDirectoryBuilder(root=repo_path).build()
-            graph_repository.load(nodes, edges)
+            GeneralPipeline(src=repo_path, neo4j_client=neo4j_client).run()
 
             context_repository = ContextRepository(client=neo4j_client)
             context_service = ContextAssemblerService(
                 project_root=repo_path,
-                bandit_repository=BanditFindingsRepository(client=neo4j_client),
-                dlint_repository=DlintFindingsRepository(client=neo4j_client),
                 context_repository=context_repository,
                 max_call_depth=self.max_call_depth,
                 token_budget=self.token_budget,
