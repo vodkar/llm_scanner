@@ -82,7 +82,9 @@ FINDING_REPORTED_CODE_QUERY: Final[LiteralString] = (
     "MATCH (f:Finding {id: fid})-[:REPORTS]->(c:Code) "
     "RETURN fid AS finding_id, c.id AS code_id, c.file_path AS file_path, "
     "c.line_start AS line_start, c.line_end AS line_end, c.name AS name, "
-    "c.node_kind AS node_kind"
+    "c.node_kind AS node_kind, "
+    "c.finding_evidence_score AS finding_evidence_score, "
+    "c.security_path_score AS security_path_score"
 )
 
 CODE_TRAVERSAL_RELATIONSHIP_TYPES: Final[tuple[str, ...]] = (
@@ -99,7 +101,9 @@ CODE_NODES_BY_FILE_LINE_QUERY: Final[LiteralString] = (
     "AND r.line_number <= c.line_end "
     "RETURN r.file_path AS file_path, r.line_number AS line_number, "
     "c.id AS id, c.file_path AS node_file_path, c.line_start AS line_start, "
-    "c.line_end AS line_end, c.node_kind AS node_kind, c.security_path_score AS security_path_score"
+    "c.line_end AS line_end, c.node_kind AS node_kind, "
+    "c.finding_evidence_score AS finding_evidence_score, "
+    "c.security_path_score AS security_path_score"
 )
 
 FINDINGS_BY_PROJECT_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
@@ -268,6 +272,7 @@ def code_bfs_nodes_query(
             "RETURN start.id AS id, start.file_path AS file_path, "
             "start.line_start AS line_start, start.line_end AS line_end, "
             "start.name AS name, start.node_kind AS node_kind, 0 AS depth, "
+            "start.finding_evidence_score AS finding_evidence_score, "
             "start.security_path_score AS security_path_score "
             # "ORDER BY file_path, line_start"
         )
@@ -279,7 +284,8 @@ def code_bfs_nodes_query(
         "WITH n, min(length(p)) AS depth "
         "RETURN n.id AS id, n.file_path AS file_path, n.line_start AS line_start, "
         "n.line_end AS line_end, n.name AS name, n.node_kind AS node_kind, "
-        "depth, n.security_path_score AS security_path_score "
+        "depth, n.finding_evidence_score AS finding_evidence_score, "
+        "n.security_path_score AS security_path_score "
         # "ORDER BY depth, n.file_path, n.line_start"
     )
     return cast(LiteralString, query)
@@ -308,6 +314,7 @@ def code_bfs_nodes_batch_query(
             "RETURN sid AS start_id, start.id AS id, start.file_path AS file_path, "
             "start.line_start AS line_start, start.line_end AS line_end, "
             "start.name AS name, start.node_kind AS node_kind, 0 AS depth, "
+            "start.finding_evidence_score AS finding_evidence_score, "
             "start.security_path_score AS security_path_score "
         )
         return cast(LiteralString, query)
@@ -320,6 +327,7 @@ def code_bfs_nodes_batch_query(
         "RETURN sid AS start_id, n.id AS id, n.file_path AS file_path, "
         "n.line_start AS line_start, n.line_end AS line_end, "
         "n.name AS name, n.node_kind AS node_kind, depth, "
+        "n.finding_evidence_score AS finding_evidence_score, "
         "n.security_path_score AS security_path_score "
     )
     return cast(LiteralString, query)

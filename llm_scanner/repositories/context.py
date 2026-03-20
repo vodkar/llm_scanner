@@ -80,6 +80,8 @@ class ContextRepository(BaseModel):
                     line_start=int(row["line_start"]),
                     line_end=int(row["line_end"]),
                     depth=0,
+                    finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
+                    security_path_score=float(row.get("security_path_score") or 0.0),
                 )
             )
 
@@ -213,7 +215,8 @@ class ContextRepository(BaseModel):
                 line_start=int(row["line_start"]),
                 line_end=int(row["line_end"]),
                 depth=row_depth,
-                security_path_score=row["security_path_score"],
+                finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
+                security_path_score=float(row.get("security_path_score") or 0.0),
             )
             ordered_node_ids.append(node_id)
 

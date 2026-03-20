@@ -14,7 +14,6 @@ from services.context_assembler.ranking import (
 
 TokenEstimator = Callable[[str], int]
 _LOGGER = logging.getLogger(__name__)
-LOGGING_INTERVAL = 200
 FULL_CONTEXT_NODE_KINDS: tuple[str, ...] = (
     "FunctionNode",
     "ClassNode",

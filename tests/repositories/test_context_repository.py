@@ -27,6 +27,7 @@ def test_context_repository_aggregates_duplicate_rows_with_shallowest_depth() ->
                 "line_end": 5,
                 "node_kind": "FunctionNode",
                 "name": "alpha",
+                "finding_evidence_score": 0.7,
                 "security_path_score": 0.2,
             },
             {
@@ -37,6 +38,7 @@ def test_context_repository_aggregates_duplicate_rows_with_shallowest_depth() ->
                 "line_end": 5,
                 "node_kind": "FunctionNode",
                 "name": "alpha",
+                "finding_evidence_score": 0.7,
                 "security_path_score": 0.2,
             },
             {
@@ -47,6 +49,7 @@ def test_context_repository_aggregates_duplicate_rows_with_shallowest_depth() ->
                 "line_end": 5,
                 "node_kind": "FunctionNode",
                 "name": "alpha",
+                "finding_evidence_score": 0.7,
                 "security_path_score": 0.2,
             },
         ],
@@ -66,6 +69,50 @@ def test_context_repository_aggregates_duplicate_rows_with_shallowest_depth() ->
             line_end=5,
             depth=0,
             repeats=2,
+            finding_evidence_score=0.7,
             security_path_score=0.2,
+        )
+    ]
+
+
+def test_context_repository_preserves_security_scores_from_span_lookup() -> None:
+    """Span lookup should preserve both security score components."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "CALLS"}],
+        [
+            {
+                "id": "node-1",
+                "file_path": "src/app.py",
+                "node_file_path": "src/app.py",
+                "line_start": 10,
+                "line_end": 15,
+                "node_kind": "FunctionNode",
+                "name": "sink",
+                "finding_evidence_score": 1.0,
+                "security_path_score": 0.8,
+            }
+        ],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    rows = repository.fetch_code_nodes_by_file_lines(
+        [{"file_path": "src/app.py", "line_number": 12}]
+    )
+
+    assert rows == [
+        CodeContextNode(
+            identifier=NodeID("node-1"),
+            node_kind="FunctionNode",
+            name="sink",
+            file_path=Path("src/app.py"),
+            line_start=10,
+            line_end=15,
+            depth=0,
+            finding_evidence_score=1.0,
+            security_path_score=0.8,
         )
     ]
