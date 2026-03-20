@@ -247,8 +247,10 @@ class CVEFixesBenchmarkService(BaseModel):
                 )
 
                 if self.delete_checkouts:
-                    shutil.rmtree(vulnerable_repo_path)
-                    shutil.rmtree(fixed_repo_path)
+                    if vulnerable_repo_path.exists():
+                        shutil.rmtree(str(vulnerable_repo_path))
+                    if fixed_repo_path.exists():
+                        shutil.rmtree(str(fixed_repo_path))
 
         dataset_paths: dict[str, Path] = {}
         for strategy_name, samples in samples_by_strategy.items():
