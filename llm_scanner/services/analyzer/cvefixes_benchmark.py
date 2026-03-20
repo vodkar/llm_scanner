@@ -246,8 +246,8 @@ class CVEFixesBenchmarkService(BaseModel):
                 )
 
                 if self.delete_checkouts:
-                    vulnerable_repo_path.unlink(missing_ok=True)
-                    fixed_repo_path.unlink(missing_ok=True)
+                    vulnerable_repo_path.rmdir()
+                    fixed_repo_path.rmdir()
 
         dataset_paths: dict[str, Path] = {}
         for strategy_name, samples in samples_by_strategy.items():
