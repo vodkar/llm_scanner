@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Final
@@ -246,8 +247,8 @@ class CVEFixesBenchmarkService(BaseModel):
                 )
 
                 if self.delete_checkouts:
-                    vulnerable_repo_path.rmdir()
-                    fixed_repo_path.rmdir()
+                    shutil.rmtree(vulnerable_repo_path)
+                    shutil.rmtree(fixed_repo_path)
 
         dataset_paths: dict[str, Path] = {}
         for strategy_name, samples in samples_by_strategy.items():
