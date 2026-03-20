@@ -94,6 +94,7 @@ def test_build_all_ranking_strategies_writes_aligned_datasets(
         sample_count=2,
         max_call_depth=2,
         token_budget=100,
+        delete_checkouts=False,
     )
 
     dataset_paths, unassociated_path = service.build_all_ranking_strategies()
@@ -182,6 +183,7 @@ def test_build_all_ranking_strategies_skips_pairs_over_token_budget(
         sample_count=2,
         max_call_depth=2,
         token_budget=10,
+        delete_checkouts=False,
     )
 
     dataset_paths, unassociated_path = service.build_all_ranking_strategies()
@@ -267,6 +269,7 @@ def test_build_all_ranking_strategies_uses_separate_checkout_roots(
         sample_count=2,
         max_call_depth=2,
         token_budget=100,
+        delete_checkouts=False,
     )
 
     dataset_paths, _ = service.build_all_ranking_strategies()
@@ -345,6 +348,7 @@ def test_build_all_depth_sizes_writes_depth_specific_datasets(
         sample_count=2,
         max_call_depth=3,
         token_budget=100,
+        delete_checkouts=False,
     )
 
     dataset_paths, unassociated_paths = service.build_all_depth_sizes()

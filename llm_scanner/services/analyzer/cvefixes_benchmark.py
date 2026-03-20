@@ -65,6 +65,7 @@ class CVEFixesBenchmarkService(BaseModel):
     max_call_depth: int = Field(ge=0, description="Maximum call graph depth for context assembly")
     token_budget: int = 8192
     fallback_context_padding: int = 3
+    delete_checkouts: bool = True
 
     def build(self) -> tuple[Path, Path]:
         """Generate the benchmark JSON files.
@@ -243,6 +244,10 @@ class CVEFixesBenchmarkService(BaseModel):
                         fixed_sample_id,
                     )
                 )
+
+                if self.delete_checkouts:
+                    vulnerable_repo_path.unlink(missing_ok=True)
+                    fixed_repo_path.unlink(missing_ok=True)
 
         dataset_paths: dict[str, Path] = {}
         for strategy_name, samples in samples_by_strategy.items():
