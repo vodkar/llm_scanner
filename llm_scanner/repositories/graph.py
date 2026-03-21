@@ -100,6 +100,7 @@ class GraphRepository(Neo4jClient):
         for label, rows in nodes_by_label.items():
             query_nodes = NODE_QUERY_BY_LABEL[label]
             self.client.run_write(query_nodes, {"rows": rows})
+            _LOGGER.info("Loaded %d nodes with label %s.", len(rows), label)
 
         edge_rows_by_type: dict[str, list[dict[str, object]]] = defaultdict(list)
         for rel in edges:
@@ -128,6 +129,7 @@ class GraphRepository(Neo4jClient):
         for rel_type, rows in edge_rows_by_type.items():
             query_edges = RELATIONSHIP_QUERY_BY_TYPE[rel_type]
             self.client.run_write(query_edges, {"rows": rows})
+            _LOGGER.info("Loaded %d edges with type %s.", len(rows), rel_type)
 
     def get_nodes_by_file_and_line_numbers(
         self, file_line_numbers: dict[Path, list[int]]
