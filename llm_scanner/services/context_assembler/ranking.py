@@ -17,13 +17,15 @@ from models.nodes.base import BaseCodeNode
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
 from services.context_assembler.snippet_reader import SnippetReaderService
 
-FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
-SECURITY_PATH_WEIGHT: Final[float] = 0.25
-CONTEXT_WEIGHT: Final[float] = 0.50
+FINDING_EVIDENCE_WEIGHT: Final[float] = 0.35
+SECURITY_PATH_WEIGHT: Final[float] = 0.40
+CONTEXT_WEIGHT: Final[float] = 0.25
 
-CONTEXT_DEPTH_WEIGHT: Final[float] = 0.60
-CONTEXT_STRUCTURE_WEIGHT: Final[float] = 0.20
-CONTEXT_FILE_PRIOR_WEIGHT: Final[float] = 0.20
+CONTEXT_DEPTH_WEIGHT: Final[float] = 0.30
+CONTEXT_STRUCTURE_WEIGHT: Final[float] = 0.35
+CONTEXT_FILE_PRIOR_WEIGHT: Final[float] = 0.35
+
+SECURITY_BOOST_WEIGHT: Final[float] = 1.50
 
 HOP_DECAY_BY_DEPTH: Final[dict[int, float]] = {
     0: 1.00,
@@ -176,8 +178,14 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
         return sorted(
             ranked_nodes,
-            key=lambda item: (item.depth == 0, item.score, -item.depth),
-            reverse=True,
+            key=lambda item: (
+                item.depth != 0,
+                not (item.finding_evidence_score + item.security_path_score > 0.0),
+                -item.score,
+                item.depth,
+                str(item.file_path),
+                item.line_start,
+            ),
         )
 
     def rank_context_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
@@ -498,6 +506,77 @@ class SecurityScoreNodeRankingStrategy(NodeRelevanceRankingService):
             key=lambda item: (
                 item.depth != 0,
                 -item.security_path_score,
+                str(item.file_path),
+                item.line_start,
+            ),
+        )
+
+
+class SecurityFirstNodeRankingStrategy(NodeRelevanceRankingService):
+    """Rank nodes by security-path score first, using context score as tiebreaker."""
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by root priority, security score, then context score.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
+        return sorted(
+            ranked_nodes,
+            key=lambda item: (
+                item.depth != 0,
+                -item.security_path_score,
+                -item.context_score,
+                str(item.file_path),
+                item.line_start,
+            ),
+        )
+
+
+class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):
+    """Rank nodes using context as base score with multiplicative security boost."""
+
+    def calculate_final_score(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Compose final scores using multiplicative security boost over context base.
+
+        Args:
+            nodes: Nodes with context_score already calculated.
+
+        Returns:
+            Nodes with final score set via multiplicative formula.
+        """
+
+        final_nodes: list[CodeContextNode] = []
+        for node in nodes:
+            security_signal = node.finding_evidence_score + node.security_path_score
+            score = self._clamp_score(
+                node.context_score * (1.0 + SECURITY_BOOST_WEIGHT * security_signal)
+            )
+            final_nodes.append(node.model_copy(update={"score": score}))
+        return final_nodes
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by root priority and multiplicative boost score.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
+        return sorted(
+            ranked_nodes,
+            key=lambda item: (
+                item.depth != 0,
+                -item.score,
+                item.depth,
                 str(item.file_path),
                 item.line_start,
             ),

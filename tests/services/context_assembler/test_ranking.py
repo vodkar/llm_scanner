@@ -15,8 +15,10 @@ from models.nodes.finding import BanditFindingNode
 from services.context_assembler.ranking import (
     DepthRepeatsContextNodeRankingStrategy,
     DummyNodeRankingStrategy,
+    MultiplicativeBoostNodeRankingStrategy,
     NodeRelevanceRankingService,
     RandomNodeRankingStrategy,
+    SecurityFirstNodeRankingStrategy,
     SecurityScoreNodeRankingStrategy,
 )
 from services.context_assembler.snippet_reader import SnippetReaderService
@@ -426,3 +428,128 @@ def test_dummy_strategy_returns_same_list_instance() -> None:
     ]
 
     assert DummyNodeRankingStrategy().rank_nodes(nodes) is nodes
+
+
+def test_current_strategy_tiered_sort_promotes_security_nodes(tmp_path: Path) -> None:
+    """Non-root nodes with any security signal should rank above zero-signal nodes."""
+
+    source_file = tmp_path / "pkg" / "sample.py"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "def context_only():\n    pass\n\ndef has_security():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    context_only_node = CodeContextNode(
+        identifier=NodeID("function:context-only"),
+        node_kind="FunctionNode",
+        name="context_only",
+        file_path=Path("pkg/sample.py"),
+        line_start=1,
+        line_end=2,
+        depth=1,
+        finding_evidence_score=0.0,
+        security_path_score=0.0,
+        context_score=0.9,
+    )
+    security_node = CodeContextNode(
+        identifier=NodeID("function:has-security"),
+        node_kind="FunctionNode",
+        name="has_security",
+        file_path=Path("pkg/sample.py"),
+        line_start=4,
+        line_end=5,
+        depth=1,
+        finding_evidence_score=0.0,
+        security_path_score=0.3,
+        context_score=0.2,
+    )
+
+    ranked_nodes = NodeRelevanceRankingService(project_root=tmp_path).rank_nodes(
+        [context_only_node, security_node]
+    )
+
+    assert ranked_nodes[0].identifier == security_node.identifier
+
+
+def test_security_first_strategy_prioritizes_security_over_context(tmp_path: Path) -> None:
+    """SecurityFirst should rank by security_path_score, not context_score."""
+
+    source_file = tmp_path / "pkg" / "sample.py"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "def high_ctx():\n    pass\n\ndef high_sec():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    high_context_node = CodeContextNode(
+        identifier=NodeID("function:high-ctx"),
+        node_kind="FunctionNode",
+        name="high_ctx",
+        file_path=Path("pkg/sample.py"),
+        line_start=1,
+        line_end=2,
+        depth=1,
+        security_path_score=0.1,
+        context_score=1.0,
+    )
+    high_security_node = CodeContextNode(
+        identifier=NodeID("function:high-sec"),
+        node_kind="FunctionNode",
+        name="high_sec",
+        file_path=Path("pkg/sample.py"),
+        line_start=4,
+        line_end=5,
+        depth=1,
+        security_path_score=0.9,
+        context_score=0.0,
+    )
+
+    ranked_nodes = SecurityFirstNodeRankingStrategy(project_root=tmp_path).rank_nodes(
+        [high_context_node, high_security_node]
+    )
+
+    assert ranked_nodes[0].identifier == high_security_node.identifier
+
+
+def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) -> None:
+    """Multiplicative boost should give higher final score to security-relevant nodes."""
+
+    source_file = tmp_path / "pkg" / "sample.py"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "def plain():\n    pass\n\ndef boosted():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    plain_node = CodeContextNode(
+        identifier=NodeID("function:plain"),
+        node_kind="FunctionNode",
+        name="plain",
+        file_path=Path("pkg/sample.py"),
+        line_start=1,
+        line_end=2,
+        depth=1,
+        finding_evidence_score=0.0,
+        security_path_score=0.0,
+        context_score=0.6,
+    )
+    boosted_node = CodeContextNode(
+        identifier=NodeID("function:boosted"),
+        node_kind="FunctionNode",
+        name="boosted",
+        file_path=Path("pkg/sample.py"),
+        line_start=4,
+        line_end=5,
+        depth=1,
+        finding_evidence_score=0.3,
+        security_path_score=0.4,
+        context_score=0.6,
+    )
+
+    strategy = MultiplicativeBoostNodeRankingStrategy(project_root=tmp_path)
+    scored_nodes = strategy.calculate_final_score([plain_node, boosted_node])
+
+    scored_by_id = {node.identifier: node for node in scored_nodes}
+    assert scored_by_id[boosted_node.identifier].score > scored_by_id[plain_node.identifier].score
+    assert scored_by_id[plain_node.identifier].score == pytest.approx(0.6, abs=0.01)

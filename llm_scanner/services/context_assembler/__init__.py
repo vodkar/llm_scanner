@@ -3,7 +3,9 @@ from .ranking import (
     ContextNodeRankingStrategy,
     DepthRepeatsContextNodeRankingStrategy,
     DummyNodeRankingStrategy,
+    MultiplicativeBoostNodeRankingStrategy,
     RandomNodeRankingStrategy,
+    SecurityFirstNodeRankingStrategy,
     SecurityScoreNodeRankingStrategy,
 )
 
@@ -12,6 +14,8 @@ __all__ = [
     "ContextNodeRankingStrategy",
     "DepthRepeatsContextNodeRankingStrategy",
     "DummyNodeRankingStrategy",
+    "MultiplicativeBoostNodeRankingStrategy",
     "RandomNodeRankingStrategy",
+    "SecurityFirstNodeRankingStrategy",
     "SecurityScoreNodeRankingStrategy",
 ]
