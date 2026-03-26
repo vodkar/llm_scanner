@@ -11,6 +11,7 @@ from models.base import NodeID
 from models.edges import RelationshipBase
 from models.nodes import CodeBlockNode, Node
 from repositories._serialization import graph_node_rows
+from repositories.base import ensure_core_indexes
 from repositories.queries import (
     NODE_QUERY_BY_LABEL,
     RELATIONSHIP_QUERY_BY_TYPE,
@@ -40,7 +41,7 @@ class GraphRepository(Neo4jClient):
     def _ensure_indexes(self) -> None:
         """Ensure core indexes are available for graph ingestion."""
 
-        # self.client.run_write("CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.id)")
+        ensure_core_indexes(self.client)
 
     def _clear_database(self) -> None:
         """Remove existing graph data before loading new data."""

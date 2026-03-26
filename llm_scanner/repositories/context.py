@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 from clients.neo4j import Neo4jClient
 from models.base import NodeID
 from models.context import CodeContextNode
+from repositories.base import ensure_core_indexes
 from repositories.queries import (
     code_bfs_nodes_batch_query,
     code_bfs_nodes_query,
@@ -14,11 +15,6 @@ from repositories.queries import (
     finding_reported_code_query,
 )
 
-INDEX_QUERIES: tuple[LiteralString, ...] = (
-    "CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.id)",
-    "CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.file_path)",
-    "CREATE INDEX IF NOT EXISTS FOR (n:Finding) ON (n.id)",
-)
 RELATIONSHIP_TYPES_QUERY: LiteralString = (
     "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
 )
@@ -41,8 +37,7 @@ class ContextRepository(BaseModel):
         """Ensure indexes used by context queries exist."""
 
         del __context
-        for query in INDEX_QUERIES:
-            self.client.run_write(query)
+        ensure_core_indexes(self.client)
 
         configured_types = code_traversal_relationship_types()
         rows = self.client.run_read(RELATIONSHIP_TYPES_QUERY)
