@@ -39,6 +39,41 @@ SEVERITY_SCORES: Final[dict[IssueSeverity, float]] = {
     IssueSeverity.MEDIUM: 0.66,
     IssueSeverity.HIGH: 1.00,
 }
+CONFIDENCE_BY_SEVERITY: Final[dict[IssueSeverity, float]] = {
+    IssueSeverity.LOW: 0.30,
+    IssueSeverity.MEDIUM: 0.60,
+    IssueSeverity.HIGH: 0.90,
+}
+DLINT_SEVERITY_BY_ISSUE_RANGE: Final[list[tuple[range, IssueSeverity]]] = [
+    (range(100, 106), IssueSeverity.HIGH),
+    (range(106, 111), IssueSeverity.MEDIUM),
+    (range(111, 131), IssueSeverity.MEDIUM),
+    (range(131, 138), IssueSeverity.LOW),
+]
+HIGH_RISK_CWES: Final[frozenset[int]] = frozenset(
+    {
+        22,
+        77,
+        78,
+        79,
+        89,
+        94,
+        95,
+        98,
+        113,
+        185,
+        200,
+        209,
+        215,
+        259,
+        327,
+        338,
+        502,
+        611,
+        703,
+        918,
+    }
+)
 RENDER_KIND_SCORES: Final[dict[str, float]] = {
     "FunctionNode": 1.00,
     "ClassNode": 0.80,
@@ -291,11 +326,8 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         if not direct_findings:
             return 0.0
 
-        severity_score = max(
-            (SEVERITY_SCORES[finding.severity] if isinstance(finding, BanditFindingNode) else 0.50)
-            for finding in direct_findings
-        )
-        confidence_score = 0.50
+        severity_score = max(self._finding_severity(finding) for finding in direct_findings)
+        confidence_score = max(self._finding_confidence(finding) for finding in direct_findings)
         has_bandit = any(isinstance(finding, BanditFindingNode) for finding in direct_findings)
         has_dlint = any(isinstance(finding, DlintFindingNode) for finding in direct_findings)
         if has_bandit and has_dlint:
@@ -317,7 +349,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         guard_indicator = 1.0 if any(hint in normalized_text for hint in GUARD_HINTS) else 0.0
         security_path_evidence = 0.0
         if any(
-            isinstance(finding, BanditFindingNode) and finding.cwe_id in {78, 79, 89, 502}
+            isinstance(finding, BanditFindingNode) and finding.cwe_id in HIGH_RISK_CWES
             for finding in direct_findings
         ):
             security_path_evidence = max(sink_indicator, 0.70)
@@ -327,6 +359,37 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
             + 0.20 * guard_indicator
             + 0.20 * security_path_evidence
         )
+
+    @staticmethod
+    def _finding_severity(finding: FindingNode) -> float:
+        """Return a normalized severity score for any finding type."""
+
+        if isinstance(finding, BanditFindingNode):
+            return SEVERITY_SCORES[finding.severity]
+        if isinstance(finding, DlintFindingNode):
+            severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)
+            return SEVERITY_SCORES[severity]
+        return 0.50
+
+    @staticmethod
+    def _finding_confidence(finding: FindingNode) -> float:
+        """Return a confidence proxy derived from finding severity."""
+
+        if isinstance(finding, BanditFindingNode):
+            return CONFIDENCE_BY_SEVERITY[finding.severity]
+        if isinstance(finding, DlintFindingNode):
+            severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)
+            return CONFIDENCE_BY_SEVERITY[severity]
+        return 0.40
+
+    @staticmethod
+    def _dlint_severity(issue_id: int) -> IssueSeverity:
+        """Map a Dlint issue ID to an approximate severity tier."""
+
+        for id_range, severity in DLINT_SEVERITY_BY_ISSUE_RANGE:
+            if issue_id in id_range:
+                return severity
+        return IssueSeverity.MEDIUM
 
     def _context_structure_score(self, *, node_kind: str | None, repeats: int) -> float:
         """Score node structure for final rendering usefulness."""
