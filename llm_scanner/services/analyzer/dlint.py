@@ -14,7 +14,7 @@ class DlintAnalyzerService(BaseAnalyzerService):
 
     @cached_property
     def _static_analyzer(self) -> DlintStaticAnalyzer:
-        return DlintStaticAnalyzer(src=self.target)
+        return DlintStaticAnalyzer(src=self.project_root)
 
     def _issue_payload(self, issue: DlintIssue) -> dict[str, Any]:  # type: ignore
         """Normalize Dlint issue payload for finding creation.

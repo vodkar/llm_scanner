@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Final, LiteralString, cast
 
+from models.edges.call_graph import CallGraphRelationshipType
+from models.edges.control_flow import ControlFlowRelationshipType
+from models.edges.data_flow import DataFlowRelationshipType
+
 NODE_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
     "Code": (
         "UNWIND $rows AS r "
@@ -78,20 +82,15 @@ FINDING_REPORTED_CODE_QUERY: Final[LiteralString] = (
     "MATCH (f:Finding {id: fid})-[:REPORTS]->(c:Code) "
     "RETURN fid AS finding_id, c.id AS code_id, c.file_path AS file_path, "
     "c.line_start AS line_start, c.line_end AS line_end, c.name AS name, "
-    "c.node_kind AS node_kind"
+    "c.node_kind AS node_kind, "
+    "c.finding_evidence_score AS finding_evidence_score, "
+    "c.security_path_score AS security_path_score"
 )
 
 CODE_TRAVERSAL_RELATIONSHIP_TYPES: Final[tuple[str, ...]] = (
-    "CALLS",
-    "CALLED_BY",
-    "CONTAINS",
-    "NEXT",
-    "DEFINED_BY",
-    "FLOWS_TO",
-    "SANITIZED_BY",
-    "USED_IN",
-    "SUGGESTS_VULNERABILITY",
-    "CONFLICTS_WITH",
+    *tuple(DataFlowRelationshipType),
+    *tuple(CallGraphRelationshipType),
+    *tuple(ControlFlowRelationshipType),
 )
 
 CODE_NODES_BY_FILE_LINE_QUERY: Final[LiteralString] = (
@@ -102,7 +101,9 @@ CODE_NODES_BY_FILE_LINE_QUERY: Final[LiteralString] = (
     "AND r.line_number <= c.line_end "
     "RETURN r.file_path AS file_path, r.line_number AS line_number, "
     "c.id AS id, c.file_path AS node_file_path, c.line_start AS line_start, "
-    "c.line_end AS line_end, c.node_kind AS node_kind"
+    "c.line_end AS line_end, c.node_kind AS node_kind, "
+    "c.finding_evidence_score AS finding_evidence_score, "
+    "c.security_path_score AS security_path_score"
 )
 
 FINDINGS_BY_PROJECT_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
@@ -137,87 +138,29 @@ FINDINGS_BY_LABEL_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
     ),
 }
 
-RELATIONSHIP_QUERY_BY_TYPE: Final[dict[str, LiteralString]] = {
-    "CALLS": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:CALLS]->(d) "
-        "SET e += r.attrs"
-    ),
-    "CALLED_BY": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:CALLED_BY]->(d) "
-        "SET e += r.attrs"
-    ),
-    "CONTAINS": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:CONTAINS]->(d) "
-        "SET e += r.attrs"
-    ),
-    "NEXT": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:NEXT]->(d) "
-        "SET e += r.attrs"
-    ),
-    "DEFINED_BY": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:DEFINED_BY]->(d) "
-        "SET e += r.attrs"
-    ),
-    "FLOWS_TO": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:FLOWS_TO]->(d) "
-        "SET e += r.attrs"
-    ),
-    "SANITIZED_BY": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:SANITIZED_BY]->(d) "
-        "SET e += r.attrs"
-    ),
-    "REPORTS": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:REPORTS]->(d) "
-        "SET e += r.attrs"
-    ),
-    "SUGGESTS_VULNERABILITY": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:SUGGESTS_VULNERABILITY]->(d) "
-        "SET e += r.attrs"
-    ),
-    "CONFLICTS_WITH": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:CONFLICTS_WITH]->(d) "
-        "SET e += r.attrs"
-    ),
-    "USED_IN": (
-        "UNWIND $rows AS r "
-        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
-        "MERGE (s)-[e:USED_IN {type:r.type}]->(d) "
-        "SET e += r.attrs"
-    ),
-}
 
-
-def is_supported_relationship_type(rel_type: str) -> bool:
-    """Check whether a relationship type has a dedicated query.
+def _relationship_query(rel_type: str) -> LiteralString:
+    """Build a literal query for a relationship type.
 
     Args:
         rel_type: Relationship type identifier.
 
     Returns:
-        True when the relationship type has an explicit query.
+        Literal query for the requested relationship.
     """
 
-    return rel_type in RELATIONSHIP_QUERY_BY_TYPE
+    query = (
+        "UNWIND $rows AS r "
+        "MATCH (s:Code {id:r.src}), (d:Code {id:r.dst}) "
+        f"MERGE (s)-[e:{rel_type}]->(d) "
+        "SET e += r.attrs"
+    )
+    return cast(LiteralString, query)
+
+
+RELATIONSHIP_QUERY_BY_TYPE: Final[dict[str, LiteralString]] = {
+    rel_type: _relationship_query(rel_type) for rel_type in CODE_TRAVERSAL_RELATIONSHIP_TYPES
+}
 
 
 def finding_node_query(finding_type: str) -> LiteralString:
@@ -328,8 +271,10 @@ def code_bfs_nodes_query(
             "MATCH (start:Code {id: $start_id}) "
             "RETURN start.id AS id, start.file_path AS file_path, "
             "start.line_start AS line_start, start.line_end AS line_end, "
-            "start.name AS name, start.node_kind AS node_kind, 0 AS depth "
-            "ORDER BY file_path, line_start"
+            "start.name AS name, start.node_kind AS node_kind, 0 AS depth, "
+            "start.finding_evidence_score AS finding_evidence_score, "
+            "start.security_path_score AS security_path_score "
+            # "ORDER BY file_path, line_start"
         )
         return cast(LiteralString, query)
 
@@ -338,8 +283,10 @@ def code_bfs_nodes_query(
         f"-[:{rel_union}*0..{depth}]-(n:Code) "
         "WITH n, min(length(p)) AS depth "
         "RETURN n.id AS id, n.file_path AS file_path, n.line_start AS line_start, "
-        "n.line_end AS line_end, n.name AS name, n.node_kind AS node_kind, depth "
-        "ORDER BY depth, n.file_path, n.line_start"
+        "n.line_end AS line_end, n.name AS name, n.node_kind AS node_kind, "
+        "depth, n.finding_evidence_score AS finding_evidence_score, "
+        "n.security_path_score AS security_path_score "
+        # "ORDER BY depth, n.file_path, n.line_start"
     )
     return cast(LiteralString, query)
 
@@ -366,8 +313,9 @@ def code_bfs_nodes_batch_query(
             "MATCH (start:Code {id: sid}) "
             "RETURN sid AS start_id, start.id AS id, start.file_path AS file_path, "
             "start.line_start AS line_start, start.line_end AS line_end, "
-            "start.name AS name, start.node_kind AS node_kind, 0 AS depth "
-            "ORDER BY start_id, file_path, line_start"
+            "start.name AS name, start.node_kind AS node_kind, 0 AS depth, "
+            "start.finding_evidence_score AS finding_evidence_score, "
+            "start.security_path_score AS security_path_score "
         )
         return cast(LiteralString, query)
 
@@ -378,8 +326,9 @@ def code_bfs_nodes_batch_query(
         "WITH sid, n, min(length(p)) AS depth "
         "RETURN sid AS start_id, n.id AS id, n.file_path AS file_path, "
         "n.line_start AS line_start, n.line_end AS line_end, "
-        "n.name AS name, n.node_kind AS node_kind, depth "
-        "ORDER BY start_id, depth, n.file_path, n.line_start"
+        "n.name AS name, n.node_kind AS node_kind, depth, "
+        "n.finding_evidence_score AS finding_evidence_score, "
+        "n.security_path_score AS security_path_score "
     )
     return cast(LiteralString, query)
 

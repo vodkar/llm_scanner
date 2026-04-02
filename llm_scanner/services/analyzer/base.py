@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from clients.analyzers.base import IStaticAnalyzer
 from models.base import StaticAnalyzerIssue
 from models.edges.analysis import StaticAnalysisReports
+from models.nodes import Node
 from models.nodes.finding import FindingNode
 from repositories.analyzers.base import IFindingsRepository
 from repositories.graph import GraphRepository
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 class BaseAnalyzerService(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    target: Path
+    project_root: Path
     graph_repository: GraphRepository
     findings_repository: IFindingsRepository
 
@@ -57,7 +58,7 @@ class BaseAnalyzerService(BaseModel):
             Relative path suitable for repository and graph matching.
         """
 
-        target_root: Path = self.target.resolve()
+        target_root: Path = self.project_root.resolve()
         absolute_path: Path = (
             file_path if file_path.is_absolute() else (target_root / file_path)
         ).resolve()
@@ -67,6 +68,45 @@ class BaseAnalyzerService(BaseModel):
         except ValueError:
             rel_str: str = os.path.relpath(absolute_path.as_posix(), target_root.as_posix())
             return Path(rel_str)
+
+    def get_findings_with_edges(
+        self, nodes: list[Node]
+    ) -> tuple[list[FindingNode], list[StaticAnalysisReports]]:
+        """Run the static analyzer and return findings as nodes.
+
+        Returns:
+            List of finding nodes created from analyzer issues.
+        """
+
+        report = self._static_analyzer.run()
+
+        findings: list[FindingNode] = []
+        for issue in report.issues:
+            normalized_path = self._normalize_issue_path(issue.file)
+            payload = self._issue_payload(issue)
+            payload["file"] = normalized_path
+            finding = self._finding_node_type(**payload)
+            findings.append(finding)
+
+        file_nodes: dict[Path, list[Node]] = defaultdict(list)
+        for node in nodes:
+            file_nodes[node.file_path].append(node)
+
+        edges: list[StaticAnalysisReports] = []
+        for finding in findings:
+            matched_nodes = file_nodes.get(finding.file, [])
+            if not matched_nodes:
+                continue
+            for node in matched_nodes:
+                if node.line_start <= finding.line_number <= node.line_end:
+                    edges.append(
+                        StaticAnalysisReports(
+                            src=str(finding.identifier),
+                            dst=node.identifier,
+                        )
+                    )
+
+        return findings, edges
 
     def enrich_graph_with_findings(self) -> None:
         report = self._static_analyzer.run()
@@ -88,11 +128,6 @@ class BaseAnalyzerService(BaseModel):
             findings.append(finding)
             file_nodes = nodes.get(finding.file)
             if not file_nodes or finding.line_number not in file_nodes:
-                logger.debug(
-                    "No code node match for finding at %s:%s",
-                    finding.file,
-                    finding.line_number,
-                )
                 continue
             edges.append(
                 StaticAnalysisReports(

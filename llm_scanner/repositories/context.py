@@ -1,12 +1,12 @@
 from pathlib import Path
-from threading import Lock
-from typing import Any, LiteralString, cast
+from typing import Any, LiteralString
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, ConfigDict
 
 from clients.neo4j import Neo4jClient
 from models.base import NodeID
 from models.context import CodeContextNode
+from repositories.base import ensure_core_indexes
 from repositories.queries import (
     code_bfs_nodes_batch_query,
     code_bfs_nodes_query,
@@ -15,11 +15,6 @@ from repositories.queries import (
     finding_reported_code_query,
 )
 
-INDEX_QUERIES: tuple[LiteralString, ...] = (
-    "CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.id)",
-    "CREATE INDEX IF NOT EXISTS FOR (n:Code) ON (n.file_path)",
-    "CREATE INDEX IF NOT EXISTS FOR (n:Finding) ON (n.id)",
-)
 RELATIONSHIP_TYPES_QUERY: LiteralString = (
     "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
 )
@@ -30,20 +25,19 @@ class ContextRepository(BaseModel):
 
     client: Neo4jClient
     traversal_relationship_types: tuple[str, ...] = ()
-    neighborhood_cache_max_entries: int = 2000
+    # neighborhood_cache_max_entries: int = 1000
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    _cache_lock: Lock = PrivateAttr(default_factory=Lock)
-    _neighborhood_cache: dict[tuple[int, tuple[str, ...]], list[dict[str, Any]]] = PrivateAttr(
-        default_factory=lambda: cast(dict[tuple[int, tuple[str, ...]], list[dict[str, Any]]], {})
-    )
+    # _cache_lock: Lock = PrivateAttr(default_factory=Lock)
+    # _neighborhood_cache: dict[tuple[int, tuple[str, ...]], list[dict[str, Any]]] = PrivateAttr(
+    #     default_factory=lambda: cast(dict[tuple[int, tuple[str, ...]], list[dict[str, Any]]], {})
+    # )
 
     def model_post_init(self, __context: Any) -> None:
         """Ensure indexes used by context queries exist."""
 
         del __context
-        for query in INDEX_QUERIES:
-            self.client.run_write(query)
+        ensure_core_indexes(self.client)
 
         configured_types = code_traversal_relationship_types()
         rows = self.client.run_read(RELATIONSHIP_TYPES_QUERY)
@@ -74,13 +68,15 @@ class ContextRepository(BaseModel):
         for row in rows:
             nodes.append(
                 CodeContextNode(
-                    node_id=NodeID(str(row["code_id"])),
+                    identifier=NodeID(str(row["code_id"])),
                     node_kind=self._coerce_str(row.get("node_kind")),
                     name=self._coerce_str(row.get("name")),
                     file_path=Path(str(row.get("file_path", ""))),
                     line_start=int(row["line_start"]),
                     line_end=int(row["line_end"]),
                     depth=0,
+                    finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
+                    security_path_score=float(row.get("security_path_score") or 0.0),
                 )
             )
 
@@ -149,12 +145,12 @@ class ContextRepository(BaseModel):
             return []
 
         unique_start_ids: tuple[str, ...] = tuple(sorted(set(start_node_ids)))
-        cache_key = (max_depth, unique_start_ids)
+        # cache_key = (max_depth, unique_start_ids)
 
-        with self._cache_lock:
-            cached_rows = self._neighborhood_cache.get(cache_key)
-        if cached_rows is not None:
-            return self._build_context_nodes(cached_rows)
+        # with self._cache_lock:
+        #     cached_rows = self._neighborhood_cache.get(cache_key)
+        # if cached_rows is not None:
+        #     return self._build_context_nodes(cached_rows)
 
         if len(unique_start_ids) == 1:
             query = code_bfs_nodes_query(max_depth, self.traversal_relationship_types)
@@ -176,10 +172,10 @@ class ContextRepository(BaseModel):
                 },
             )
 
-        with self._cache_lock:
-            if len(self._neighborhood_cache) >= self.neighborhood_cache_max_entries:
-                self._neighborhood_cache.clear()
-            self._neighborhood_cache[cache_key] = rows
+        # with self._cache_lock:
+        #     if len(self._neighborhood_cache) >= self.neighborhood_cache_max_entries:
+        #         self._neighborhood_cache.clear()
+        # self._neighborhood_cache[cache_key] = rows
 
         return self._build_context_nodes(rows)
 
@@ -190,7 +186,8 @@ class ContextRepository(BaseModel):
             rows: Neo4j rows for code nodes.
 
         Returns:
-            Unique context nodes preserving first-seen order.
+            Unique context nodes preserving first-seen order, shallowest depth,
+            and duplicate counts.
         """
 
         nodes_by_id: dict[NodeID, CodeContextNode] = {}
@@ -198,17 +195,23 @@ class ContextRepository(BaseModel):
 
         for row in rows:
             node_id = NodeID(str(row["id"]))
+            row_depth = int(row.get("depth", 0))
             if node_id in nodes_by_id:
+                existing_node = nodes_by_id[node_id]
+                existing_node.repeats += 1
+                existing_node.depth = min(existing_node.depth, row_depth)
                 continue
 
             nodes_by_id[node_id] = CodeContextNode(
-                node_id=node_id,
+                identifier=node_id,
                 node_kind=self._coerce_str(row.get("node_kind")),
                 name=self._coerce_str(row.get("name")),
                 file_path=Path(str(row.get("node_file_path") or row.get("file_path", ""))),
                 line_start=int(row["line_start"]),
                 line_end=int(row["line_end"]),
-                depth=int(row.get("depth", 0)),
+                depth=row_depth,
+                finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
+                security_path_score=float(row.get("security_path_score") or 0.0),
             )
             ordered_node_ids.append(node_id)
 

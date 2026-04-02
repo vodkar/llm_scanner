@@ -14,7 +14,7 @@ class BanditAnalyzerService(BaseAnalyzerService):
 
     @cached_property
     def _static_analyzer(self) -> BanditStaticAnalyzer:
-        return BanditStaticAnalyzer(src=self.target)
+        return BanditStaticAnalyzer(src=self.project_root)
 
     def _issue_payload(self, issue: BanditIssue) -> dict[str, Any]:  # type: ignore
         """Normalize Bandit issue payload for finding creation.

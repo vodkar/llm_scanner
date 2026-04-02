@@ -31,7 +31,7 @@ def bandit_service(
     tmp_path: Path,
 ) -> BanditAnalyzerService:
     return BanditAnalyzerService(
-        target=tmp_path,
+        project_root=tmp_path,
         graph_repository=mock_graph_repository,
         findings_repository=mock_findings_repository,
     )

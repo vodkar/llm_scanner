@@ -1,41 +1,32 @@
 from __future__ import annotations
 
-from collections import deque
-from collections.abc import Callable
+import random
+from abc import ABC, abstractmethod
+from collections import defaultdict
 from pathlib import Path
-from typing import Final, cast
+from typing import Final
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from models.bandit_report import IssueSeverity
 from models.base import NodeID
 from models.context import CodeContextNode
-from models.edges.base import RelationshipBase
-from models.edges.call_graph import CallGraphCalledBy, CallGraphCalls
-from models.edges.control_flow import ControlFlowContains
+from models.edges.analysis import StaticAnalysisReports
 from models.nodes import Node
 from models.nodes.base import BaseCodeNode
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
+from services.context_assembler.snippet_reader import SnippetReaderService
 
-SnippetReader = Callable[[Path, int | None, int | None], str]
+FINDING_EVIDENCE_WEIGHT: Final[float] = 0.35
+SECURITY_PATH_WEIGHT: Final[float] = 0.40
+CONTEXT_WEIGHT: Final[float] = 0.25
 
-GRAPH_ROLE_WEIGHT: Final[float] = 0.30
-FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
-SECURITY_PATH_WEIGHT: Final[float] = 0.25
-STRUCTURE_WEIGHT: Final[float] = 0.10
-FILE_PRIOR_WEIGHT: Final[float] = 0.10
+CONTEXT_DEPTH_WEIGHT: Final[float] = 0.30
+CONTEXT_STRUCTURE_WEIGHT: Final[float] = 0.35
+CONTEXT_FILE_PRIOR_WEIGHT: Final[float] = 0.35
 
-RELATION_CLASS_WEIGHTS: Final[dict[str, float]] = {
-    "directly_reported_node": 1.00,
-    "best_enclosing_node": 0.95,
-    "direct_caller": 0.85,
-    "direct_callee": 0.80,
-    "parent_block_or_class": 0.70,
-    "child_block": 0.60,
-    "same-file sibling": 0.35,
-    "cross-file neighbor": 0.20,
-    "weak analysis-only link": 0.10,
-}
+SECURITY_BOOST_WEIGHT: Final[float] = 1.50
+
 HOP_DECAY_BY_DEPTH: Final[dict[int, float]] = {
     0: 1.00,
     1: 0.90,
@@ -48,18 +39,47 @@ SEVERITY_SCORES: Final[dict[IssueSeverity, float]] = {
     IssueSeverity.MEDIUM: 0.66,
     IssueSeverity.HIGH: 1.00,
 }
+CONFIDENCE_BY_SEVERITY: Final[dict[IssueSeverity, float]] = {
+    IssueSeverity.LOW: 0.30,
+    IssueSeverity.MEDIUM: 0.60,
+    IssueSeverity.HIGH: 0.90,
+}
+DLINT_SEVERITY_BY_ISSUE_RANGE: Final[list[tuple[range, IssueSeverity]]] = [
+    (range(100, 106), IssueSeverity.HIGH),
+    (range(106, 111), IssueSeverity.MEDIUM),
+    (range(111, 131), IssueSeverity.MEDIUM),
+    (range(131, 138), IssueSeverity.LOW),
+]
+HIGH_RISK_CWES: Final[frozenset[int]] = frozenset(
+    {
+        22,
+        77,
+        78,
+        79,
+        89,
+        94,
+        95,
+        98,
+        113,
+        185,
+        200,
+        209,
+        215,
+        259,
+        327,
+        338,
+        502,
+        611,
+        703,
+        918,
+    }
+)
 RENDER_KIND_SCORES: Final[dict[str, float]] = {
     "FunctionNode": 1.00,
     "ClassNode": 0.80,
     "CodeBlockNode": 0.70,
     "VariableNode": 0.40,
 }
-FULL_CONTEXT_NODE_KINDS: Final[tuple[str, ...]] = (
-    "FunctionNode",
-    "ClassNode",
-    "CodeBlockNode",
-)
-HELPER_HINTS: Final[tuple[str, ...]] = ("helper", "wrapper", "util", "utils", "common")
 SINK_HINTS: Final[tuple[str, ...]] = (
     "subprocess",
     "os.system",
@@ -107,452 +127,207 @@ GENERATED_HEADER_MARKERS: Final[tuple[str, ...]] = (
 )
 
 
-class NodeRelevanceRankingService(BaseModel):
-    """Rank code nodes for context assembly using Phase 1 heuristics."""
+class ContextNodeRankingStrategy(ABC):
+    """Rank context nodes into a ready-to-render order."""
+
+    @abstractmethod
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return context nodes in ready-to-use ranked order.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+
+class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
+    """Calculate security, context, and final ranking scores for one context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    project_root: Path | None = None
-    snippet_reader: SnippetReader | None = None
+    project_root: Path
+    snippet_cache_max_entries: int = 10000
 
-    def rank_nodes(
+    _snippet_reader: SnippetReaderService = PrivateAttr()
+
+    def model_post_init(self, __context: object) -> None:
+        """Initialize the snippet reader owned by the ranking service."""
+
+        del __context
+        self._snippet_reader = SnippetReaderService(
+            project_root=self.project_root,
+            cache_max_entries=self.snippet_cache_max_entries,
+        )
+
+    def calculate_security_score(
         self,
-        nodes: dict[NodeID, Node],
-        edges: list[RelationshipBase],
-        bandit_findings: list[BanditFindingNode],
-        dlint_findings: list[DlintFindingNode],
+        nodes: list[Node],
+        finding_nodes: list[FindingNode],
+        finding_edges: list[StaticAnalysisReports],
     ) -> list[Node]:
-        """Rank graph nodes by deterministic Phase 1 relevance."""
-
-        all_findings: list[FindingNode] = [*bandit_findings, *dlint_findings]
-        if not nodes:
-            return []
-
-        findings_by_node_id = self._match_findings_to_graph_nodes(
-            nodes=nodes,
-            findings=all_findings,
-        )
-        reported_node_ids = {node_id for node_id, matches in findings_by_node_id.items() if matches}
-        promoted_node_ids = self._select_best_enclosing_graph_nodes(
-            nodes=nodes,
-            findings=all_findings,
-        )
-        seed_node_ids = reported_node_ids | promoted_node_ids
-        adjacency = self._build_adjacency(edges)
-        distances = self._compute_distances(seed_node_ids, adjacency)
-        relation_classes = self._resolve_relation_classes(
-            nodes=nodes,
-            edges=edges,
-            finding_files={finding.file for finding in all_findings},
-            reported_node_ids=reported_node_ids,
-            promoted_node_ids=promoted_node_ids,
-            connected_node_ids=set(distances),
-        )
-        forced_keep_node_ids = set(seed_node_ids)
-        helper_neighbor_id = self._select_helper_neighbor(
-            nodes=nodes,
-            edges=edges,
-            helper_node_ids={
-                node_id
-                for node_id in seed_node_ids
-                if self._looks_like_helper(
-                    name=self._node_name(nodes[node_id]),
-                    snippet=self._read_node_snippet(nodes[node_id]),
-                )
-            },
-        )
-        if helper_neighbor_id is not None:
-            forced_keep_node_ids.add(helper_neighbor_id)
-
-        scored_nodes: list[tuple[Node, float, bool, int]] = []
-        for node_id, node in nodes.items():
-            depth = distances.get(node_id, 0 if node_id in seed_node_ids else 99)
-            score = self._score_node(
-                node_kind=self._node_kind(node),
-                file_path=self._node_file_path(node),
-                depth=depth,
-                repeats=0,
-                relation_class=relation_classes.get(node_id, "weak analysis-only link"),
-                direct_findings=findings_by_node_id.get(node_id, []),
-                snippet=self._read_node_snippet(node),
-                is_best_enclosing=node_id in promoted_node_ids,
-                is_other_enclosing=node_id in reported_node_ids | promoted_node_ids,
-                finding_files={finding.file for finding in all_findings},
-            )
-            updated_node = self._update_graph_node_score(node=node, new_score=score)
-            scored_nodes.append((updated_node, score, node_id in forced_keep_node_ids, depth))
-
-        scored_nodes.sort(
-            key=lambda item: (
-                not item[2],
-                -item[1],
-                item[3],
-                str(self._node_file_path(item[0]) or ""),
-                self._node_line_start(item[0]),
-            )
-        )
-        return [node for node, _score, _forced_keep, _depth in scored_nodes]
-
-    def rank_context_nodes(
-        self,
-        *,
-        nodes: list[CodeContextNode],
-        reported_nodes: list[CodeContextNode],
-        enclosing_nodes: list[CodeContextNode],
-        finding: FindingNode,
-    ) -> list[CodeContextNode]:
-        """Rank context nodes before rendering for a single finding."""
+        """Calculate finding-derived security scores for nodes in one context."""
 
         if not nodes:
             return []
 
-        reported_node_ids: set[NodeID] = {node.node_id for node in reported_nodes}
-        promoted_node_id = self._select_best_enclosing_context_node(enclosing_nodes)
-        seed_node_ids: set[NodeID] = set(reported_node_ids)
-        if promoted_node_id is not None:
-            seed_node_ids.add(promoted_node_id)
+        findings_by_identifier = {str(finding.identifier): finding for finding in finding_nodes}
+        direct_findings_by_node_id: dict[str, list[FindingNode]] = defaultdict(list)
+        for edge in finding_edges:
+            finding = findings_by_identifier.get(edge.src)
+            if finding is None:
+                continue
+            direct_findings_by_node_id[str(edge.dst)].append(finding)
 
-        best_helper_neighbor_id = self._select_best_context_helper_neighbor(
-            nodes=nodes,
-            seed_node_ids=seed_node_ids,
-        )
-
-        scored_nodes: list[tuple[CodeContextNode, bool]] = []
+        scored_nodes: list[Node] = []
         for node in nodes:
-            relation_class = self._resolve_context_relation_class(
-                node=node,
-                finding=finding,
-                reported_node_ids=reported_node_ids,
-                promoted_node_id=promoted_node_id,
+            direct_findings = direct_findings_by_node_id.get(
+                str(node.identifier),
+                [],
             )
-            direct_findings = [finding] if node.node_id in reported_node_ids else []
-            score = self._score_node(
-                node_kind=node.node_kind,
-                file_path=node.file_path,
-                depth=node.depth,
-                repeats=node.repeats,
-                relation_class=relation_class,
-                direct_findings=direct_findings,
+            finding_evidence_score = self._finding_evidence_score(direct_findings)
+            security_path_score = self._security_path_score(
                 snippet=self._read_context_snippet(node),
-                is_best_enclosing=node.node_id == promoted_node_id,
-                is_other_enclosing=node.node_id
-                in {candidate.node_id for candidate in enclosing_nodes},
-                finding_files={finding.file},
+                direct_findings=direct_findings,
             )
-            forced_keep = node.node_id in seed_node_ids
-            if best_helper_neighbor_id is not None and node.node_id == best_helper_neighbor_id:
-                forced_keep = True
-            scored_nodes.append((node.model_copy(update={"score": score}), forced_keep))
+            scored_nodes.append(
+                node.update_scores(
+                    finding_evidence_score=finding_evidence_score,
+                    security_path_score=security_path_score,
+                )
+            )
 
-        scored_nodes.sort(
+        return scored_nodes
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by the current root-first and final-score strategy.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
+        return sorted(
+            ranked_nodes,
             key=lambda item: (
-                not item[1],
-                -item[0].score,
-                item[0].depth,
-                str(item[0].file_path),
-                item[0].line_start,
-            )
+                item.depth != 0,
+                not (item.finding_evidence_score + item.security_path_score > 0.0),
+                -item.score,
+                item.depth,
+                str(item.file_path),
+                item.line_start,
+            ),
         )
-        return [node for node, _forced_keep in scored_nodes]
 
-    def _match_findings_to_graph_nodes(
-        self,
-        *,
-        nodes: dict[NodeID, Node],
-        findings: list[FindingNode],
-    ) -> dict[NodeID, list[FindingNode]]:
-        """Attach findings to graph nodes by file and line containment."""
+    def rank_context_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Calculate context-only scores for a single already-retrieved context.
+        Returns only UNIQUE context nodes with repeats value updated"""
 
-        findings_by_node_id: dict[NodeID, list[FindingNode]] = {node_id: [] for node_id in nodes}
-        for node_id, node in nodes.items():
-            file_path = self._node_file_path(node)
-            line_start = self._node_line_start(node)
-            line_end = self._node_line_end(node)
-            if file_path is None or line_start is None or line_end is None:
-                continue
-            for finding in findings:
-                if (
-                    self._paths_match(file_path, finding.file)
-                    and line_start <= finding.line_number <= line_end
-                ):
-                    findings_by_node_id[node_id].append(finding)
-        return findings_by_node_id
+        if not nodes:
+            return []
 
-    def _select_best_enclosing_graph_nodes(
-        self,
-        *,
-        nodes: dict[NodeID, Node],
-        findings: list[FindingNode],
-    ) -> set[NodeID]:
-        """Choose the best enclosing graph node for each finding."""
-
-        promoted_node_ids: set[NodeID] = set()
-        for finding in findings:
-            best_node_id: NodeID | None = None
-            best_rank: tuple[int, int] | None = None
-            for node_id, node in nodes.items():
-                file_path = self._node_file_path(node)
-                line_start = self._node_line_start(node)
-                line_end = self._node_line_end(node)
-                if file_path is None or line_start is None or line_end is None:
-                    continue
-                if not self._paths_match(file_path, finding.file):
-                    continue
-                if not line_start <= finding.line_number <= line_end:
-                    continue
-                rank = self._enclosing_rank(self._node_kind(node), line_start, line_end)
-                if best_rank is None or rank > best_rank:
-                    best_rank = rank
-                    best_node_id = node_id
-            if best_node_id is not None:
-                promoted_node_ids.add(best_node_id)
-        return promoted_node_ids
-
-    def _build_adjacency(self, edges: list[RelationshipBase]) -> dict[NodeID, set[NodeID]]:
-        """Build an undirected adjacency index from graph edges."""
-
-        adjacency: dict[NodeID, set[NodeID]] = {}
-        for edge in edges:
-            adjacency.setdefault(edge.src, set()).add(edge.dst)
-            adjacency.setdefault(edge.dst, set()).add(edge.src)
-        return adjacency
-
-    def _compute_distances(
-        self,
-        seed_node_ids: set[NodeID],
-        adjacency: dict[NodeID, set[NodeID]],
-    ) -> dict[NodeID, int]:
-        """Compute unweighted graph distance from any seed node."""
-
-        if not seed_node_ids:
-            return {}
-
-        distances: dict[NodeID, int] = {node_id: 0 for node_id in seed_node_ids}
-        queue: deque[NodeID] = deque(seed_node_ids)
-        while queue:
-            current = queue.popleft()
-            for neighbor in adjacency.get(current, set()):
-                if neighbor in distances:
-                    continue
-                distances[neighbor] = distances[current] + 1
-                queue.append(neighbor)
-        return distances
-
-    def _resolve_relation_classes(
-        self,
-        *,
-        nodes: dict[NodeID, Node],
-        edges: list[RelationshipBase],
-        finding_files: set[Path],
-        reported_node_ids: set[NodeID],
-        promoted_node_ids: set[NodeID],
-        connected_node_ids: set[NodeID],
-    ) -> dict[NodeID, str]:
-        """Resolve the strongest known relation class for each graph node."""
-
-        seed_node_ids = reported_node_ids | promoted_node_ids
-        relation_classes: dict[NodeID, str] = {}
-        for node_id, node in nodes.items():
-            if node_id in reported_node_ids:
-                relation_classes[node_id] = "directly_reported_node"
-                continue
-            if node_id in promoted_node_ids:
-                relation_classes[node_id] = "best_enclosing_node"
-                continue
-
-            relation_class = self._relation_class_from_edges(
-                node_id=node_id, seed_node_ids=seed_node_ids, edges=edges
+        aggregated_nodes = self._aggregate_context_nodes(nodes)
+        anchor_files = self._anchor_files(aggregated_nodes)
+        scored_nodes: list[CodeContextNode] = []
+        for node in aggregated_nodes:
+            scored_nodes.append(
+                node.model_copy(
+                    update={
+                        "context_score": self._context_score(
+                            node=node,
+                            anchor_files=anchor_files,
+                            snippet=self._read_context_snippet(node),
+                        )
+                    }
+                )
             )
-            if relation_class is not None:
-                relation_classes[node_id] = relation_class
-                continue
 
-            file_path = self._node_file_path(node)
-            if file_path is not None and any(
-                self._paths_match(file_path, finding_file) for finding_file in finding_files
-            ):
-                relation_classes[node_id] = "same-file sibling"
-            elif node_id in connected_node_ids:
-                relation_classes[node_id] = "cross-file neighbor"
-            else:
-                relation_classes[node_id] = "weak analysis-only link"
+        return scored_nodes
 
-        return relation_classes
+    def _aggregate_context_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Merge repeated context nodes while preserving shallowest depth."""
 
-    def _relation_class_from_edges(
-        self,
-        *,
-        node_id: NodeID,
-        seed_node_ids: set[NodeID],
-        edges: list[RelationshipBase],
-    ) -> str | None:
-        """Classify a graph node using direct structural edges to seed nodes."""
+        aggregated_by_id: dict[NodeID, CodeContextNode] = {}
+        ordered_node_ids: list[NodeID] = []
 
-        for edge in edges:
-            if isinstance(edge, (CallGraphCalls, CallGraphCalledBy)):
-                if edge.src == node_id and edge.dst in seed_node_ids:
-                    return "direct_caller"
-                if edge.src in seed_node_ids and edge.dst == node_id:
-                    return "direct_callee"
-            if isinstance(edge, ControlFlowContains):
-                if edge.src == node_id and edge.dst in seed_node_ids:
-                    return "parent_block_or_class"
-                if edge.src in seed_node_ids and edge.dst == node_id:
-                    return "child_block"
-        return None
-
-    def _select_helper_neighbor(
-        self,
-        *,
-        nodes: dict[NodeID, Node],
-        edges: list[RelationshipBase],
-        helper_node_ids: set[NodeID],
-    ) -> NodeID | None:
-        """Select one adjacent caller or callee when the seed looks like a helper."""
-
-        best_candidate: tuple[int, NodeID] | None = None
-        for edge in edges:
-            if not isinstance(edge, (CallGraphCalls, CallGraphCalledBy)):
-                continue
-            if (
-                edge.src in helper_node_ids
-                and edge.dst in nodes
-                and edge.dst not in helper_node_ids
-            ):
-                candidate = (0, edge.dst)
-            elif (
-                edge.dst in helper_node_ids
-                and edge.src in nodes
-                and edge.src not in helper_node_ids
-            ):
-                candidate = (0, edge.src)
-            else:
-                continue
-            if best_candidate is None or candidate < best_candidate:
-                best_candidate = candidate
-        return None if best_candidate is None else best_candidate[1]
-
-    def _select_best_enclosing_context_node(
-        self,
-        rows: list[CodeContextNode],
-    ) -> NodeID | None:
-        """Pick the best enclosing code node for full snippet context."""
-
-        best_node_id: NodeID | None = None
-        best_rank: tuple[int, int] | None = None
-        for node in rows:
-            if node.line_end < node.line_start:
-                continue
-            rank = self._enclosing_rank(node.node_kind, node.line_start, node.line_end)
-            if best_rank is None or rank > best_rank:
-                best_rank = rank
-                best_node_id = node.node_id
-        return best_node_id
-
-    def _select_best_context_helper_neighbor(
-        self,
-        *,
-        nodes: list[CodeContextNode],
-        seed_node_ids: set[NodeID],
-    ) -> NodeID | None:
-        """Choose a same-file near neighbor when the direct seed looks helper-like."""
-
-        seed_nodes = [node for node in nodes if node.node_id in seed_node_ids]
-        if not any(
-            self._looks_like_helper(name=node.name, snippet=self._read_context_snippet(node))
-            for node in seed_nodes
-        ):
-            return None
-
-        best_candidate: tuple[int, int, NodeID] | None = None
         for node in nodes:
-            if node.node_id in seed_node_ids:
+            existing_node = aggregated_by_id.get(node.identifier)
+            if existing_node is None:
+                aggregated_by_id[node.identifier] = node.model_copy()
+                ordered_node_ids.append(node.identifier)
                 continue
-            candidate_rank = (
-                node.depth,
-                -(node.line_end - node.line_start),
-                node.node_id,
-            )
-            if best_candidate is None or candidate_rank < best_candidate:
-                best_candidate = candidate_rank
-        return None if best_candidate is None else best_candidate[2]
 
-    def _resolve_context_relation_class(
+            existing_node.repeats += node.repeats + 1
+            existing_node.depth = min(existing_node.depth, node.depth)
+
+        return [aggregated_by_id[node_id] for node_id in ordered_node_ids]
+
+    def calculate_final_score(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Compose final scores from previously computed score components."""
+
+        final_nodes: list[CodeContextNode] = []
+        for node in nodes:
+            score = self._final_score(
+                finding_evidence_score=node.finding_evidence_score,
+                security_path_score=node.security_path_score,
+                context_score=node.context_score,
+            )
+            final_nodes.append(node.model_copy(update={"score": score}))
+
+        return final_nodes
+
+    def _context_score(
         self,
         *,
         node: CodeContextNode,
-        finding: FindingNode,
-        reported_node_ids: set[NodeID],
-        promoted_node_id: NodeID | None,
-    ) -> str:
-        """Resolve the strongest known relation class for a context node."""
+        anchor_files: set[Path],
+        snippet: str,
+    ) -> float:
+        """Calculate context-only relevance from a single context neighborhood."""
 
-        if node.node_id in reported_node_ids:
-            return "directly_reported_node"
-        if promoted_node_id is not None and node.node_id == promoted_node_id:
-            return "best_enclosing_node"
-        if self._paths_match(node.file_path, finding.file):
-            return "same-file sibling"
-        return "cross-file neighbor"
+        depth_score = self._hop_decay(node.depth)
+        structure_score = self._context_structure_score(
+            node_kind=node.node_kind,
+            repeats=node.repeats,
+        )
+        file_prior_score = self._context_file_prior_score(
+            file_path=node.file_path,
+            anchor_files=anchor_files,
+            snippet=snippet,
+        )
+        return self._clamp_score(
+            CONTEXT_DEPTH_WEIGHT * depth_score
+            + CONTEXT_STRUCTURE_WEIGHT * structure_score
+            + CONTEXT_FILE_PRIOR_WEIGHT * file_prior_score
+        )
 
-    def _score_node(
+    def _final_score(
         self,
         *,
-        node_kind: str | None,
-        file_path: Path | None,
-        depth: int,
-        repeats: int,
-        relation_class: str,
-        direct_findings: list[FindingNode],
-        snippet: str,
-        is_best_enclosing: bool,
-        is_other_enclosing: bool,
-        finding_files: set[Path],
+        finding_evidence_score: float,
+        security_path_score: float,
+        context_score: float,
     ) -> float:
-        """Compute the Phase 1 score for one node."""
+        """Combine component scores into the final ranking score."""
 
-        graph_role_score = RELATION_CLASS_WEIGHTS.get(relation_class, 0.10) * self._hop_decay(depth)
-        node_finding_evidence_score = self._node_finding_evidence_score(direct_findings)
-        security_path_score = self._security_path_score(
-            snippet=snippet, direct_findings=direct_findings
-        )
-        structure_score = self._structure_score(
-            node_kind=node_kind,
-            repeats=repeats,
-            is_best_enclosing=is_best_enclosing,
-            is_other_enclosing=is_other_enclosing,
-        )
-        file_prior_score = self._file_prior_score(
-            file_path=file_path, finding_files=finding_files, snippet=snippet
-        )
-
-        final_score = (
-            GRAPH_ROLE_WEIGHT * graph_role_score
-            + FINDING_EVIDENCE_WEIGHT * node_finding_evidence_score
+        return self._clamp_score(
+            FINDING_EVIDENCE_WEIGHT * finding_evidence_score
             + SECURITY_PATH_WEIGHT * security_path_score
-            + STRUCTURE_WEIGHT * structure_score
-            + FILE_PRIOR_WEIGHT * file_prior_score
+            + CONTEXT_WEIGHT * context_score
         )
-        return max(0.0, min(1.0, round(final_score, 6)))
 
-    def _hop_decay(self, depth: int) -> float:
-        """Return the configured hop decay for traversal depth."""
-
-        if depth in HOP_DECAY_BY_DEPTH:
-            return HOP_DECAY_BY_DEPTH[depth]
-        return 0.20
-
-    def _node_finding_evidence_score(self, direct_findings: list[FindingNode]) -> float:
+    def _finding_evidence_score(self, direct_findings: list[FindingNode]) -> float:
         """Score direct analyzer evidence attached to a node."""
 
         if not direct_findings:
             return 0.0
 
-        severity_score = max(
-            (SEVERITY_SCORES[finding.severity] if isinstance(finding, BanditFindingNode) else 0.50)
-            for finding in direct_findings
-        )
-        confidence_score = 0.50
+        severity_score = max(self._finding_severity(finding) for finding in direct_findings)
+        confidence_score = max(self._finding_confidence(finding) for finding in direct_findings)
         has_bandit = any(isinstance(finding, BanditFindingNode) for finding in direct_findings)
         has_dlint = any(isinstance(finding, DlintFindingNode) for finding in direct_findings)
         if has_bandit and has_dlint:
@@ -561,7 +336,9 @@ class NodeRelevanceRankingService(BaseModel):
             agreement_score = 0.30
         else:
             agreement_score = 0.00
-        return 0.50 * severity_score + 0.30 * confidence_score + 0.20 * agreement_score
+        return self._clamp_score(
+            0.50 * severity_score + 0.30 * confidence_score + 0.20 * agreement_score
+        )
 
     def _security_path_score(self, *, snippet: str, direct_findings: list[FindingNode]) -> float:
         """Score sink, source, guard, and explicit path evidence heuristics."""
@@ -572,33 +349,50 @@ class NodeRelevanceRankingService(BaseModel):
         guard_indicator = 1.0 if any(hint in normalized_text for hint in GUARD_HINTS) else 0.0
         security_path_evidence = 0.0
         if any(
-            isinstance(finding, BanditFindingNode) and finding.cwe_id in {78, 79, 89, 502}
+            isinstance(finding, BanditFindingNode) and finding.cwe_id in HIGH_RISK_CWES
             for finding in direct_findings
         ):
             security_path_evidence = max(sink_indicator, 0.70)
-        return (
+        return self._clamp_score(
             0.35 * sink_indicator
             + 0.25 * source_indicator
             + 0.20 * guard_indicator
             + 0.20 * security_path_evidence
         )
 
-    def _structure_score(
-        self,
-        *,
-        node_kind: str | None,
-        repeats: int,
-        is_best_enclosing: bool,
-        is_other_enclosing: bool,
-    ) -> float:
-        """Score node structure for final rendering usefulness."""
+    @staticmethod
+    def _finding_severity(finding: FindingNode) -> float:
+        """Return a normalized severity score for any finding type."""
 
-        if is_best_enclosing:
-            enclosing_bonus = 1.00
-        elif is_other_enclosing:
-            enclosing_bonus = 0.60
-        else:
-            enclosing_bonus = 0.00
+        if isinstance(finding, BanditFindingNode):
+            return SEVERITY_SCORES[finding.severity]
+        if isinstance(finding, DlintFindingNode):
+            severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)
+            return SEVERITY_SCORES[severity]
+        return 0.50
+
+    @staticmethod
+    def _finding_confidence(finding: FindingNode) -> float:
+        """Return a confidence proxy derived from finding severity."""
+
+        if isinstance(finding, BanditFindingNode):
+            return CONFIDENCE_BY_SEVERITY[finding.severity]
+        if isinstance(finding, DlintFindingNode):
+            severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)
+            return CONFIDENCE_BY_SEVERITY[severity]
+        return 0.40
+
+    @staticmethod
+    def _dlint_severity(issue_id: int) -> IssueSeverity:
+        """Map a Dlint issue ID to an approximate severity tier."""
+
+        for id_range, severity in DLINT_SEVERITY_BY_ISSUE_RANGE:
+            if issue_id in id_range:
+                return severity
+        return IssueSeverity.MEDIUM
+
+    def _context_structure_score(self, *, node_kind: str | None, repeats: int) -> float:
+        """Score node structure for final rendering usefulness."""
 
         if repeats <= 0:
             repeat_bonus = 0.00
@@ -610,45 +404,54 @@ class NodeRelevanceRankingService(BaseModel):
             repeat_bonus = 1.00
 
         render_kind_bonus = RENDER_KIND_SCORES.get(node_kind or "", 0.20)
-        return 0.50 * enclosing_bonus + 0.30 * repeat_bonus + 0.20 * render_kind_bonus
+        return self._clamp_score(0.60 * render_kind_bonus + 0.40 * repeat_bonus)
 
-    def _file_prior_score(
-        self, *, file_path: Path | None, finding_files: set[Path], snippet: str
+    def _context_file_prior_score(
+        self,
+        *,
+        file_path: Path,
+        anchor_files: set[Path],
+        snippet: str,
     ) -> float:
-        """Score locality and generated-file priors."""
-
-        if file_path is None:
-            return 0.0
+        """Score locality within the already-retrieved context."""
 
         same_file_bonus = (
-            1.00
-            if any(self._paths_match(file_path, finding_file) for finding_file in finding_files)
-            else 0.00
+            1.00 if any(self._paths_match(file_path, anchor) for anchor in anchor_files) else 0.00
         )
         same_module_bonus = max(
-            (self._same_module_bonus(file_path, finding_file) for finding_file in finding_files),
+            (self._same_module_bonus(file_path, anchor) for anchor in anchor_files),
             default=0.00,
         )
         generated_penalty = (
             1.00 if self._is_generated_file(file_path=file_path, snippet=snippet) else 0.00
         )
-        return max(
-            0.0,
-            0.70 * same_file_bonus + 0.20 * same_module_bonus - 0.10 * generated_penalty,
+        return self._clamp_score(
+            max(0.0, 0.70 * same_file_bonus + 0.20 * same_module_bonus - 0.10 * generated_penalty)
         )
 
-    def _same_module_bonus(self, file_path: Path, finding_file: Path) -> float:
+    def _anchor_files(self, nodes: list[CodeContextNode]) -> set[Path]:
+        """Return the file set for the shallowest nodes in the context."""
+
+        min_depth = min(node.depth for node in nodes)
+        return {node.file_path for node in nodes if node.depth == min_depth}
+
+    def _hop_decay(self, depth: int) -> float:
+        """Return the configured hop decay for traversal depth."""
+
+        return HOP_DECAY_BY_DEPTH.get(depth, 0.20)
+
+    def _same_module_bonus(self, file_path: Path, anchor_file: Path) -> float:
         """Approximate whether two files belong to the same module or package."""
 
         file_parts = self._path_parts(file_path)
-        finding_parts = self._path_parts(finding_file)
-        if not file_parts or not finding_parts:
+        anchor_parts = self._path_parts(anchor_file)
+        if not file_parts or not anchor_parts:
             return 0.0
-        if file_parts[:-1] == finding_parts[:-1]:
+        if file_parts[:-1] == anchor_parts[:-1]:
             return 1.0
         common_prefix = 0
-        for file_part, finding_part in zip(file_parts[:-1], finding_parts[:-1], strict=False):
-            if file_part != finding_part:
+        for file_part, anchor_part in zip(file_parts[:-1], anchor_parts[:-1], strict=False):
+            if file_part != anchor_part:
                 break
             common_prefix += 1
         return 0.50 if common_prefix > 0 else 0.00
@@ -664,38 +467,10 @@ class NodeRelevanceRankingService(BaseModel):
         header = "\n".join(snippet.splitlines()[:3]).lower()
         return any(marker in header for marker in GENERATED_HEADER_MARKERS)
 
-    def _looks_like_helper(self, *, name: str | None, snippet: str) -> bool:
-        """Return whether the node looks like a wrapper or helper."""
-
-        normalized_name = (name or "").lower()
-        normalized_snippet = snippet.lower()
-        return any(hint in normalized_name or hint in normalized_snippet for hint in HELPER_HINTS)
-
-    def _read_context_snippet(self, node: CodeContextNode) -> str:
+    def _read_context_snippet(self, node: BaseCodeNode | CodeContextNode) -> str:
         """Read snippet text for a context node when possible."""
 
-        if self.snippet_reader is None:
-            return node.name or ""
-        return self.snippet_reader(node.file_path, node.line_start, node.line_end)
-
-    def _read_node_snippet(self, node: Node) -> str:
-        """Read snippet text for a graph node when possible."""
-
-        if self.snippet_reader is None:
-            return self._node_name(node) or ""
-        file_path = self._node_file_path(node)
-        if file_path is None:
-            return self._node_name(node) or ""
-        return self.snippet_reader(
-            file_path, self._node_line_start(node), self._node_line_end(node)
-        )
-
-    @staticmethod
-    def _enclosing_rank(node_kind: str | None, line_start: int, line_end: int) -> tuple[int, int]:
-        """Return the enclosing node preference tuple."""
-
-        span = line_end - line_start
-        return (int(node_kind in FULL_CONTEXT_NODE_KINDS), span)
+        return self._snippet_reader.read_snippet(node.file_path, node.line_start, node.line_end)
 
     @staticmethod
     def _paths_match(node_file: Path, target_file: Path) -> bool:
@@ -718,42 +493,170 @@ class NodeRelevanceRankingService(BaseModel):
         return tuple(part for part in path.as_posix().split("/") if part and part != ".")
 
     @staticmethod
-    def _node_kind(node: Node) -> str | None:
-        """Return the rankable node kind string."""
+    def _clamp_score(score: float) -> float:
+        """Clamp and round a score to the expected range."""
 
-        return node.__class__.__name__
+        return max(0.0, min(1.0, round(score, 6)))
 
-    @staticmethod
-    def _node_name(node: Node) -> str | None:
-        """Return the node name when available."""
 
-        return getattr(node, "name", None)
+class DepthRepeatsContextNodeRankingStrategy(NodeRelevanceRankingService):
+    """Rank nodes by depth, repeats, and context score."""
 
-    @staticmethod
-    def _node_file_path(node: Node) -> Path | None:
-        """Return the node file path when available."""
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by root priority, depth, repeats, and context score.
 
-        file_path = getattr(node, "file_path", None)
-        if file_path is None:
-            return None
-        return Path(file_path)
+        Args:
+            nodes: Retrieved context nodes.
 
-    @staticmethod
-    def _node_line_start(node: Node) -> int | None:
-        """Return the node line start when available."""
+        Returns:
+            Ranked nodes ready for rendering.
+        """
 
-        return getattr(node, "line_start", None)
+        ranked_nodes = self.rank_context_nodes(nodes)
+        return sorted(
+            ranked_nodes,
+            key=lambda item: (
+                item.depth != 0,
+                item.depth,
+                -item.repeats,
+                -item.context_score,
+                str(item.file_path),
+                item.line_start,
+            ),
+        )
 
-    @staticmethod
-    def _node_line_end(node: Node) -> int | None:
-        """Return the node line end when available."""
 
-        return getattr(node, "line_end", None)
+class RandomNodeRankingStrategy(NodeRelevanceRankingService):
+    """Shuffle nodes while keeping root nodes ahead of non-root nodes."""
 
-    @staticmethod
-    def _update_graph_node_score(node: Node, *, new_score: float) -> Node:
-        """Return a graph node copy with score applied when supported."""
+    random_seed: int | None = None
 
-        if isinstance(node, BaseCodeNode):
-            return cast(Node, node.update_score(new_score))
-        return node
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes shuffled within root and non-root groups.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        aggregated_nodes = self._aggregate_context_nodes(nodes)
+        rng = random.Random(self.random_seed)
+        root_nodes = [node for node in aggregated_nodes if node.depth == 0]
+        other_nodes = [node for node in aggregated_nodes if node.depth != 0]
+        rng.shuffle(root_nodes)
+        rng.shuffle(other_nodes)
+        return [*root_nodes, *other_nodes]
+
+
+class SecurityScoreNodeRankingStrategy(NodeRelevanceRankingService):
+    """Rank nodes by root priority and security-path score only."""
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by root priority and security score.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        aggregated_nodes = self._aggregate_context_nodes(nodes)
+        return sorted(
+            aggregated_nodes,
+            key=lambda item: (
+                item.depth != 0,
+                -item.security_path_score,
+                str(item.file_path),
+                item.line_start,
+            ),
+        )
+
+
+class SecurityFirstNodeRankingStrategy(NodeRelevanceRankingService):
+    """Rank nodes by security-path score first, using context score as tiebreaker."""
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by root priority, security score, then context score.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
+        return sorted(
+            ranked_nodes,
+            key=lambda item: (
+                item.depth != 0,
+                -item.security_path_score,
+                -item.context_score,
+                str(item.file_path),
+                item.line_start,
+            ),
+        )
+
+
+class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):
+    """Rank nodes using context as base score with multiplicative security boost."""
+
+    def calculate_final_score(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Compose final scores using multiplicative security boost over context base.
+
+        Args:
+            nodes: Nodes with context_score already calculated.
+
+        Returns:
+            Nodes with final score set via multiplicative formula.
+        """
+
+        final_nodes: list[CodeContextNode] = []
+        for node in nodes:
+            security_signal = node.finding_evidence_score + node.security_path_score
+            score = self._clamp_score(
+                node.context_score * (1.0 + SECURITY_BOOST_WEIGHT * security_signal)
+            )
+            final_nodes.append(node.model_copy(update={"score": score}))
+        return final_nodes
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return nodes ordered by root priority and multiplicative boost score.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            Ranked nodes ready for rendering.
+        """
+
+        ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
+        return sorted(
+            ranked_nodes,
+            key=lambda item: (
+                item.depth != 0,
+                -item.score,
+                item.depth,
+                str(item.file_path),
+                item.line_start,
+            ),
+        )
+
+
+class DummyNodeRankingStrategy(ContextNodeRankingStrategy):
+    """Return nodes exactly as provided."""
+
+    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
+        """Return the original list unchanged.
+
+        Args:
+            nodes: Retrieved context nodes.
+
+        Returns:
+            The same node list instance.
+        """
+
+        return nodes
