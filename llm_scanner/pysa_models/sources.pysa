@@ -1,0 +1,31 @@
+# Flask sources — UserControlled
+def flask.Request.args.__getitem__(self, key): -> TaintSource[UserControlled]
+def flask.Request.form.__getitem__(self, key): -> TaintSource[UserControlled]
+def flask.Request.values.__getitem__(self, key): -> TaintSource[UserControlled]
+def flask.Request.json.__getitem__(self, key): -> TaintSource[UserControlled]
+def flask.Request.data.__get__(self): -> TaintSource[UserControlled]
+def flask.Request.headers.__getitem__(self, key): -> TaintSource[UserControlled]
+
+# Django sources — UserControlled
+def django.http.HttpRequest.GET.__getitem__(self, key): -> TaintSource[UserControlled]
+def django.http.HttpRequest.POST.__getitem__(self, key): -> TaintSource[UserControlled]
+def django.http.HttpRequest.body.__get__(self): -> TaintSource[UserControlled]
+
+# FastAPI sources — UserControlled
+def fastapi.Request.query_params.__getitem__(self, key): -> TaintSource[UserControlled]
+def fastapi.Request.body(self): -> TaintSource[UserControlled]
+
+# stdin / input — UserControlled
+def builtins.input(prompt): -> TaintSource[UserControlled]
+def sys.stdin.read(self): -> TaintSource[UserControlled]
+def sys.stdin.readline(self): -> TaintSource[UserControlled]
+
+# Environment variables — Environment
+def os.environ.__getitem__(self, key): -> TaintSource[Environment]
+def os.getenv(key, default): -> TaintSource[Environment]
+sys.argv: TaintSource[Environment]
+
+# File reading — FileSystem
+def builtins.open(file, mode, buffering, encoding, errors, newline, closefd, opener): -> TaintSource[FileSystem]
+def pathlib.Path.read_text(self, encoding, errors): -> TaintSource[FileSystem]
+def pathlib.Path.read_bytes(self): -> TaintSource[FileSystem]

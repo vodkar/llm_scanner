@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import json
 import logging
-import random
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
@@ -29,8 +28,6 @@ class _EntryAccumulator(BaseModel):
     file_spans: dict[Path, set[tuple[int, int]]] = Field(
         default_factory=lambda: defaultdict[Path, set[tuple[int, int]]](set)
     )
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class CVEFixesLoaderService(BaseModel):
@@ -132,28 +129,6 @@ class CVEFixesLoaderService(BaseModel):
 
         return entries
 
-    def sample_entries(
-        self, entries: list[CVEFixesEntry], sample_count: int, seed: int | None
-    ) -> list[CVEFixesEntry]:
-        """Randomly sample entries.
-
-        Args:
-            entries: Candidate CVEFixes entries.
-            sample_count: Number of samples to select.
-            seed: Optional random seed.
-
-        Returns:
-            Randomly sampled entries.
-        """
-
-        if sample_count <= 0:
-            return []
-        if sample_count > len(entries):
-            raise ValueError(f"Requested {sample_count} samples but only {len(entries)} available")
-
-        rng = random.Random(seed)
-        return rng.sample(entries, sample_count)
-
     def _fetch_candidate_rows(self) -> list[sqlite3.Row]:
         query = (
             "SELECT f.cve_id AS cve_id, f.hash AS fix_hash, f.repo_url AS repo_url, "
@@ -170,7 +145,6 @@ class CVEFixesLoaderService(BaseModel):
         )
 
         connection = sqlite3.connect(self.db_path)
-        connection.row_factory = sqlite3.Row
         try:
             cursor = connection.execute(query)
             return cursor.fetchall()
@@ -192,19 +166,6 @@ class CVEFixesLoaderService(BaseModel):
             return int(str(value))
         except (TypeError, ValueError):
             return None
-
-    @staticmethod
-    def _parse_bool(value: object | None) -> bool | None:
-        if value is None:
-            return None
-        if isinstance(value, bool):
-            return value
-        text = str(value).strip().lower()
-        if text in {"true", "1", "yes"}:
-            return True
-        if text in {"false", "0", "no"}:
-            return False
-        return None
 
     @staticmethod
     def _parse_cwe_id(value: object | None) -> int | None:

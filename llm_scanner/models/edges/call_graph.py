@@ -26,8 +26,6 @@ class CallGraphCalls(RelationshipBase):
         default=CallGraphRelationshipType.CALLS,
         description="Relationship type identifier",
     )
-    is_direct: bool = Field(..., description="True for direct calls; False otherwise")
-    call_depth: int = Field(..., ge=0, description="Depth of the call within the call chain")
 
 
 class CallGraphCalledBy(RelationshipBase):
@@ -42,13 +40,4 @@ class CallGraphCalledBy(RelationshipBase):
     type: Literal[CallGraphRelationshipType.CALLED_BY] = Field(
         default=CallGraphRelationshipType.CALLED_BY,
         description="Relationship type identifier",
-    )
-    call_count: int | None = Field(
-        default=None,
-        ge=0,
-        description="Number of observed calls when profiling data is available",
-    )
-    is_entry_point_path: bool = Field(
-        default=False,
-        description="True if the edge lies on a path from the application entry point",
     )

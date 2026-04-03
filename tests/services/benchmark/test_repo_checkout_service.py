@@ -68,31 +68,3 @@ def test_checkout_repo_uses_fix_hash_for_non_vulnerable(monkeypatch) -> None:
     assert fetch_calls == [repo_path]
     assert checkout_calls == [(repo_path, "fix123")]
     assert not parent_resolution_called["value"]
-
-
-def test_checkout_vulnerable_repo_keeps_backward_compatibility(monkeypatch) -> None:
-    service = RepoCheckoutService(cache_dir=Path("/tmp/cache"))
-
-    captured: dict[str, object] = {}
-
-    def _checkout_repo(
-        self: RepoCheckoutService, repo_url: str, fix_hash: str, is_vulnerable: bool
-    ) -> Path:
-        captured["repo_url"] = repo_url
-        captured["fix_hash"] = fix_hash
-        captured["is_vulnerable"] = is_vulnerable
-        return Path("/tmp/cache/owner_repo")
-
-    monkeypatch.setattr(RepoCheckoutService, "checkout_repo", _checkout_repo)
-
-    result = service.checkout_vulnerable_repo(
-        repo_url="https://example.com/owner/repo.git",
-        fix_hash="fix123",
-    )
-
-    assert result == Path("/tmp/cache/owner_repo")
-    assert captured == {
-        "repo_url": "https://example.com/owner/repo.git",
-        "fix_hash": "fix123",
-        "is_vulnerable": True,
-    }

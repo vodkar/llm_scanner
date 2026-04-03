@@ -5,9 +5,11 @@ from pydantic import BaseModel
 from clients.neo4j import Neo4jClient
 from repositories.analyzers.bandit import BanditFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
+from repositories.analyzers.pysa import PysaFindingsRepository
 from repositories.graph import GraphRepository
 from services.analyzer.bandit import BanditAnalyzerService
 from services.analyzer.dlint import DlintAnalyzerService
+from services.analyzer.pysa import PysaAnalyzerService
 from services.context_assembler.ranking import NodeRelevanceRankingService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
 
@@ -25,6 +27,7 @@ class GeneralPipeline(BaseModel):
         graph_repository = GraphRepository(self.neo4j_client)
         dlint_findings_repository = DlintFindingsRepository(client=self.neo4j_client)
         bandit_findings_repository = BanditFindingsRepository(client=self.neo4j_client)
+        pysa_findings_repository = PysaFindingsRepository(client=self.neo4j_client)
 
         ranking_service = NodeRelevanceRankingService(project_root=project_root)
         dlint_service = DlintAnalyzerService(
@@ -37,12 +40,20 @@ class GeneralPipeline(BaseModel):
             graph_repository=graph_repository,
             findings_repository=bandit_findings_repository,
         )
+        pysa_service = PysaAnalyzerService(
+            project_root=project_root,
+            graph_repository=graph_repository,
+            findings_repository=pysa_findings_repository,
+        )
 
         nodes, edges = CPGDirectoryBuilder(root=project_root).build()
         dlint_findings, dlint_edges = dlint_service.get_findings_with_edges(list(nodes.values()))
         bandit_findings, bandit_edges = bandit_service.get_findings_with_edges(list(nodes.values()))
+        pysa_findings, pysa_edges = pysa_service.get_findings_with_edges(list(nodes.values()))
         _nodes = ranking_service.calculate_security_score(
-            list(nodes.values()), dlint_findings + bandit_findings, dlint_edges + bandit_edges
+            list(nodes.values()),
+            dlint_findings + bandit_findings + pysa_findings,
+            dlint_edges + bandit_edges + pysa_edges,
         )
         nodes = {node.identifier: node for node in _nodes}
 

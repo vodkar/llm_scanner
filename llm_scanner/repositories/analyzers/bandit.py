@@ -1,6 +1,3 @@
-from pathlib import Path
-
-from models.bandit_report import IssueSeverity
 from models.nodes.finding import BanditFindingNode
 from repositories.analyzers.base import IFindingsRepository
 from repositories.queries import finding_node_query
@@ -38,28 +35,3 @@ class BanditFindingsRepository(IFindingsRepository):
 
         query = finding_node_query("BanditFinding")
         self.client.run_write(query, {"rows": rows})
-
-    def iter_findings_for_project(self, project_root: Path) -> list[BanditFindingNode]:
-        """Return all Bandit findings that belong to a project directory.
-
-        Args:
-            project_root: Root directory of the project.
-
-        Returns:
-            Bandit findings whose file paths fall under the provided root.
-        """
-
-        rows = self._iter_findings_for_project(project_root)
-        findings: list[BanditFindingNode] = []
-        for row in rows:
-            findings.append(
-                BanditFindingNode(
-                    identifier=row["id"],
-                    file=Path(str(row["file"])),
-                    line_number=int(row["line_number"]),
-                    cwe_id=int(row["cwe_id"]),
-                    severity=IssueSeverity(str(row["severity"])),
-                )
-            )
-
-        return findings

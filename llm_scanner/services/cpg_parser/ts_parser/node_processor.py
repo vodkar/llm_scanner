@@ -455,8 +455,6 @@ class NodeProcessor(BaseModel):
             CallGraphCalls(
                 src=caller_id,
                 dst=call_id,
-                is_direct=True,
-                call_depth=0,
             )
         )
         edges.append(

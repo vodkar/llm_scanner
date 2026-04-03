@@ -1,6 +1,3 @@
-from pathlib import Path
-from uuid import UUID
-
 from models.nodes.finding import DlintFindingNode
 from repositories.analyzers.base import IFindingsRepository
 from repositories.queries import finding_node_query
@@ -37,27 +34,3 @@ class DlintFindingsRepository(IFindingsRepository):
 
         query = finding_node_query("DlintFinding")
         self.client.run_write(query, {"rows": rows})
-
-    def iter_findings_for_project(self, project_root: Path) -> list[DlintFindingNode]:
-        """Return all Dlint findings that belong to a project directory.
-
-        Args:
-            project_root: Root directory of the project.
-
-        Returns:
-            Dlint findings whose file paths fall under the provided root.
-        """
-
-        rows = self._iter_findings_for_project(project_root)
-        findings: list[DlintFindingNode] = []
-        for row in rows:
-            findings.append(
-                DlintFindingNode(
-                    identifier=UUID(row["id"]),
-                    file=Path(str(row["file"])),
-                    line_number=int(row["line_number"]),
-                    issue_id=int(row["issue_id"]),
-                )
-            )
-
-        return findings

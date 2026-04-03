@@ -10,7 +10,6 @@ class AnalysisRelationshipType(StrEnum):
     """Enumerates analysis relationships between findings and code artifacts."""
 
     REPORTS = "REPORTS"
-    SUGGESTS_VULNERABILITY = "SUGGESTS_VULNERABILITY"
 
 
 class StaticAnalysisReports(FindingRelationshipBase):

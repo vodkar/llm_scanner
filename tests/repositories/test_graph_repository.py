@@ -58,8 +58,6 @@ def test_graph_repository_load_inserts_nodes_and_edges(neo4j_client: Neo4jClient
     )
     assert len(edge_rows) == 1
     assert edge_rows[0]["rel_type"] == "CALLS"
-    assert edge_rows[0]["is_direct"] is True
-    assert edge_rows[0]["call_depth"] == 1
 
 
 def test_get_nodes_by_file_and_line_numbers_returns_empty_for_empty_input(

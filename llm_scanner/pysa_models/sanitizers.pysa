@@ -1,0 +1,11 @@
+# XSS sanitizers
+def html.escape(s, quote): Sanitize[TaintInTaintOut[LocalReturn], TaintSink[XSS]]
+def markupsafe.escape(s): Sanitize[TaintInTaintOut[LocalReturn], TaintSink[XSS]]
+def bleach.clean(text, tags, attributes, strip, strip_comments): Sanitize[TaintInTaintOut[LocalReturn], TaintSink[XSS]]
+def django.utils.html.escape(text): Sanitize[TaintInTaintOut[LocalReturn], TaintSink[XSS]]
+def django.utils.html.strip_tags(value): Sanitize[TaintInTaintOut[LocalReturn], TaintSink[XSS]]
+
+# Command injection sanitizers
+def shlex.quote(s): Sanitize[TaintInTaintOut[LocalReturn], TaintSink[RemoteCodeExecution]]
+def shlex.join(split_command): Sanitize[TaintInTaintOut[LocalReturn], TaintSink[RemoteCodeExecution]]
+def re.escape(pattern): Sanitize[TaintInTaintOut[LocalReturn], TaintSink[RemoteCodeExecution]]

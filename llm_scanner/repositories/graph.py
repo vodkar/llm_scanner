@@ -63,24 +63,6 @@ class GraphRepository(Neo4jClient):
         step_two = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", step_one)
         return re.sub(r"[^A-Za-z0-9_]", "_", step_two).upper()
 
-    def _relationship_type_for_edge(self, rel_type: str) -> str:
-        """Resolve a Neo4j relationship type for an edge.
-
-        Args:
-            rel_type: Raw relationship type or class name.
-
-        Returns:
-            Valid Neo4j relationship type.
-        """
-
-        rel_type = rel_type.strip()
-        if RELATIONSHIP_TYPE_PATTERN.fullmatch(rel_type):
-            return rel_type
-        candidate = self._camel_to_upper_snake(rel_type)
-        if RELATIONSHIP_TYPE_PATTERN.fullmatch(candidate):
-            return candidate
-        raise ValueError(f"Unknown relationship type: {rel_type}")
-
     def load(self, nodes: dict[NodeID, Node], edges: list[RelationshipBase]) -> None:
         """Load nodes and relationships into Neo4j.
 

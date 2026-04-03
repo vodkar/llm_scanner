@@ -1,0 +1,25 @@
+# SQL sinks
+def sqlite3.Connection.execute(self, sql, parameters): TaintSink[SQL]
+def sqlite3.Cursor.execute(self, sql, parameters): TaintSink[SQL]
+def sqlalchemy.engine.Connection.execute(self, object, *multiparams, **params): TaintSink[SQL]
+def psycopg2.extensions.cursor.execute(self, query, vars): TaintSink[SQL]
+def pymysql.cursors.Cursor.execute(self, query, args): TaintSink[SQL]
+
+# Command injection sinks
+def subprocess.run(args, *args, **kwargs): TaintSink[RemoteCodeExecution]
+def subprocess.Popen.__init__(self, args, *args, **kwargs): TaintSink[RemoteCodeExecution]
+def subprocess.call(args, *args, **kwargs): TaintSink[RemoteCodeExecution]
+def subprocess.check_output(args, *args, **kwargs): TaintSink[RemoteCodeExecution]
+def os.system(command): TaintSink[RemoteCodeExecution]
+def os.popen(cmd, mode, buffering): TaintSink[RemoteCodeExecution]
+def builtins.eval(expression, globals, locals): TaintSink[RemoteCodeExecution]
+def builtins.exec(object, globals, locals): TaintSink[RemoteCodeExecution]
+
+# Path traversal sinks
+def builtins.open(file, mode, buffering, encoding, errors, newline, closefd, opener): TaintSink[FileSystem]
+def pathlib.Path.__init__(self, *args): TaintSink[FileSystem]
+def os.path.join(a, *p): TaintSink[FileSystem]
+
+# XSS sinks
+def flask.Markup.__init__(self, base, encoding, errors): TaintSink[XSS]
+def jinja2.Markup.__init__(self, base, encoding, errors): TaintSink[XSS]

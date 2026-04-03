@@ -67,6 +67,16 @@ FINDING_NODE_QUERIES: Final[dict[str, LiteralString]] = {
         "    n.line_number = r.line_number, "
         "    n.issue_id = r.issue_id"
     ),
+    "PysaFinding": (
+        "UNWIND $rows AS r "
+        "MERGE (n:Finding:PysaFinding {id: r.id}) "
+        "SET n.file = r.file, "
+        "    n.line_number = r.line_number, "
+        "    n.flow_code = r.flow_code, "
+        "    n.flow_name = r.flow_name, "
+        "    n.sink_type = r.sink_type, "
+        "    n.source_type = r.source_type"
+    ),
 }
 
 FINDING_RELATIONSHIP_QUERIES: Final[dict[str, LiteralString]] = {
@@ -121,6 +131,14 @@ FINDINGS_BY_PROJECT_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
         "f.issue_id AS issue_id "
         "ORDER BY f.file, f.line_number"
     ),
+    "PysaFinding": (
+        "MATCH (f:Finding:PysaFinding) "
+        "WHERE f.file STARTS WITH $root OR f.file STARTS WITH $root_alt "
+        "RETURN f.id AS id, f.file AS file, f.line_number AS line_number, "
+        "f.flow_code AS flow_code, f.flow_name AS flow_name, "
+        "f.sink_type AS sink_type, f.source_type AS source_type "
+        "ORDER BY f.file, f.line_number"
+    ),
 }
 
 FINDINGS_BY_LABEL_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
@@ -134,6 +152,13 @@ FINDINGS_BY_LABEL_QUERY_BY_LABEL: Final[dict[str, LiteralString]] = {
         "MATCH (f:Finding:DlintFinding) "
         "RETURN f.id AS id, f.file AS file, f.line_number AS line_number, "
         "f.issue_id AS issue_id "
+        "ORDER BY f.file, f.line_number"
+    ),
+    "PysaFinding": (
+        "MATCH (f:Finding:PysaFinding) "
+        "RETURN f.id AS id, f.file AS file, f.line_number AS line_number, "
+        "f.flow_code AS flow_code, f.flow_name AS flow_name, "
+        "f.sink_type AS sink_type, f.source_type AS source_type "
         "ORDER BY f.file, f.line_number"
     ),
 }
@@ -187,19 +212,6 @@ def finding_relationship_query(rel_type: str) -> LiteralString:
     """
 
     return FINDING_RELATIONSHIP_QUERIES.get(rel_type, FINDING_RELATIONSHIP_QUERIES["REPORTS"])
-
-
-def findings_by_project_query(finding_label: str) -> LiteralString:
-    """Return a literal query for project-scoped findings by label.
-
-    Args:
-        finding_label: Finding label to scope the query.
-
-    Returns:
-        Literal query used to fetch findings under a project root.
-    """
-
-    return FINDINGS_BY_PROJECT_QUERY_BY_LABEL[finding_label]
 
 
 def findings_by_label_query(finding_label: str) -> LiteralString:
