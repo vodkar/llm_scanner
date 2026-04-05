@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from clients.neo4j import Neo4jClient
 from repositories.analyzers.bandit import BanditFindingsRepository
@@ -16,8 +16,7 @@ class GeneralPipeline(BaseModel):
     src: Path
     neo4j_client: Neo4jClient
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def run(self) -> None:
         project_root = self.src.resolve()

@@ -87,8 +87,6 @@ def test_tree_sitter_parse__on_function_calls__creates_call_nodes_and_edges() ->
         CallGraphCalls(
             src=foo_id,
             dst=bar_call_id,
-            is_direct=True,
-            call_depth=0,
         )
         in edges
     )
@@ -104,8 +102,6 @@ def test_tree_sitter_parse__on_function_calls__creates_call_nodes_and_edges() ->
         CallGraphCalls(
             src=baz_id,
             dst=foo_call_id,
-            is_direct=True,
-            call_depth=0,
         )
         in edges
     )
@@ -121,8 +117,6 @@ def test_tree_sitter_parse__on_function_calls__creates_call_nodes_and_edges() ->
         CallGraphCalls(
             src=foo_id,
             dst=nested_bar_call_id,
-            is_direct=True,
-            call_depth=0,
         )
         in edges
     )

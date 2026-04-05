@@ -107,34 +107,3 @@ class BaseAnalyzerService(BaseModel):
                     )
 
         return findings, edges
-
-    def enrich_graph_with_findings(self) -> None:
-        report = self._static_analyzer.run()
-
-        issues_in_files_lines: dict[Path, list[int]] = defaultdict(list)
-        for issue in report.issues:
-            normalized_path: Path = self._normalize_issue_path(issue.file)
-            issues_in_files_lines[normalized_path].append(issue.line_number)
-
-        nodes = self.graph_repository.get_nodes_by_file_and_line_numbers(issues_in_files_lines)
-
-        findings: list[FindingNode] = []
-        edges: list[StaticAnalysisReports] = []
-        for issue in report.issues:
-            normalized_path = self._normalize_issue_path(issue.file)
-            payload = self._issue_payload(issue)
-            payload["file"] = normalized_path
-            finding = self._finding_node_type(**payload)
-            findings.append(finding)
-            file_nodes = nodes.get(finding.file)
-            if not file_nodes or finding.line_number not in file_nodes:
-                continue
-            edges.append(
-                StaticAnalysisReports(
-                    src=str(finding.identifier),
-                    dst=file_nodes[finding.line_number].identifier,
-                )
-            )
-
-        self.findings_repository.insert_nodes(findings)
-        self.findings_repository.insert_edges(edges)

@@ -12,7 +12,6 @@ class NodeType(StrEnum):
 
     FUNCTION = "Function"
     CLASS = "Class"
-    MODULE = "Module"
 
 
 class BaseCodeNode(BaseModel):

@@ -87,3 +87,7 @@ omit = [
   "llm_scanner/cli.py",
   "llm_scanner/services/context_assembler/ranking.py",
 ]
+
+[tool.deadcode]
+exclude = ["venv", "tests"]
+ignore-names = ["model_config"]

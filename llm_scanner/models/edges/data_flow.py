@@ -20,7 +20,6 @@ class DefinitionOperation(StrEnum):
 
     ASSIGNMENT = "assignment"
     PARAMETER = "parameter"
-    RETURN_VALUE = "return"
 
 
 class DataFlowDefinedBy(RelationshipBase):
@@ -73,7 +72,6 @@ class DataFlowSanitizedBy(RelationshipBase):
         default=DataFlowRelationshipType.SANITIZED_BY,
         description="Relationship type identifier",
     )
-    at_line: int = Field(..., ge=1, description="Line number where sanitization occurs")
 
 
 class DataFlowUsedBy(RelationshipBase):

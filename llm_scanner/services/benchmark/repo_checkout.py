@@ -50,18 +50,6 @@ class RepoCheckoutService(BaseModel):
         self._checkout_commit(repo_path, target_hash)
         return repo_path
 
-    def checkout_vulnerable_repo(self, repo_url: str, fix_hash: str) -> Path:
-        """Ensure repository is cloned and checked out to vulnerable commit.
-
-        Args:
-            repo_url: Repository URL.
-            fix_hash: Fix commit hash.
-
-        Returns:
-            Path to the checked-out repository.
-        """
-        return self.checkout_repo(repo_url=repo_url, fix_hash=fix_hash, is_vulnerable=True)
-
     def _repo_path_for_url(self, repo_url: str) -> Path:
         parsed = urlparse(repo_url)
         path = parsed.path.strip("/")

@@ -12,7 +12,6 @@ from repositories.queries import (
     code_bfs_nodes_query,
     code_nodes_by_file_line_query,
     code_traversal_relationship_types,
-    finding_reported_code_query,
 )
 
 RELATIONSHIP_TYPES_QUERY: LiteralString = (
@@ -47,40 +46,6 @@ class ContextRepository(BaseModel):
         self.traversal_relationship_types = tuple(
             rel_type for rel_type in configured_types if rel_type in available_types
         )
-
-    def fetch_reported_code_nodes(self, finding_id: str) -> list[CodeContextNode]:
-        """Return code nodes reported by a finding.
-
-        Args:
-            finding_id: Finding identifier.
-
-        Returns:
-            Reported code nodes.
-        """
-
-        if not finding_id:
-            return []
-
-        query = finding_reported_code_query()
-        rows = self.client.run_read(query, {"finding_ids": [finding_id]})
-
-        nodes: list[CodeContextNode] = []
-        for row in rows:
-            nodes.append(
-                CodeContextNode(
-                    identifier=NodeID(str(row["code_id"])),
-                    node_kind=self._coerce_str(row.get("node_kind")),
-                    name=self._coerce_str(row.get("name")),
-                    file_path=Path(str(row.get("file_path", ""))),
-                    line_start=int(row["line_start"]),
-                    line_end=int(row["line_end"]),
-                    depth=0,
-                    finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
-                    security_path_score=float(row.get("security_path_score") or 0.0),
-                )
-            )
-
-        return nodes
 
     def fetch_code_nodes_by_file_lines(
         self,

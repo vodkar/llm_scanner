@@ -10,7 +10,6 @@ class ControlFlowRelationshipType(StrEnum):
     """Enumerates control-flow relationship kinds."""
 
     CONTAINS = "CONTAINS"
-    NEXT = "NEXT"
 
 
 class ControlFlowContains(RelationshipBase):
@@ -25,4 +24,3 @@ class ControlFlowContains(RelationshipBase):
         default=ControlFlowRelationshipType.CONTAINS,
         description="Relationship type identifier",
     )
-    position: int = Field(..., ge=0, description="Order of the code block within the function")

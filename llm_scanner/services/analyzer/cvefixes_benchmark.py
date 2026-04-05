@@ -67,7 +67,6 @@ class CVEFixesBenchmarkService(BaseModel):
     neo4j_config: Neo4jConfig = Field(default_factory=Neo4jConfig)
     max_call_depth: int = Field(ge=0, description="Maximum call graph depth for context assembly")
     token_budget: int = 8192
-    fallback_context_padding: int = 3
     delete_checkouts: bool = True
 
     def build(self) -> tuple[Path, Path]:

@@ -6,14 +6,6 @@ from .nodes import (
     FindingNode,
     FunctionNode,
     ModuleNode,
-    SanitizerEffectiveness,
-    SanitizerNode,
-    SanitizerType,
-    SeverityLevel,
-    TaintSinkNode,
-    TaintSinkType,
-    TaintSourceNode,
-    TaintSourceType,
     VariableNode,
 )
 
@@ -26,13 +18,5 @@ __all__ = [
     "FindingNode",
     "FunctionNode",
     "ModuleNode",
-    "SanitizerEffectiveness",
-    "SanitizerNode",
-    "SanitizerType",
-    "SeverityLevel",
-    "TaintSinkNode",
-    "TaintSinkType",
-    "TaintSourceNode",
-    "TaintSourceType",
     "VariableNode",
 ]

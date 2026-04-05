@@ -5,7 +5,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from models.base import NodeID
 from models.context import CodeContextNode, Context, FileSpans
 from repositories.context import ContextRepository
 from services.context_assembler.ranking import (
@@ -14,17 +13,6 @@ from services.context_assembler.ranking import (
 
 TokenEstimator = Callable[[str], int]
 _LOGGER = logging.getLogger(__name__)
-FULL_CONTEXT_NODE_KINDS: tuple[str, ...] = (
-    "FunctionNode",
-    "ClassNode",
-    "CodeBlockNode",
-)
-PREFERRED_RENDER_NODE_KINDS: tuple[str, ...] = (
-    "FunctionNode",
-    "ClassNode",
-    "VariableNode",
-    "CodeBlockNode",
-)
 
 
 class ContextAssemblerService(BaseModel):
@@ -36,7 +24,6 @@ class ContextAssemblerService(BaseModel):
     context_repository: ContextRepository
     max_call_depth: int
     token_budget: int
-    context_workers: int = 30
     snippet_cache_max_entries: int = 10000
     token_estimator: TokenEstimator | None = None
     ranking_strategy: ContextNodeRankingStrategy
@@ -163,39 +150,6 @@ class ContextAssemblerService(BaseModel):
         if "#" not in line:
             return line.rstrip()
         return line[: line.index("#")].rstrip()
-
-    def _select_render_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
-        """
-        Select and prioritize nodes to produce complete-looking source snippets.
-        This removes duplicate nodes and promotes nodes of preferred kinds.
-        Prioritization is based on node kind, depth, and repetition.
-        """
-
-        candidate_nodes: dict[NodeID, CodeContextNode] = {}
-        for node in nodes:
-            if self._is_preferred_render_node_kind(node.node_kind):
-                if node.identifier in candidate_nodes:
-                    candidate_nodes[node.identifier].repeats += 1
-                    candidate_nodes[node.identifier].depth = min(
-                        candidate_nodes[node.identifier].depth, node.depth
-                    )
-                else:
-                    candidate_nodes[node.identifier] = node
-
-        return sorted(
-            candidate_nodes.values(),
-            key=lambda node: (
-                -node.score,
-                str(node.file_path),
-                node.line_start,
-            ),
-        )
-
-    @staticmethod
-    def _is_preferred_render_node_kind(node_kind: str | None) -> bool:
-        """Return whether node kind should be prioritized for final text rendering."""
-
-        return node_kind in PREFERRED_RENDER_NODE_KINDS
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token usage for the supplied text.

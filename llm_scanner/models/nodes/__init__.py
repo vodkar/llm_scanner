@@ -2,16 +2,6 @@ from .call_site import CallNode
 from .code import ClassNode, CodeBlockNode, FunctionNode
 from .finding import FindingNode
 from .module_node import ModuleNode
-from .taint import (
-    SanitizerEffectiveness,
-    SanitizerNode,
-    SanitizerType,
-    SeverityLevel,
-    TaintSinkNode,
-    TaintSinkType,
-    TaintSourceNode,
-    TaintSourceType,
-)
 from .variable import VariableNode
 
 type Node = FunctionNode | ClassNode | CodeBlockNode | VariableNode | CallNode
@@ -23,14 +13,6 @@ __all__ = [
     "FunctionNode",
     "FindingNode",
     "ModuleNode",
-    "SanitizerEffectiveness",
-    "SanitizerNode",
-    "SanitizerType",
-    "SeverityLevel",
-    "TaintSinkNode",
-    "TaintSinkType",
-    "TaintSourceNode",
-    "TaintSourceType",
     "VariableNode",
     "Node",
 ]
