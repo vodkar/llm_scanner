@@ -17,23 +17,24 @@ from models.nodes.base import BaseCodeNode
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
 from services.context_assembler.snippet_reader import SnippetReaderService
 
-FINDING_EVIDENCE_WEIGHT: Final[float] = 0.35
-SECURITY_PATH_WEIGHT: Final[float] = 0.40
-CONTEXT_WEIGHT: Final[float] = 0.25
+FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
+SECURITY_PATH_WEIGHT: Final[float] = 0.30
+CONTEXT_WEIGHT: Final[float] = 0.45
 
-CONTEXT_DEPTH_WEIGHT: Final[float] = 0.30
-CONTEXT_STRUCTURE_WEIGHT: Final[float] = 0.35
-CONTEXT_FILE_PRIOR_WEIGHT: Final[float] = 0.35
+CONTEXT_DEPTH_WEIGHT: Final[float] = 0.45
+CONTEXT_STRUCTURE_WEIGHT: Final[float] = 0.25
+CONTEXT_FILE_PRIOR_WEIGHT: Final[float] = 0.30
 
 SECURITY_BOOST_WEIGHT: Final[float] = 1.50
 
 HOP_DECAY_BY_DEPTH: Final[dict[int, float]] = {
     0: 1.00,
-    1: 0.90,
-    2: 0.75,
+    1: 0.85,
+    2: 0.70,
     3: 0.55,
-    4: 0.35,
+    4: 0.45,
 }
+HOP_DECAY_DEFAULT: Final[float] = 0.35
 SEVERITY_SCORES: Final[dict[IssueSeverity, float]] = {
     IssueSeverity.LOW: 0.33,
     IssueSeverity.MEDIUM: 0.66,
@@ -232,6 +233,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
 
         aggregated_nodes = self._aggregate_context_nodes(nodes)
         anchor_files = self._anchor_files(aggregated_nodes)
+        max_repeats = max((node.repeats for node in aggregated_nodes), default=0)
         scored_nodes: list[CodeContextNode] = []
         for node in aggregated_nodes:
             scored_nodes.append(
@@ -241,6 +243,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
                             node=node,
                             anchor_files=anchor_files,
                             snippet=self._read_context_snippet(node),
+                            max_repeats=max_repeats,
                         )
                     }
                 )
@@ -286,6 +289,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         node: CodeContextNode,
         anchor_files: set[Path],
         snippet: str,
+        max_repeats: int,
     ) -> float:
         """Calculate context-only relevance from a single context neighborhood."""
 
@@ -293,6 +297,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         structure_score = self._context_structure_score(
             node_kind=node.node_kind,
             repeats=node.repeats,
+            max_repeats=max_repeats,
         )
         file_prior_score = self._context_file_prior_score(
             file_path=node.file_path,
@@ -391,20 +396,15 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
                 return severity
         return IssueSeverity.MEDIUM
 
-    def _context_structure_score(self, *, node_kind: str | None, repeats: int) -> float:
+    def _context_structure_score(
+        self, *, node_kind: str | None, repeats: int, max_repeats: int
+    ) -> float:
         """Score node structure for final rendering usefulness."""
 
-        if repeats <= 0:
-            repeat_bonus = 0.00
-        elif repeats == 1:
-            repeat_bonus = 0.40
-        elif repeats == 2:
-            repeat_bonus = 0.70
-        else:
-            repeat_bonus = 1.00
+        repeat_bonus = min(1.0, repeats / max(max_repeats, 1))
 
         render_kind_bonus = RENDER_KIND_SCORES.get(node_kind or "", 0.20)
-        return self._clamp_score(0.60 * render_kind_bonus + 0.40 * repeat_bonus)
+        return self._clamp_score(0.30 * render_kind_bonus + 0.70 * repeat_bonus)
 
     def _context_file_prior_score(
         self,
@@ -438,7 +438,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     def _hop_decay(self, depth: int) -> float:
         """Return the configured hop decay for traversal depth."""
 
-        return HOP_DECAY_BY_DEPTH.get(depth, 0.20)
+        return HOP_DECAY_BY_DEPTH.get(depth, HOP_DECAY_DEFAULT)
 
     def _same_module_bonus(self, file_path: Path, anchor_file: Path) -> float:
         """Approximate whether two files belong to the same module or package."""
@@ -520,8 +520,6 @@ class DepthRepeatsContextNodeRankingStrategy(NodeRelevanceRankingService):
                 item.depth,
                 -item.repeats,
                 -item.context_score,
-                str(item.file_path),
-                item.line_start,
             ),
         )
 
@@ -548,57 +546,6 @@ class RandomNodeRankingStrategy(NodeRelevanceRankingService):
         rng.shuffle(root_nodes)
         rng.shuffle(other_nodes)
         return [*root_nodes, *other_nodes]
-
-
-class SecurityScoreNodeRankingStrategy(NodeRelevanceRankingService):
-    """Rank nodes by root priority and security-path score only."""
-
-    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
-        """Return nodes ordered by root priority and security score.
-
-        Args:
-            nodes: Retrieved context nodes.
-
-        Returns:
-            Ranked nodes ready for rendering.
-        """
-
-        aggregated_nodes = self._aggregate_context_nodes(nodes)
-        return sorted(
-            aggregated_nodes,
-            key=lambda item: (
-                item.depth != 0,
-                -item.security_path_score,
-                str(item.file_path),
-                item.line_start,
-            ),
-        )
-
-
-class SecurityFirstNodeRankingStrategy(NodeRelevanceRankingService):
-    """Rank nodes by security-path score first, using context score as tiebreaker."""
-
-    def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
-        """Return nodes ordered by root priority, security score, then context score.
-
-        Args:
-            nodes: Retrieved context nodes.
-
-        Returns:
-            Ranked nodes ready for rendering.
-        """
-
-        ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
-        return sorted(
-            ranked_nodes,
-            key=lambda item: (
-                item.depth != 0,
-                -item.security_path_score,
-                -item.context_score,
-                str(item.file_path),
-                item.line_start,
-            ),
-        )
 
 
 class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):

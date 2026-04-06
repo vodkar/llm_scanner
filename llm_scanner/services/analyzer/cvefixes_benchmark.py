@@ -32,8 +32,6 @@ from services.context_assembler.ranking import (
     MultiplicativeBoostNodeRankingStrategy,
     NodeRelevanceRankingService,
     RandomNodeRankingStrategy,
-    SecurityFirstNodeRankingStrategy,
-    SecurityScoreNodeRankingStrategy,
 )
 
 logger = logging.getLogger(__name__)
@@ -341,14 +339,6 @@ class CVEFixesBenchmarkService(BaseModel):
                 project_root=repo_path,
                 snippet_cache_max_entries=10000,
                 random_seed=self.seed,
-            ),
-            "security_score_only": lambda repo_path: SecurityScoreNodeRankingStrategy(
-                project_root=repo_path,
-                snippet_cache_max_entries=10000,
-            ),
-            "security_first": lambda repo_path: SecurityFirstNodeRankingStrategy(
-                project_root=repo_path,
-                snippet_cache_max_entries=10000,
             ),
             "multiplicative_boost": lambda repo_path: MultiplicativeBoostNodeRankingStrategy(
                 project_root=repo_path,

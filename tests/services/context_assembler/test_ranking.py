@@ -18,8 +18,6 @@ from services.context_assembler.ranking import (
     MultiplicativeBoostNodeRankingStrategy,
     NodeRelevanceRankingService,
     RandomNodeRankingStrategy,
-    SecurityFirstNodeRankingStrategy,
-    SecurityScoreNodeRankingStrategy,
 )
 from services.context_assembler.snippet_reader import SnippetReaderService
 
@@ -364,54 +362,6 @@ def test_random_strategy_keeps_root_nodes_first(tmp_path: Path) -> None:
     )
 
 
-def test_security_score_strategy_orders_by_security_path_score(tmp_path: Path) -> None:
-    """Security-only strategy should ignore context score when ordering."""
-
-    low_security_root = CodeContextNode(
-        identifier=NodeID("function:root"),
-        node_kind="FunctionNode",
-        name="root",
-        file_path=Path("pkg/a.py"),
-        line_start=1,
-        line_end=2,
-        depth=0,
-        security_path_score=0.1,
-        context_score=1.0,
-    )
-    high_security_child = CodeContextNode(
-        identifier=NodeID("function:child-high"),
-        node_kind="FunctionNode",
-        name="child_high",
-        file_path=Path("pkg/a.py"),
-        line_start=3,
-        line_end=4,
-        depth=1,
-        security_path_score=0.9,
-        context_score=0.0,
-    )
-    low_security_child = CodeContextNode(
-        identifier=NodeID("function:child-low"),
-        node_kind="FunctionNode",
-        name="child_low",
-        file_path=Path("pkg/a.py"),
-        line_start=5,
-        line_end=6,
-        depth=1,
-        security_path_score=0.2,
-        context_score=1.0,
-    )
-
-    ranked_nodes = SecurityScoreNodeRankingStrategy(project_root=tmp_path).rank_nodes(
-        [low_security_child, high_security_child, low_security_root]
-    )
-
-    assert [node.identifier for node in ranked_nodes] == [
-        low_security_root.identifier,
-        high_security_child.identifier,
-        low_security_child.identifier,
-    ]
-
-
 def test_dummy_strategy_returns_same_list_instance() -> None:
     """Dummy strategy should be a no-op."""
 
@@ -470,46 +420,6 @@ def test_current_strategy_tiered_sort_promotes_security_nodes(tmp_path: Path) ->
     )
 
     assert ranked_nodes[0].identifier == security_node.identifier
-
-
-def test_security_first_strategy_prioritizes_security_over_context(tmp_path: Path) -> None:
-    """SecurityFirst should rank by security_path_score, not context_score."""
-
-    source_file = tmp_path / "pkg" / "sample.py"
-    source_file.parent.mkdir(parents=True)
-    source_file.write_text(
-        "def high_ctx():\n    pass\n\ndef high_sec():\n    pass\n",
-        encoding="utf-8",
-    )
-
-    high_context_node = CodeContextNode(
-        identifier=NodeID("function:high-ctx"),
-        node_kind="FunctionNode",
-        name="high_ctx",
-        file_path=Path("pkg/sample.py"),
-        line_start=1,
-        line_end=2,
-        depth=1,
-        security_path_score=0.1,
-        context_score=1.0,
-    )
-    high_security_node = CodeContextNode(
-        identifier=NodeID("function:high-sec"),
-        node_kind="FunctionNode",
-        name="high_sec",
-        file_path=Path("pkg/sample.py"),
-        line_start=4,
-        line_end=5,
-        depth=1,
-        security_path_score=0.9,
-        context_score=0.0,
-    )
-
-    ranked_nodes = SecurityFirstNodeRankingStrategy(project_root=tmp_path).rank_nodes(
-        [high_context_node, high_security_node]
-    )
-
-    assert ranked_nodes[0].identifier == high_security_node.identifier
 
 
 def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) -> None:

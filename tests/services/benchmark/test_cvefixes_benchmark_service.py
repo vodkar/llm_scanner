@@ -103,8 +103,6 @@ def test_build_all_ranking_strategies_writes_aligned_datasets(
         "current",
         "depth_repeats_context",
         "random_picking",
-        "security_score_only",
-        "security_first",
         "multiplicative_boost",
         "dummy",
     }
@@ -280,8 +278,6 @@ def test_build_all_ranking_strategies_uses_separate_checkout_roots(
         "current",
         "depth_repeats_context",
         "random_picking",
-        "security_score_only",
-        "security_first",
         "multiplicative_boost",
         "dummy",
     }
