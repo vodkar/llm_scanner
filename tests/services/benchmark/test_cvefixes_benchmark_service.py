@@ -285,6 +285,99 @@ def test_build_all_ranking_strategies_uses_separate_checkout_roots(
     assert seen_sources[False] == "def after():\n    pass\n"
 
 
+def test_build_writes_partial_datasets_on_keyboard_interrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Partial datasets should be written before propagating KeyboardInterrupt."""
+
+    vulnerable_entry_1 = _build_entry(is_vulnerable=True)
+    fixed_entry_1 = _build_entry(is_vulnerable=False)
+    vulnerable_entry_2 = vulnerable_entry_1.model_copy(
+        update={"cve_id": "CVE-2024-0002", "fix_hash": "abcdef654321"}
+    )
+    fixed_entry_2 = fixed_entry_1.model_copy(
+        update={"cve_id": "CVE-2024-0002", "fix_hash": "abcdef654321"}
+    )
+
+    vulnerable_repo = tmp_path / "vulnerable"
+    fixed_repo = tmp_path / "fixed"
+    for repo_path in (vulnerable_repo, fixed_repo):
+        source_file = repo_path / "pkg" / "sample.py"
+        source_file.parent.mkdir(parents=True, exist_ok=True)
+        source_file.write_text("def sample():\n    pass\n", encoding="utf-8")
+
+    def _fetch_python_entries(self: CVEFixesLoaderService) -> list[CVEFixesEntry]:
+        del self
+        return [vulnerable_entry_1, fixed_entry_1, vulnerable_entry_2, fixed_entry_2]
+
+    def _checkout_repo(
+        self: RepoCheckoutService,
+        repo_url: str,
+        fix_hash: str,
+        is_vulnerable: bool,
+    ) -> Path:
+        del self, repo_url, fix_hash
+        return vulnerable_repo if is_vulnerable else fixed_repo
+
+    def _scan_repository_for_entry(
+        self: CVEFixesBenchmarkService,
+        repo_path: Path,
+        entry: CVEFixesEntry,
+        strategy_factories: dict[str, object],
+        max_call_depth: int,
+    ) -> dict[str, Context]:
+        del self, repo_path, max_call_depth
+        if entry.cve_id == "CVE-2024-0002":
+            raise KeyboardInterrupt()
+        return {
+            strategy_name: Context(
+                description=strategy_name,
+                context_text=f"{strategy_name}:{'before' if entry.is_vulnerable else 'after'}",
+                token_count=10,
+            )
+            for strategy_name in strategy_factories
+        }
+
+    monkeypatch.setattr(CVEFixesLoaderService, "fetch_python_entries", _fetch_python_entries)
+    monkeypatch.setattr(RepoCheckoutService, "checkout_repo", _checkout_repo)
+    monkeypatch.setattr(
+        CVEFixesBenchmarkService,
+        "_scan_repository_for_entry",
+        _scan_repository_for_entry,
+    )
+
+    service = CVEFixesBenchmarkService(
+        db_path=tmp_path / "dataset.sqlite",
+        output_dir=tmp_path / "output",
+        repo_cache_dir=tmp_path / "repos",
+        sample_count=4,
+        max_call_depth=2,
+        token_budget=100,
+        delete_checkouts=False,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        service.build()
+
+    dataset_path = tmp_path / "output" / "cvefixes_context_benchmark.json"
+    unassociated_path = tmp_path / "output" / "cvefixes_unassociated.json"
+
+    dataset_payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+    unassociated_payload = json.loads(unassociated_path.read_text(encoding="utf-8"))
+
+    assert [sample["id"] for sample in dataset_payload["samples"]] == [
+        "ContextAssembler-1",
+        "ContextAssembler-2",
+    ]
+    assert [sample["label"] for sample in dataset_payload["samples"]] == [1, 0]
+    assert [item["reason"] for item in unassociated_payload] == ["interrupted", "interrupted"]
+    assert [item["entry"]["CVEFixes-Number"] for item in unassociated_payload] == [
+        "CVE-2024-0002",
+        "CVE-2024-0002",
+    ]
+
+
 def test_build_all_depth_sizes_writes_depth_specific_datasets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

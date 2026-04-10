@@ -151,128 +151,138 @@ class CVEFixesBenchmarkService(BaseModel):
             strategy_name: [] for strategy_name in strategy_factories
         }
         unassociated: list[UnassociatedSample] = []
-
-        vulnerable_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "vulnerable")
-        fixed_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "fixed")
-        first_strategy_name = next(iter(strategy_factories))
-
-        for pair in candidate_pairs:
-            current_sample_count = len(samples_by_strategy[first_strategy_name])
-            if current_sample_count + 2 > self.sample_count:
-                break
-
-            try:
-                vulnerable_repo_path = vulnerable_repo_service.checkout_repo(
-                    repo_url=pair.vulnerable_entry.repo_url,
-                    fix_hash=pair.vulnerable_entry.fix_hash,
-                    is_vulnerable=True,
-                )
-                fixed_repo_path = fixed_repo_service.checkout_repo(
-                    repo_url=pair.fixed_entry.repo_url,
-                    fix_hash=pair.fixed_entry.fix_hash,
-                    is_vulnerable=False,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to checkout %s at %s",
-                    pair.vulnerable_entry.repo_url,
-                    pair.vulnerable_entry.fix_hash,
-                )
-                self._append_unassociated_pair(unassociated, pair, reason="checkout_failed")
-                continue
-
-            if current_sample_count % LOGGING_INTERVAL == 0:
-                logger.info("Processing sample %d/%d", current_sample_count + 1, self.sample_count)
-
-            budget_reason = self._entry_pair_budget_reason(
-                vulnerable_repo_path=vulnerable_repo_path,
-                fixed_repo_path=fixed_repo_path,
-                pair=pair,
-            )
-            if budget_reason is not None:
-                logger.warning(
-                    "Skipping %s because source samples exceed budget or are unavailable",
-                    pair.vulnerable_entry.cve_id,
-                )
-                self._append_unassociated_pair(unassociated, pair, reason=budget_reason)
-                continue
-
-            try:
-                vulnerable_contexts = self._scan_repository_for_entry(
-                    repo_path=vulnerable_repo_path,
-                    entry=pair.vulnerable_entry,
-                    strategy_factories=strategy_factories,
-                    max_call_depth=effective_max_call_depth,
-                )
-                fixed_contexts = self._scan_repository_for_entry(
-                    repo_path=fixed_repo_path,
-                    entry=pair.fixed_entry,
-                    strategy_factories=strategy_factories,
-                    max_call_depth=effective_max_call_depth,
-                )
-            except Exception:
-                logger.exception("Failed to scan repository for %s", pair.vulnerable_entry.cve_id)
-                self._append_unassociated_pair(unassociated, pair, reason="scan_failed")
-                continue
-
-            if not self._all_contexts_present(
-                vulnerable_contexts,
-                fixed_contexts,
-                strategy_factories,
-            ):
-                logger.warning(
-                    "No context found for %s in at least one strategy",
-                    pair.vulnerable_entry.cve_id,
-                )
-                self._append_unassociated_pair(unassociated, pair, reason="missing_context")
-                continue
-
-            vulnerable_sample_id = f"{sample_id_prefix}-{current_sample_count + 1}"
-            fixed_sample_id = f"{sample_id_prefix}-{current_sample_count + 2}"
-            for strategy_name in strategy_factories:
-                samples_by_strategy[strategy_name].append(
-                    self._to_sample(
-                        pair.vulnerable_entry,
-                        vulnerable_contexts[strategy_name],
-                        vulnerable_sample_id,
-                    )
-                )
-                samples_by_strategy[strategy_name].append(
-                    self._to_sample(
-                        pair.fixed_entry,
-                        fixed_contexts[strategy_name],
-                        fixed_sample_id,
-                    )
-                )
-
-            if self.delete_checkouts:
-                if vulnerable_repo_path.exists():
-                    shutil.rmtree(str(vulnerable_repo_path))
-                if fixed_repo_path.exists():
-                    shutil.rmtree(str(fixed_repo_path))
-
         dataset_paths: dict[str, Path] = {}
-        for strategy_name, samples in samples_by_strategy.items():
-            dataset = BenchmarkDataset(
-                metadata=self._build_metadata(
-                    samples,
-                    self._metadata_name(strategy_name, metadata_name_factory),
-                ),
-                samples=samples,
-            )
-            dataset_path = self._dataset_path(strategy_name, dataset_path_factory)
-            self._write_json(dataset_path, dataset.model_dump(by_alias=True))
-            dataset_paths[strategy_name] = dataset_path
-
         resolved_unassociated_path = (
             self.output_dir / "cvefixes_unassociated.json"
             if unassociated_path is None
             else unassociated_path
         )
-        self._write_json(
-            resolved_unassociated_path,
-            [item.model_dump(by_alias=True) for item in unassociated],
-        )
+
+        vulnerable_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "vulnerable")
+        fixed_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "fixed")
+        first_strategy_name = next(iter(strategy_factories))
+        interrupted_error: KeyboardInterrupt | None = None
+
+        try:
+            for pair in candidate_pairs:
+                current_sample_count = len(samples_by_strategy[first_strategy_name])
+                if current_sample_count + 2 > self.sample_count:
+                    break
+
+                vulnerable_repo_path: Path | None = None
+                fixed_repo_path: Path | None = None
+                try:
+                    try:
+                        vulnerable_repo_path = vulnerable_repo_service.checkout_repo(
+                            repo_url=pair.vulnerable_entry.repo_url,
+                            fix_hash=pair.vulnerable_entry.fix_hash,
+                            is_vulnerable=True,
+                        )
+                        fixed_repo_path = fixed_repo_service.checkout_repo(
+                            repo_url=pair.fixed_entry.repo_url,
+                            fix_hash=pair.fixed_entry.fix_hash,
+                            is_vulnerable=False,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to checkout %s at %s",
+                            pair.vulnerable_entry.repo_url,
+                            pair.vulnerable_entry.fix_hash,
+                        )
+                        self._append_unassociated_pair(unassociated, pair, reason="checkout_failed")
+                        continue
+
+                    if current_sample_count % LOGGING_INTERVAL == 0:
+                        logger.info(
+                            "Processing sample %d/%d",
+                            current_sample_count + 1,
+                            self.sample_count,
+                        )
+
+                    budget_reason = self._entry_pair_budget_reason(
+                        vulnerable_repo_path=vulnerable_repo_path,
+                        fixed_repo_path=fixed_repo_path,
+                        pair=pair,
+                    )
+                    if budget_reason is not None:
+                        logger.warning(
+                            "Skipping %s because source samples exceed budget or are unavailable",
+                            pair.vulnerable_entry.cve_id,
+                        )
+                        self._append_unassociated_pair(unassociated, pair, reason=budget_reason)
+                        continue
+
+                    try:
+                        vulnerable_contexts = self._scan_repository_for_entry(
+                            repo_path=vulnerable_repo_path,
+                            entry=pair.vulnerable_entry,
+                            strategy_factories=strategy_factories,
+                            max_call_depth=effective_max_call_depth,
+                        )
+                        fixed_contexts = self._scan_repository_for_entry(
+                            repo_path=fixed_repo_path,
+                            entry=pair.fixed_entry,
+                            strategy_factories=strategy_factories,
+                            max_call_depth=effective_max_call_depth,
+                        )
+                    except Exception:
+                        logger.exception("Failed to scan repository for %s", pair.vulnerable_entry.cve_id)
+                        self._append_unassociated_pair(unassociated, pair, reason="scan_failed")
+                        continue
+
+                    if not self._all_contexts_present(
+                        vulnerable_contexts,
+                        fixed_contexts,
+                        strategy_factories,
+                    ):
+                        logger.warning(
+                            "No context found for %s in at least one strategy",
+                            pair.vulnerable_entry.cve_id,
+                        )
+                        self._append_unassociated_pair(unassociated, pair, reason="missing_context")
+                        continue
+
+                    vulnerable_sample_id = f"{sample_id_prefix}-{current_sample_count + 1}"
+                    fixed_sample_id = f"{sample_id_prefix}-{current_sample_count + 2}"
+                    for strategy_name in strategy_factories:
+                        samples_by_strategy[strategy_name].append(
+                            self._to_sample(
+                                pair.vulnerable_entry,
+                                vulnerable_contexts[strategy_name],
+                                vulnerable_sample_id,
+                            )
+                        )
+                        samples_by_strategy[strategy_name].append(
+                            self._to_sample(
+                                pair.fixed_entry,
+                                fixed_contexts[strategy_name],
+                                fixed_sample_id,
+                            )
+                        )
+                except KeyboardInterrupt as error:
+                    logger.warning(
+                        "Interrupted while processing %s; writing partial datasets",
+                        pair.vulnerable_entry.cve_id,
+                    )
+                    self._append_unassociated_pair(unassociated, pair, reason="interrupted")
+                    interrupted_error = error
+                    break
+                finally:
+                    self._delete_checkout(vulnerable_repo_path)
+                    self._delete_checkout(fixed_repo_path)
+        finally:
+            dataset_paths = self._write_datasets(
+                samples_by_strategy=samples_by_strategy,
+                metadata_name_factory=metadata_name_factory,
+                dataset_path_factory=dataset_path_factory,
+            )
+            self._write_json(
+                resolved_unassociated_path,
+                [item.model_dump(by_alias=True) for item in unassociated],
+            )
+
+        if interrupted_error is not None:
+            raise interrupted_error
 
         return dataset_paths, resolved_unassociated_path
 
@@ -588,6 +598,35 @@ class CVEFixesBenchmarkService(BaseModel):
         """Estimate token usage for source samples."""
 
         return max(1, len(text) // 3) if text else 0
+
+    def _write_datasets(
+        self,
+        samples_by_strategy: Mapping[str, list[BenchmarkSample]],
+        metadata_name_factory: MetadataNameFactory | None = None,
+        dataset_path_factory: DatasetPathFactory | None = None,
+    ) -> dict[str, Path]:
+        """Write benchmark datasets for all strategies."""
+
+        dataset_paths: dict[str, Path] = {}
+        for strategy_name, samples in samples_by_strategy.items():
+            dataset = BenchmarkDataset(
+                metadata=self._build_metadata(
+                    samples,
+                    self._metadata_name(strategy_name, metadata_name_factory),
+                ),
+                samples=samples,
+            )
+            dataset_path = self._dataset_path(strategy_name, dataset_path_factory)
+            self._write_json(dataset_path, dataset.model_dump(by_alias=True))
+            dataset_paths[strategy_name] = dataset_path
+        return dataset_paths
+
+    def _delete_checkout(self, repo_path: Path | None) -> None:
+        """Delete a checked-out repository when configured."""
+
+        if not self.delete_checkouts or repo_path is None or not repo_path.exists():
+            return
+        shutil.rmtree(str(repo_path))
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:
