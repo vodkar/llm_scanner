@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import shutil
+import textwrap
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Final
@@ -15,14 +16,14 @@ from models.benchmark.benchmark import (
     BenchmarkDataset,
     BenchmarkMetadata,
     BenchmarkSample,
-    BenchmarkSampleMetadata,
+    CleanVulSampleMetadata,
     UnassociatedSample,
 )
-from models.benchmark.cvefixes import CVEFixesEntry
-from models.context import Context
+from models.benchmark.cleanvul import CleanVulEntry
+from models.context import Context, FileSpans
 from pipeline import GeneralPipeline
 from repositories.context import ContextRepository
-from services.benchmark.cvefixes_loader import CVEFixesLoaderService
+from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
 from services.benchmark.repo_checkout import RepoCheckoutService
 from services.context_assembler.context_assembler import ContextAssemblerService
 from services.context_assembler.ranking import (
@@ -38,26 +39,25 @@ logger = logging.getLogger(__name__)
 LOGGING_INTERVAL = 10
 CLEAR_DATABASE_QUERY: Final[str] = "MATCH (n) DETACH DELETE n"
 CURRENT_STRATEGY_NAME: Final[str] = "current"
-DEPTH_SWEEP_SIZES: Final[tuple[int, ...]] = (2, 3, 4, 5, 6)
 
 RankingStrategyFactory = Callable[[Path], ContextNodeRankingStrategy]
 DatasetPathFactory = Callable[[str], Path]
 MetadataNameFactory = Callable[[str], str]
 
 
-class _CVEFixesEntryPair(BaseModel):
-    """Pair vulnerable and fixed benchmark entries for one CVE fix."""
+class _CleanVulEntryPair(BaseModel):
+    """Pair of vulnerable (func_before) and fixed (func_after) entries."""
 
-    vulnerable_entry: CVEFixesEntry
-    fixed_entry: CVEFixesEntry
+    vulnerable_entry: CleanVulEntry
+    fixed_entry: CleanVulEntry
 
 
-class CVEFixesBenchmarkService(BaseModel):
-    """Build the CVEFixes-with-context benchmark dataset."""
+class CleanVulBenchmarkService(BaseModel):
+    """Build the CleanVul-with-context benchmark dataset."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    db_path: Path
+    dataset_path: Path
     output_dir: Path
     repo_cache_dir: Path
     sample_count: int
@@ -66,97 +66,80 @@ class CVEFixesBenchmarkService(BaseModel):
     max_call_depth: int = Field(ge=0, description="Maximum call graph depth for context assembly")
     token_budget: int = 8192
     delete_checkouts: bool = True
+    min_score: int = Field(default=3, ge=0, le=4)
+    python_only: bool = True
+    exclude_test_files: bool = True
 
-    def build(self) -> tuple[Path, Path]:
+    def build(self) -> tuple[Path, Path, Path]:
         """Generate the benchmark JSON files.
 
         Returns:
-            Tuple of paths to the main dataset and unassociated dataset files.
+            Tuple of paths to the main dataset, unassociated dataset, and entries files.
         """
-
-        dataset_paths, unassociated_path = self._build_datasets(
+        dataset_paths, unassociated_path, entries_path = self._build_datasets(
             strategy_factories={CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy}
         )
-        return dataset_paths[CURRENT_STRATEGY_NAME], unassociated_path
+        return dataset_paths[CURRENT_STRATEGY_NAME], unassociated_path, entries_path
 
-    def build_all_ranking_strategies(self) -> tuple[dict[str, Path], Path]:
+    def build_all_ranking_strategies(self) -> tuple[dict[str, Path], Path, Path]:
         """Generate aligned benchmark datasets for all available ranking strategies.
 
         Returns:
-            Mapping of strategy names to dataset file paths and the unassociated file path.
+            Mapping of strategy names to dataset file paths, the unassociated file path,
+            and the entries file path.
         """
-
         return self._build_datasets(strategy_factories=self._build_strategy_factories())
-
-    def build_all_depth_sizes(self) -> tuple[dict[int, Path], dict[int, Path]]:
-        """Generate benchmark datasets for a fixed ranking strategy across call depths.
-
-        Returns:
-            Dataset paths and unassociated paths keyed by max call depth.
-        """
-
-        dataset_paths_by_depth: dict[int, Path] = {}
-        unassociated_paths_by_depth: dict[int, Path] = {}
-        strategy_factories: dict[str, RankingStrategyFactory] = {
-            CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy
-        }
-
-        for max_call_depth in DEPTH_SWEEP_SIZES:
-            dataset_paths, unassociated_path = self._build_datasets(
-                strategy_factories=strategy_factories,
-                max_call_depth=max_call_depth,
-                dataset_path_factory=self._depth_dataset_path_factory(max_call_depth),
-                metadata_name_factory=self._depth_metadata_name_factory(max_call_depth),
-                unassociated_path=self._depth_unassociated_path(max_call_depth),
-                sample_id_prefix=f"ContextAssemblerDepth{max_call_depth}",
-            )
-            dataset_paths_by_depth[max_call_depth] = dataset_paths[CURRENT_STRATEGY_NAME]
-            unassociated_paths_by_depth[max_call_depth] = unassociated_path
-
-        return dataset_paths_by_depth, unassociated_paths_by_depth
 
     def _build_datasets(
         self,
         strategy_factories: Mapping[str, RankingStrategyFactory],
-        max_call_depth: int | None = None,
         dataset_path_factory: DatasetPathFactory | None = None,
         metadata_name_factory: MetadataNameFactory | None = None,
         unassociated_path: Path | None = None,
-        sample_id_prefix: str = "ContextAssembler",
-    ) -> tuple[dict[str, Path], Path]:
+        sample_id_prefix: str = "CleanVulContextAssembler",
+    ) -> tuple[dict[str, Path], Path, Path]:
         """Build one or more datasets using the same accepted entry pairs.
+
+        Also writes a companion entries file mapping each sample ID to its source
+        CleanVulEntry so callers can associate CA benchmark samples back to the
+        original function code and metadata.
 
         Args:
             strategy_factories: Ranking strategies to evaluate.
-            max_call_depth: Optional max traversal depth override.
             dataset_path_factory: Optional dataset path resolver.
             metadata_name_factory: Optional metadata name resolver.
             unassociated_path: Optional unassociated output path.
             sample_id_prefix: Prefix used for generated sample ids.
 
         Returns:
-            Mapping of strategy names to dataset file paths and the unassociated file path.
+            Tuple of (strategy_name → dataset path, unassociated path, entries path).
         """
-
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
 
-        loader = CVEFixesLoaderService(db_path=self.db_path)
-        candidate_pairs = self._pair_entries(loader.fetch_python_entries())
+        loader = CleanVulLoaderService(
+            dataset_path=self.dataset_path,
+            min_score=self.min_score,
+            python_only=self.python_only,
+            exclude_test_files=self.exclude_test_files,
+        )
+        candidate_rows = loader.fetch_entries()
         rng = random.Random(self.seed)
-        rng.shuffle(candidate_pairs)
-        effective_max_call_depth = self.max_call_depth if max_call_depth is None else max_call_depth
+        rng.shuffle(candidate_rows)
 
         samples_by_strategy: dict[str, list[BenchmarkSample]] = {
             strategy_name: [] for strategy_name in strategy_factories
         }
+        # Maps sample_id → CleanVulEntry (strategy-independent; written as companion file)
+        entries_by_sample_id: dict[str, CleanVulEntry] = {}
         unassociated: list[UnassociatedSample] = []
         dataset_paths: dict[str, Path] = {}
         resolved_unassociated_path = (
-            self.output_dir / "cvefixes_unassociated.json"
+            self.output_dir / "cleanvul_unassociated.json"
             if unassociated_path is None
             else unassociated_path
         )
+        entries_path = self.output_dir / "cleanvul_entries.json"
 
         vulnerable_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "vulnerable")
         fixed_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "fixed")
@@ -164,32 +147,31 @@ class CVEFixesBenchmarkService(BaseModel):
         interrupted_error: KeyboardInterrupt | None = None
 
         try:
-            for pair in candidate_pairs:
+            for rows, repo_url, fix_hash in candidate_rows:
                 current_sample_count = len(samples_by_strategy[first_strategy_name])
                 if current_sample_count + 2 > self.sample_count:
                     break
 
                 vulnerable_repo_path: Path | None = None
                 fixed_repo_path: Path | None = None
+                commit_url = rows[0].commit_url
                 try:
                     try:
                         vulnerable_repo_path = vulnerable_repo_service.checkout_repo(
-                            repo_url=pair.vulnerable_entry.repo_url,
-                            fix_hash=pair.vulnerable_entry.fix_hash,
+                            repo_url=repo_url,
+                            fix_hash=fix_hash,
                             is_vulnerable=True,
                         )
                         fixed_repo_path = fixed_repo_service.checkout_repo(
-                            repo_url=pair.fixed_entry.repo_url,
-                            fix_hash=pair.fixed_entry.fix_hash,
+                            repo_url=repo_url,
+                            fix_hash=fix_hash,
                             is_vulnerable=False,
                         )
                     except Exception:
-                        logger.exception(
-                            "Failed to checkout %s at %s",
-                            pair.vulnerable_entry.repo_url,
-                            pair.vulnerable_entry.fix_hash,
+                        logger.exception("Failed to checkout %s at %s", repo_url, fix_hash)
+                        self._append_unassociated_rows(
+                            unassociated, rows, repo_url, fix_hash, reason="checkout_failed"
                         )
-                        self._append_unassociated_pair(unassociated, pair, reason="checkout_failed")
                         continue
 
                     if current_sample_count % LOGGING_INTERVAL == 0:
@@ -199,15 +181,25 @@ class CVEFixesBenchmarkService(BaseModel):
                             self.sample_count,
                         )
 
-                    budget_reason = self._entry_pair_budget_reason(
+                    # Resolve line spans by text-matching in the checked-out files
+                    pair = self._build_entry_pair(
+                        rows=rows,
+                        repo_url=repo_url,
+                        fix_hash=fix_hash,
                         vulnerable_repo_path=vulnerable_repo_path,
                         fixed_repo_path=fixed_repo_path,
-                        pair=pair,
                     )
+                    if pair is None:
+                        self._append_unassociated_rows(
+                            unassociated, rows, repo_url, fix_hash, reason="span_not_found"
+                        )
+                        continue
+
+                    budget_reason = self._entry_pair_budget_reason(pair)
                     if budget_reason is not None:
                         logger.warning(
                             "Skipping %s because source samples exceed budget or are unavailable",
-                            pair.vulnerable_entry.cve_id,
+                            commit_url,
                         )
                         self._append_unassociated_pair(unassociated, pair, reason=budget_reason)
                         continue
@@ -217,35 +209,31 @@ class CVEFixesBenchmarkService(BaseModel):
                             repo_path=vulnerable_repo_path,
                             entry=pair.vulnerable_entry,
                             strategy_factories=strategy_factories,
-                            max_call_depth=effective_max_call_depth,
                         )
                         fixed_contexts = self._scan_repository_for_entry(
                             repo_path=fixed_repo_path,
                             entry=pair.fixed_entry,
                             strategy_factories=strategy_factories,
-                            max_call_depth=effective_max_call_depth,
                         )
                     except Exception:
-                        logger.exception(
-                            "Failed to scan repository for %s", pair.vulnerable_entry.cve_id
-                        )
+                        logger.exception("Failed to scan repository for %s", commit_url)
                         self._append_unassociated_pair(unassociated, pair, reason="scan_failed")
                         continue
 
                     if not self._all_contexts_present(
-                        vulnerable_contexts,
-                        fixed_contexts,
-                        strategy_factories,
+                        vulnerable_contexts, fixed_contexts, strategy_factories
                     ):
                         logger.warning(
                             "No context found for %s in at least one strategy",
-                            pair.vulnerable_entry.cve_id,
+                            commit_url,
                         )
                         self._append_unassociated_pair(unassociated, pair, reason="missing_context")
                         continue
 
                     vulnerable_sample_id = f"{sample_id_prefix}-{current_sample_count + 1}"
                     fixed_sample_id = f"{sample_id_prefix}-{current_sample_count + 2}"
+                    entries_by_sample_id[vulnerable_sample_id] = pair.vulnerable_entry
+                    entries_by_sample_id[fixed_sample_id] = pair.fixed_entry
                     for strategy_name in strategy_factories:
                         samples_by_strategy[strategy_name].append(
                             self._to_sample(
@@ -264,9 +252,11 @@ class CVEFixesBenchmarkService(BaseModel):
                 except KeyboardInterrupt as error:
                     logger.warning(
                         "Interrupted while processing %s; writing partial datasets",
-                        pair.vulnerable_entry.cve_id,
+                        commit_url,
                     )
-                    self._append_unassociated_pair(unassociated, pair, reason="interrupted")
+                    self._append_unassociated_rows(
+                        unassociated, rows, repo_url, fix_hash, reason="interrupted"
+                    )
                     interrupted_error = error
                     break
                 finally:
@@ -282,18 +272,181 @@ class CVEFixesBenchmarkService(BaseModel):
                 resolved_unassociated_path,
                 [item.model_dump(by_alias=True) for item in unassociated],
             )
+            self._write_entries(entries_by_sample_id, entries_path)
 
         if interrupted_error is not None:
             raise interrupted_error
 
-        return dataset_paths, resolved_unassociated_path
+        return dataset_paths, resolved_unassociated_path, entries_path
+
+    def _build_entry_pair(
+        self,
+        rows: list[CleanVulRow],
+        repo_url: str,
+        fix_hash: str,
+        vulnerable_repo_path: Path,
+        fixed_repo_path: Path,
+    ) -> _CleanVulEntryPair | None:
+        """Locate function spans for all rows in a commit group and build an entry pair.
+
+        Multiple rows from the same commit (different functions/files) are merged
+        into a single pair so that all spans are processed together. Individual
+        functions whose spans cannot be located are skipped; the pair is returned
+        as long as at least one function span was resolved on each side.
+
+        Args:
+            rows: All CleanVul rows for a single commit.
+            repo_url: Repository base URL.
+            fix_hash: Fix commit SHA.
+            vulnerable_repo_path: Checked-out parent (vulnerable) repo path.
+            fixed_repo_path: Checked-out fix (fixed) repo path.
+
+        Returns:
+            Paired entries, or ``None`` if no spans could be located.
+        """
+        # Accumulate spans per file path for each side
+        vuln_spans_by_file: dict[str, list[tuple[int, int]]] = {}
+        fixed_spans_by_file: dict[str, list[tuple[int, int]]] = {}
+        vuln_func_codes: list[str] = []
+        fixed_func_codes: list[str] = []
+
+        for row in rows:
+            vuln_file = vulnerable_repo_path / row.file_name
+            fixed_file = fixed_repo_path / row.file_name
+
+            vuln_span = self._find_function_line_span(vuln_file, row.func_before)
+            fixed_span = self._find_function_line_span(fixed_file, row.func_after)
+
+            if vuln_span is None or fixed_span is None:
+                logger.warning(
+                    "Could not locate function in %s for commit %s (vuln=%s, fixed=%s); "
+                    "skipping this function",
+                    row.file_name,
+                    row.commit_url,
+                    vuln_span,
+                    fixed_span,
+                )
+                continue
+
+            vuln_spans_by_file.setdefault(row.file_name, []).append(vuln_span)
+            fixed_spans_by_file.setdefault(row.file_name, []).append(fixed_span)
+            vuln_func_codes.append(row.func_before)
+            fixed_func_codes.append(row.func_after)
+
+        if not vuln_spans_by_file or not fixed_spans_by_file:
+            return None
+
+        representative = rows[0]
+        cwe_ids = CleanVulLoaderService._parse_cwe_ids(representative.cwe_id)
+
+        def _make_files_spans(spans_by_file: dict[str, list[tuple[int, int]]]) -> list[FileSpans]:
+            return [FileSpans(Path(fname), spans) for fname, spans in spans_by_file.items()]
+
+        def _make_entry(func_codes: list[str], is_vulnerable: bool) -> CleanVulEntry:
+            spans_by_file = vuln_spans_by_file if is_vulnerable else fixed_spans_by_file
+            return CleanVulEntry(
+                commit_url=representative.commit_url,
+                repo_url=repo_url,
+                fix_hash=fix_hash,
+                file_name=representative.file_name,
+                func_code="\n".join(func_codes),
+                files_spans=_make_files_spans(spans_by_file),
+                cve_id=representative.cve_id,
+                cwe_id=cwe_ids[0] if cwe_ids else None,
+                cwe_ids=cwe_ids,
+                vulnerability_score=representative.vulnerability_score,
+                commit_msg=representative.commit_msg,
+                is_vulnerable=is_vulnerable,
+            )
+
+        return _CleanVulEntryPair(
+            vulnerable_entry=_make_entry(vuln_func_codes, is_vulnerable=True),
+            fixed_entry=_make_entry(fixed_func_codes, is_vulnerable=False),
+        )
+
+    @staticmethod
+    def _find_function_line_span(
+        file_path: Path,
+        func_code: str,
+    ) -> tuple[int, int] | None:
+        """Locate ``func_code`` in a file by text matching.
+
+        Tries three increasingly lenient matching strategies in order:
+
+        1. Exact match (rstrip each line; skip blank file lines while scanning).
+        2. Whitespace-normalised match (collapse all runs of whitespace).
+        3. Dedented match (``textwrap.dedent`` the needle, then whitespace-normalise).
+
+        Args:
+            file_path: Path to the source file in the checked-out repository.
+            func_code: Function source text from the dataset.
+
+        Returns:
+            1-based ``(start_line, end_line)`` tuple, or ``None`` if not found.
+        """
+        try:
+            file_text = file_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return None
+
+        file_lines = file_text.splitlines()
+
+        def _rstrip_needle(code: str) -> list[str]:
+            return [ln.rstrip() for ln in code.splitlines() if ln.strip()]
+
+        def _normalise(line: str) -> str:
+            return " ".join(line.split())
+
+        def _normalise_needle(code: str) -> list[str]:
+            return [_normalise(ln) for ln in code.splitlines() if ln.strip()]
+
+        def _search(
+            needle_lines: list[str], transform: Callable[[str], str]
+        ) -> tuple[int, int] | None:
+            if not needle_lines:
+                return None
+            first = needle_lines[0]
+            for i, file_line in enumerate(file_lines):
+                if transform(file_line) != first:
+                    continue
+                # Candidate start at file line i
+                candidate_end = i
+                needle_idx = 1
+                j = i + 1
+                while needle_idx < len(needle_lines) and j < len(file_lines):
+                    file_transformed = transform(file_lines[j])
+                    if file_transformed == needle_lines[needle_idx]:
+                        needle_idx += 1
+                        candidate_end = j
+                    elif file_transformed == "":
+                        pass  # skip blank file lines not in needle
+                    else:
+                        break  # mismatch
+                    j += 1
+                if needle_idx == len(needle_lines):
+                    return (i + 1, candidate_end + 1)  # 1-based
+            return None
+
+        # Tier 1: exact (rstrip)
+        result = _search(_rstrip_needle(func_code), str.rstrip)
+        if result is not None:
+            return result
+
+        # Tier 2: whitespace-normalised
+        result = _search(_normalise_needle(func_code), _normalise)
+        if result is not None:
+            return result
+
+        # Tier 3: dedented + whitespace-normalised
+        dedented = textwrap.dedent(func_code)
+        result = _search(_normalise_needle(dedented), _normalise)
+        return result
 
     def _scan_repository_for_entry(
         self,
         repo_path: Path,
-        entry: CVEFixesEntry,
+        entry: CleanVulEntry,
         strategy_factories: Mapping[str, RankingStrategyFactory],
-        max_call_depth: int,
     ) -> dict[str, Context]:
         with build_client(
             self.neo4j_config.uri,
@@ -309,7 +462,7 @@ class CVEFixesBenchmarkService(BaseModel):
                 context_service = ContextAssemblerService(
                     project_root=repo_path,
                     context_repository=context_repository,
-                    max_call_depth=max_call_depth,
+                    max_call_depth=self.max_call_depth,
                     token_budget=self.token_budget,
                     ranking_strategy=factory(repo_path),
                 )
@@ -320,27 +473,12 @@ class CVEFixesBenchmarkService(BaseModel):
             return contexts
 
     def _build_current_ranking_strategy(self, repo_path: Path) -> ContextNodeRankingStrategy:
-        """Build the current ranking strategy instance.
-
-        Args:
-            repo_path: Repository root.
-
-        Returns:
-            Strategy instance.
-        """
-
         return NodeRelevanceRankingService(
             project_root=repo_path,
             snippet_cache_max_entries=10000,
         )
 
     def _build_strategy_factories(self) -> dict[str, RankingStrategyFactory]:
-        """Return all benchmark ranking strategies.
-
-        Returns:
-            Mapping of strategy names to constructors.
-        """
-
         return {
             CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy,
             "depth_repeats_context": lambda repo_path: DepthRepeatsContextNodeRankingStrategy(
@@ -361,7 +499,7 @@ class CVEFixesBenchmarkService(BaseModel):
 
     def _to_sample(
         self,
-        entry: CVEFixesEntry,
+        entry: CleanVulEntry,
         context: Context,
         sample_id: str,
     ) -> BenchmarkSample:
@@ -370,17 +508,17 @@ class CVEFixesBenchmarkService(BaseModel):
             code=context.context_text,
             label=int(entry.is_vulnerable),
             metadata=self._entry_metadata(entry),
-            cwe_types=[],
-            severity=entry.severity or "unknown",
+            cwe_types=[f"CWE-{n}" for n in entry.cwe_ids],
+            severity="unknown",
         )
 
-    def _entry_metadata(self, entry: CVEFixesEntry) -> BenchmarkSampleMetadata:
+    def _entry_metadata(self, entry: CleanVulEntry) -> CleanVulSampleMetadata:
         payload: dict[str, object] = {
-            "CVEFixes-Number": entry.cve_id,
-            "description": entry.description,
+            "CleanVul-CommitUrl": entry.commit_url,
+            "description": entry.commit_msg,
             "cwe_number": entry.cwe_id,
         }
-        return BenchmarkSampleMetadata.model_validate(payload)
+        return CleanVulSampleMetadata.model_validate(payload)
 
     def _build_metadata(
         self,
@@ -402,96 +540,47 @@ class CVEFixesBenchmarkService(BaseModel):
             cwe_distribution=distribution,
         )
 
-    def _pair_entries(self, entries: list[CVEFixesEntry]) -> list[_CVEFixesEntryPair]:
-        """Pair vulnerable and fixed CVEFixes entries.
-
-        Args:
-            entries: Loaded CVEFixes entries.
-
-        Returns:
-            Pairs that have both vulnerable and fixed entries.
-        """
-
-        grouped_entries: dict[tuple[str, str, str], dict[bool, CVEFixesEntry]] = {}
-        for entry in entries:
-            pair_key = (entry.cve_id, entry.repo_url, entry.fix_hash)
-            if pair_key not in grouped_entries:
-                grouped_entries[pair_key] = {}
-            grouped_entries[pair_key][entry.is_vulnerable] = entry
-
-        pairs: list[_CVEFixesEntryPair] = []
-        for pair_key in sorted(grouped_entries.keys()):
-            entry_group = grouped_entries[pair_key]
-            vulnerable_entry = entry_group.get(True)
-            fixed_entry = entry_group.get(False)
-            if vulnerable_entry is None or fixed_entry is None:
-                continue
-            pairs.append(
-                _CVEFixesEntryPair(
-                    vulnerable_entry=vulnerable_entry,
-                    fixed_entry=fixed_entry,
-                )
-            )
-        return pairs
-
-    def _entry_pair_budget_reason(
-        self,
-        vulnerable_repo_path: Path,
-        fixed_repo_path: Path,
-        pair: _CVEFixesEntryPair,
-    ) -> str | None:
-        """Return skip reason when before/after source samples are not usable.
-
-        Args:
-            vulnerable_repo_path: Vulnerable checkout path.
-            fixed_repo_path: Fixed checkout path.
-            pair: Paired entries.
-
-        Returns:
-            Skip reason, or ``None`` when both source samples fit the token budget.
-        """
-
-        vulnerable_source = self._read_source_sample(vulnerable_repo_path, pair.vulnerable_entry)
-        fixed_source = self._read_source_sample(fixed_repo_path, pair.fixed_entry)
-        if vulnerable_source is None or fixed_source is None:
-            return "source_sample_unavailable"
-        if self._estimate_tokens(vulnerable_source) > self.token_budget:
+    def _entry_pair_budget_reason(self, pair: _CleanVulEntryPair) -> str | None:
+        if self._estimate_tokens(pair.vulnerable_entry.func_code) > self.token_budget:
             return "source_sample_exceeds_token_budget"
-        if self._estimate_tokens(fixed_source) > self.token_budget:
+        if self._estimate_tokens(pair.fixed_entry.func_code) > self.token_budget:
             return "source_sample_exceeds_token_budget"
         return None
 
-    def _read_source_sample(self, repo_path: Path, entry: CVEFixesEntry) -> str | None:
-        """Read the before or after CVEFixes code sample for an entry.
+    def _append_unassociated_rows(
+        self,
+        unassociated: list[UnassociatedSample],
+        rows: list[CleanVulRow],
+        repo_url: str,
+        fix_hash: str,
+        reason: str,
+    ) -> None:
+        """Append a placeholder unassociated entry for a commit group (pre-pair-building).
+
+        Uses the first row in the group as the representative for metadata.
 
         Args:
-            repo_path: Checked-out repository root.
-            entry: CVEFixes entry.
-
-        Returns:
-            Extracted source sample, or ``None`` when it cannot be read.
+            unassociated: Existing unassociated entries.
+            rows: All CleanVul rows for the commit group.
+            repo_url: Parsed repository URL.
+            fix_hash: Parsed fix commit hash.
+            reason: Skip reason.
         """
-
-        parts: list[str] = []
-        for file_span in entry.files_spans:
-            file_path = repo_path / file_span.file_path
-            try:
-                lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-            except OSError:
-                return None
-
-            for start_line, end_line in file_span.line_spans:
-                if start_line < 1 or start_line > len(lines):
-                    return None
-                clipped_end = min(end_line, len(lines))
-                parts.extend(lines[start_line - 1 : clipped_end])
-
-        return "\n".join(parts)
+        row = rows[0]
+        cwe_ids = CleanVulLoaderService._parse_cwe_ids(row.cwe_id)
+        metadata = CleanVulSampleMetadata.model_validate(
+            {
+                "CleanVul-CommitUrl": row.commit_url,
+                "description": row.commit_msg,
+                "cwe_number": cwe_ids[0] if cwe_ids else None,
+            }
+        )
+        unassociated.append(UnassociatedSample(entry=metadata, reason=reason, contexts=[]))
 
     def _append_unassociated_pair(
         self,
         unassociated: list[UnassociatedSample],
-        pair: _CVEFixesEntryPair,
+        pair: _CleanVulEntryPair,
         reason: str,
     ) -> None:
         """Append both vulnerable and fixed entries as unassociated.
@@ -499,9 +588,8 @@ class CVEFixesBenchmarkService(BaseModel):
         Args:
             unassociated: Existing unassociated entries.
             pair: Paired entries.
-            reason: Reason for skipping the pair.
+            reason: Reason for skipping.
         """
-
         unassociated.append(
             UnassociatedSample(
                 entry=self._entry_metadata(pair.vulnerable_entry),
@@ -523,17 +611,6 @@ class CVEFixesBenchmarkService(BaseModel):
         fixed_contexts: dict[str, Context],
         strategy_factories: Mapping[str, RankingStrategyFactory],
     ) -> bool:
-        """Return whether all strategies produced non-empty contexts.
-
-        Args:
-            vulnerable_contexts: Vulnerable entry contexts by strategy.
-            fixed_contexts: Fixed entry contexts by strategy.
-            strategy_factories: Strategies expected to be present.
-
-        Returns:
-            Whether every strategy produced non-empty contexts for both entries.
-        """
-
         for strategy_name in strategy_factories:
             vulnerable_context = vulnerable_contexts.get(strategy_name)
             fixed_context = fixed_contexts.get(strategy_name)
@@ -548,57 +625,23 @@ class CVEFixesBenchmarkService(BaseModel):
         strategy_name: str,
         dataset_path_factory: DatasetPathFactory | None = None,
     ) -> Path:
-        """Return output path for a ranking strategy dataset."""
-
         if dataset_path_factory is not None:
             return dataset_path_factory(strategy_name)
-
         if strategy_name == CURRENT_STRATEGY_NAME:
-            return self.output_dir / "cvefixes_context_benchmark.json"
-        return self.output_dir / f"cvefixes_context_benchmark_{strategy_name}.json"
+            return self.output_dir / "cleanvul_context_benchmark.json"
+        return self.output_dir / f"cleanvul_context_benchmark_{strategy_name}.json"
 
     @staticmethod
     def _metadata_name(
         strategy_name: str,
         metadata_name_factory: MetadataNameFactory | None = None,
     ) -> str:
-        """Return metadata name for a dataset variant."""
-
         if metadata_name_factory is not None:
             return metadata_name_factory(strategy_name)
-        return f"CVEFixes-with-Context-Benchmark-{strategy_name}"
-
-    def _depth_dataset_path(self, max_call_depth: int) -> Path:
-        """Return output path for a depth-sweep dataset."""
-
-        return self.output_dir / f"cvefixes_context_benchmark_depth_{max_call_depth}.json"
-
-    def _depth_unassociated_path(self, max_call_depth: int) -> Path:
-        """Return output path for depth-sweep unassociated entries."""
-
-        return self.output_dir / f"cvefixes_unassociated_depth_{max_call_depth}.json"
-
-    def _depth_dataset_path_factory(self, max_call_depth: int) -> DatasetPathFactory:
-        """Build a dataset path resolver for one max call depth."""
-
-        def factory(_: str) -> Path:
-            return self._depth_dataset_path(max_call_depth)
-
-        return factory
-
-    @staticmethod
-    def _depth_metadata_name_factory(max_call_depth: int) -> MetadataNameFactory:
-        """Build a metadata name resolver for one max call depth."""
-
-        def factory(_: str) -> str:
-            return f"CVEFixes-with-Context-Benchmark-depth-{max_call_depth}"
-
-        return factory
+        return f"CleanVul-with-Context-Benchmark-{strategy_name}"
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
-        """Estimate token usage for source samples."""
-
         return max(1, len(text) // 3) if text else 0
 
     def _write_datasets(
@@ -607,8 +650,6 @@ class CVEFixesBenchmarkService(BaseModel):
         metadata_name_factory: MetadataNameFactory | None = None,
         dataset_path_factory: DatasetPathFactory | None = None,
     ) -> dict[str, Path]:
-        """Write benchmark datasets for all strategies."""
-
         dataset_paths: dict[str, Path] = {}
         for strategy_name, samples in samples_by_strategy.items():
             dataset = BenchmarkDataset(
@@ -624,11 +665,44 @@ class CVEFixesBenchmarkService(BaseModel):
         return dataset_paths
 
     def _delete_checkout(self, repo_path: Path | None) -> None:
-        """Delete a checked-out repository when configured."""
-
         if not self.delete_checkouts or repo_path is None or not repo_path.exists():
             return
         shutil.rmtree(str(repo_path))
+
+    @staticmethod
+    def _write_entries(
+        entries_by_sample_id: dict[str, CleanVulEntry],
+        path: Path,
+    ) -> None:
+        """Write a companion entries file mapping sample IDs to their CleanVulEntry data.
+
+        The file is a JSON array of objects, each containing a ``sample_id`` field
+        alongside all scalar CleanVulEntry fields, so consumers can join benchmark
+        samples back to their source function code and metadata without re-parsing
+        the original dataset.
+
+        Args:
+            entries_by_sample_id: Mapping of sample ID to its CleanVulEntry.
+            path: Output file path.
+        """
+        records = [
+            {
+                "sample_id": sample_id,
+                "commit_url": entry.commit_url,
+                "repo_url": entry.repo_url,
+                "fix_hash": entry.fix_hash,
+                "file_name": entry.file_name,
+                "func_code": entry.func_code,
+                "cve_id": entry.cve_id,
+                "cwe_id": entry.cwe_id,
+                "cwe_ids": entry.cwe_ids,
+                "vulnerability_score": entry.vulnerability_score,
+                "commit_msg": entry.commit_msg,
+                "is_vulnerable": entry.is_vulnerable,
+            }
+            for sample_id, entry in entries_by_sample_id.items()
+        ]
+        CleanVulBenchmarkService._write_json(path, records)
 
     @staticmethod
     def _write_json(path: Path, payload: object) -> None:

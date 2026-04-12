@@ -22,6 +22,7 @@ from models.nodes import Node
 from pipeline import GeneralPipeline
 from repositories.graph import GraphRepository
 from repositories.yaml_loader import YamlLoader
+from services.analyzer.cleanvul_benchmark import CleanVulBenchmarkService
 from services.analyzer.cvefixes_benchmark import CVEFixesBenchmarkService
 from services.cpg_parser.ts_parser.cpg_builder import (
     CPGDirectoryBuilder,
@@ -42,6 +43,7 @@ DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
 DEFAULT_BENCHMARK_DIR: Final[Path] = ROOT_DIR / "data"
 DEFAULT_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cvefixes_repos"
+DEFAULT_CLEANVUL_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cleanvul_repos"
 
 
 def _configure_logging(log_level: str) -> None:
@@ -547,6 +549,260 @@ def build_cvefixes_benchmark_compare_depth_sizes(
 
     typer.secho(
         f"Wrote benchmark dataset to {dataset_paths} and unassociated samples to {unassociated_path}",
+        fg=typer.colors.GREEN,
+    )
+
+
+@app.command("build-cleanvul-benchmark")
+def build_cleanvul_benchmark(
+    dataset_path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to the CleanVul CSV or Parquet file.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ],
+    sample_count: Annotated[
+        int,
+        typer.Option("-n", "--samples", help="Number of samples to generate."),
+    ] = 50,
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            help="Directory to write benchmark JSON files.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_BENCHMARK_DIR,
+    repo_cache_dir: Annotated[
+        Path,
+        typer.Option(
+            "--repo-cache-dir",
+            help="Directory to cache cloned repositories.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_CLEANVUL_REPO_CACHE_DIR,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Random seed for sampling."),
+    ] = None,
+    max_call_depth: Annotated[
+        int,
+        typer.Option("--max-call-depth", help="Max call depth for context expansion."),
+    ] = 3,
+    token_budget: Annotated[
+        int,
+        typer.Option("--token-budget", help="Token budget for context assembly."),
+    ] = 2048,
+    min_score: Annotated[
+        int,
+        typer.Option(
+            "--min-score",
+            help="Minimum vulnerability_score to include (0-4; dataset authors recommend >=3).",
+            min=0,
+            max=4,
+        ),
+    ] = 3,
+    python_only: Annotated[
+        bool,
+        typer.Option(
+            "--python-only/--all-languages",
+            help="Restrict to Python files only.",
+        ),
+    ] = True,
+    exclude_test_files: Annotated[
+        bool,
+        typer.Option(
+            "--exclude-tests/--include-tests",
+            help="Exclude rows flagged as test files.",
+        ),
+    ] = True,
+    neo4j_uri: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-uri",
+            help="Neo4j bolt URI.",
+            envvar="NEO4J_URI",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().uri,
+    neo4j_user: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-user",
+            help="Neo4j username.",
+            envvar="NEO4J_USER",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().user,
+    neo4j_password: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-password",
+            help="Neo4j password.",
+            envvar="NEO4J_PASSWORD",
+            show_default=False,
+        ),
+    ] = Neo4jConfig().password,
+) -> None:
+    """Build the CleanVul-with-context benchmark dataset."""
+
+    service = CleanVulBenchmarkService(
+        dataset_path=dataset_path,
+        output_dir=output_dir,
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
+        max_call_depth=max_call_depth,
+        token_budget=token_budget,
+        min_score=min_score,
+        python_only=python_only,
+        exclude_test_files=exclude_test_files,
+    )
+    main_path, unassociated_path, entries_path = service.build()
+
+    typer.secho(
+        f"Wrote benchmark dataset to {main_path}, "
+        f"unassociated samples to {unassociated_path}, "
+        f"entries to {entries_path}",
+        fg=typer.colors.GREEN,
+    )
+
+
+@app.command("build-cleanvul-benchmark-compare-rankings")
+def build_cleanvul_benchmark_compare_rankings(
+    dataset_path: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to the CleanVul CSV or Parquet file.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ],
+    sample_count: Annotated[
+        int,
+        typer.Option("-n", "--samples", help="Number of samples to generate."),
+    ] = 50,
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            help="Directory to write benchmark JSON files.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_BENCHMARK_DIR,
+    repo_cache_dir: Annotated[
+        Path,
+        typer.Option(
+            "--repo-cache-dir",
+            help="Directory to cache cloned repositories.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_CLEANVUL_REPO_CACHE_DIR,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Random seed for sampling."),
+    ] = None,
+    max_call_depth: Annotated[
+        int,
+        typer.Option("--max-call-depth", help="Max call depth for context expansion."),
+    ] = 3,
+    token_budget: Annotated[
+        int,
+        typer.Option("--token-budget", help="Token budget for context assembly."),
+    ] = 2048,
+    min_score: Annotated[
+        int,
+        typer.Option(
+            "--min-score",
+            help="Minimum vulnerability_score to include (0-4; dataset authors recommend >=3).",
+            min=0,
+            max=4,
+        ),
+    ] = 3,
+    python_only: Annotated[
+        bool,
+        typer.Option(
+            "--python-only/--all-languages",
+            help="Restrict to Python files only.",
+        ),
+    ] = True,
+    exclude_test_files: Annotated[
+        bool,
+        typer.Option(
+            "--exclude-tests/--include-tests",
+            help="Exclude rows flagged as test files.",
+        ),
+    ] = True,
+    neo4j_uri: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-uri",
+            help="Neo4j bolt URI.",
+            envvar="NEO4J_URI",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().uri,
+    neo4j_user: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-user",
+            help="Neo4j username.",
+            envvar="NEO4J_USER",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().user,
+    neo4j_password: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-password",
+            help="Neo4j password.",
+            envvar="NEO4J_PASSWORD",
+            show_default=False,
+        ),
+    ] = Neo4jConfig().password,
+) -> None:
+    """Build aligned CleanVul-with-context datasets for all ranking strategies."""
+
+    service = CleanVulBenchmarkService(
+        dataset_path=dataset_path,
+        output_dir=output_dir,
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
+        max_call_depth=max_call_depth,
+        token_budget=token_budget,
+        min_score=min_score,
+        python_only=python_only,
+        exclude_test_files=exclude_test_files,
+    )
+    dataset_paths, unassociated_path, entries_path = service.build_all_ranking_strategies()
+
+    typer.secho(
+        f"Wrote benchmark datasets to {dataset_paths}, "
+        f"unassociated samples to {unassociated_path}, "
+        f"entries to {entries_path}",
         fg=typer.colors.GREEN,
     )
 

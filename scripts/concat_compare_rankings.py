@@ -9,7 +9,6 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Final, TypedDict, cast
 
-
 DEFAULT_DATA_DIR: Final[Path] = Path(__file__).resolve().parent.parent / "data"
 DEFAULT_INPUT_GLOB: Final[str] = "compare_rankings*"
 DEFAULT_OUTPUT_DIRNAME: Final[str] = "compare_rankings_combined"
@@ -347,7 +346,7 @@ def merge_dataset_group(dataset_paths: list[Path]) -> tuple[object, int, int]:
         for dataset_path in dataset_paths:
             merged_array_entries.extend(load_array_dataset(dataset_path))
         _, duplicate_count = dedupe_array_entries(merged_array_entries)
-        merged_dataset = merge_array_datasets(dataset_paths)
+        merged_dataset = merge_array_datasets(dataset_paths)  # type: ignore
         return merged_dataset, len(merged_dataset), duplicate_count
 
     raise ValueError(

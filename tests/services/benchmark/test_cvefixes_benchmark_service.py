@@ -352,6 +352,7 @@ def test_build_writes_partial_datasets_on_keyboard_interrupt(
         output_dir=tmp_path / "output",
         repo_cache_dir=tmp_path / "repos",
         sample_count=4,
+        seed=0,
         max_call_depth=2,
         token_budget=100,
         delete_checkouts=False,
