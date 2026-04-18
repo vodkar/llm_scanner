@@ -39,6 +39,15 @@ class FakeContextRepository(ContextRepository):
 
         return self.context_nodes
 
+    def fetch_taint_sources(
+        self,
+        _: list[str],
+        __: int = 6,
+    ) -> dict[NodeID, float]:
+        """Return empty taint scores for unit test stub."""
+
+        return {}
+
 
 class ReverseRankingStrategy(ContextNodeRankingStrategy):
     """Return nodes in reverse order for injection tests."""

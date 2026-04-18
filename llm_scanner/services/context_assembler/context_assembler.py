@@ -67,6 +67,16 @@ class ContextAssemblerService(BaseModel):
         )
         _LOGGER.info("Fetched neighborhood for %d context nodes", len(context_nodes))
 
+        root_ids: list[str] = [node.identifier for node in spans_nodes]
+        taint_scores = self.context_repository.fetch_taint_sources(root_ids)
+        if taint_scores:
+            context_nodes = [
+                node.model_copy(update={"taint_score": taint_scores[node.identifier]})
+                if node.identifier in taint_scores
+                else node
+                for node in context_nodes
+            ]
+
         context_text, token_count = self._render_context(repo_path, context_nodes)
 
         return Context(

@@ -256,6 +256,36 @@ def code_bfs_nodes_batch_query(
     return cast(LiteralString, query)
 
 
+TAINT_HOP_DECAY: Final[dict[int, float]] = {1: 1.0, 2: 0.70, 3: 0.50, 4: 0.35}
+TAINT_HOP_DECAY_DEFAULT: Final[float] = 0.20
+_BACKWARD_DATAFLOW_REL_TYPES: Final[str] = "FLOWS_TO|DEFINED_BY"
+
+
+def backward_dataflow_taint_query(max_taint_depth: int) -> LiteralString:
+    """Return a Cypher query for backward DataFlow traversal from root nodes.
+
+    Traverses FLOWS_TO and DEFINED_BY edges in reverse to find variables that
+    participate in the data flow reaching the root vulnerability nodes.
+    Returns each reachable node ID and its minimum hop distance from any root.
+    """
+    depth = _validated_depth(max_taint_depth)
+    if depth == 0:
+        return cast(LiteralString, "UNWIND $root_ids AS rid RETURN null AS id, 0 AS taint_hop")
+    query = (
+        "UNWIND $root_ids AS rid "
+        "MATCH p=(root:Code {id: rid})"
+        f"<-[:{_BACKWARD_DATAFLOW_REL_TYPES}*1..{depth}]-(n:Code) "
+        "WITH n, min(length(p)) AS taint_hop "
+        "RETURN n.id AS id, taint_hop"
+    )
+    return cast(LiteralString, query)
+
+
+def taint_score_from_hop(taint_hop: int) -> float:
+    """Map a DataFlow hop distance to a taint score."""
+    return TAINT_HOP_DECAY.get(taint_hop, TAINT_HOP_DECAY_DEFAULT)
+
+
 def code_traversal_relationship_types() -> tuple[str, ...]:
     """Return default relationship types used for code neighborhood traversal."""
 

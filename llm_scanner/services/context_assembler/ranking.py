@@ -19,7 +19,8 @@ from services.context_assembler.snippet_reader import SnippetReaderService
 
 FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
 SECURITY_PATH_WEIGHT: Final[float] = 0.20
-CONTEXT_WEIGHT: Final[float] = 0.55
+TAINT_WEIGHT: Final[float] = 0.20
+CONTEXT_WEIGHT: Final[float] = 0.35
 
 CONTEXT_DEPTH_WEIGHT: Final[float] = 0.45
 CONTEXT_STRUCTURE_WEIGHT: Final[float] = 0.25
@@ -293,6 +294,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
                 finding_evidence_score=node.finding_evidence_score,
                 security_path_score=node.security_path_score,
                 context_score=node.context_score,
+                taint_score=node.taint_score,
             )
             final_nodes.append(node.model_copy(update={"score": score}))
 
@@ -331,12 +333,14 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         finding_evidence_score: float,
         security_path_score: float,
         context_score: float,
+        taint_score: float,
     ) -> float:
         """Combine component scores into the final ranking score."""
 
         return self._clamp_score(
             FINDING_EVIDENCE_WEIGHT * finding_evidence_score
             + SECURITY_PATH_WEIGHT * security_path_score
+            + TAINT_WEIGHT * taint_score
             + CONTEXT_WEIGHT * context_score
         )
 

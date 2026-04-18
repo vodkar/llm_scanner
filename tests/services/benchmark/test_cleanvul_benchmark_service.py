@@ -238,8 +238,7 @@ def test_build_writes_dataset_and_unassociated(
 
     # Verify CleanVul-specific metadata alias
     for sample in payload["samples"]:
-        assert "CleanVul-CommitUrl" in sample["metadata"]
-        assert sample["metadata"]["CleanVul-CommitUrl"] == _COMMIT_URL
+        assert sample["metadata"]["commit_url"] == _COMMIT_URL
 
     assert json.loads(unassociated_path.read_text(encoding="utf-8")) == []
 
@@ -290,7 +289,7 @@ def test_build_records_span_not_found_as_unassociated(
     unassociated = json.loads(unassociated_path.read_text(encoding="utf-8"))
     assert len(unassociated) == 1
     assert unassociated[0]["reason"] == "span_not_found"
-    assert "CleanVul-CommitUrl" in unassociated[0]["entry"]
+    assert "commit_url" in unassociated[0]["entry"]
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ class CleanVulSampleMetadata(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    commit_url: str = Field(..., alias="CleanVul-CommitUrl", description="Source commit URL")
+    commit_url: str = Field(..., description="Source commit URL")
     description: str = Field(default="", description="Commit message used as description")
     cwe_number: int | None = Field(default=None, description="Primary numeric CWE identifier")
 

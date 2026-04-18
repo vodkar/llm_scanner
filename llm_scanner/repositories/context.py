@@ -8,10 +8,12 @@ from models.base import NodeID
 from models.context import CodeContextNode
 from repositories.base import ensure_core_indexes
 from repositories.queries import (
+    backward_dataflow_taint_query,
     code_bfs_nodes_batch_query,
     code_bfs_nodes_query,
     code_nodes_by_file_line_query,
     code_traversal_relationship_types,
+    taint_score_from_hop,
 )
 
 RELATIONSHIP_TYPES_QUERY: LiteralString = (
@@ -143,6 +145,34 @@ class ContextRepository(BaseModel):
         # self._neighborhood_cache[cache_key] = rows
 
         return self._build_context_nodes(rows)
+
+    def fetch_taint_sources(
+        self,
+        root_node_ids: list[str],
+        max_taint_depth: int = 6,
+    ) -> dict[NodeID, float]:
+        """Return backward-DataFlow taint scores keyed by node ID.
+
+        Traverses FLOWS_TO and DEFINED_BY edges backward from root nodes to
+        find variables participating in the data flow reaching the vulnerability.
+
+        Args:
+            root_node_ids: Identifiers of root (depth=0) nodes.
+            max_taint_depth: Maximum DataFlow hops to traverse backward.
+
+        Returns:
+            Mapping of node_id to taint_score for nodes on the backward taint path.
+        """
+        if not root_node_ids:
+            return {}
+
+        query = backward_dataflow_taint_query(max_taint_depth)
+        rows = self.client.run_read(query, {"root_ids": root_node_ids})
+        return {
+            NodeID(str(row["id"])): taint_score_from_hop(int(row["taint_hop"]))
+            for row in rows
+            if row.get("id") is not None
+        }
 
     def _build_context_nodes(self, rows: list[dict[str, Any]]) -> list[CodeContextNode]:
         """Convert Neo4j rows into context nodes.

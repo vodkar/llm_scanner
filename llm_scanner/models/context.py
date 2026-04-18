@@ -43,6 +43,12 @@ class CodeContextNode(BaseModel):
         le=1.0,
         description="Context-only relevance score for ranking",
     )
+    taint_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Backward DataFlow taint distance score from root nodes",
+    )
 
 
 class Context(BaseModel):

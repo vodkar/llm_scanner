@@ -513,12 +513,11 @@ class CleanVulBenchmarkService(BaseModel):
         )
 
     def _entry_metadata(self, entry: CleanVulEntry) -> CleanVulSampleMetadata:
-        payload: dict[str, object] = {
-            "CleanVul-CommitUrl": entry.commit_url,
-            "description": entry.commit_msg,
-            "cwe_number": entry.cwe_id,
-        }
-        return CleanVulSampleMetadata.model_validate(payload)
+        return CleanVulSampleMetadata(
+            commit_url=entry.commit_url,
+            description=entry.commit_msg,
+            cwe_number=entry.cwe_id,
+        )
 
     def _build_metadata(
         self,
@@ -568,12 +567,10 @@ class CleanVulBenchmarkService(BaseModel):
         """
         row = rows[0]
         cwe_ids = CleanVulLoaderService._parse_cwe_ids(row.cwe_id)
-        metadata = CleanVulSampleMetadata.model_validate(
-            {
-                "CleanVul-CommitUrl": row.commit_url,
-                "description": row.commit_msg,
-                "cwe_number": cwe_ids[0] if cwe_ids else None,
-            }
+        metadata: CleanVulSampleMetadata = CleanVulSampleMetadata(
+            commit_url=row.commit_url,
+            description=row.commit_msg,
+            cwe_number=cwe_ids[0] if cwe_ids else None,
         )
         unassociated.append(UnassociatedSample(entry=metadata, reason=reason, contexts=[]))
 
