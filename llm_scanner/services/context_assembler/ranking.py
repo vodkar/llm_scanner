@@ -18,14 +18,14 @@ from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNod
 from services.context_assembler.snippet_reader import SnippetReaderService
 
 FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
-SECURITY_PATH_WEIGHT: Final[float] = 0.30
-CONTEXT_WEIGHT: Final[float] = 0.45
+SECURITY_PATH_WEIGHT: Final[float] = 0.20
+CONTEXT_WEIGHT: Final[float] = 0.55
 
 CONTEXT_DEPTH_WEIGHT: Final[float] = 0.45
 CONTEXT_STRUCTURE_WEIGHT: Final[float] = 0.25
 CONTEXT_FILE_PRIOR_WEIGHT: Final[float] = 0.30
 
-SECURITY_BOOST_WEIGHT: Final[float] = 1.50
+SECURITY_BOOST_WEIGHT: Final[float] = 1.00
 
 HOP_DECAY_BY_DEPTH: Final[dict[int, float]] = {
     0: 1.00,
@@ -128,6 +128,21 @@ GENERATED_HEADER_MARKERS: Final[tuple[str, ...]] = (
 )
 
 
+# Experiment results (2026-04-18, Claude model):
+#   depth_repeats  0.650  <- best
+#   mult_boost     0.610
+#   dummy          0.530
+#   current        0.510
+#   random_pick    0.480
+#
+# Tuning applied (2026-04-18):
+#   current:    raised security-tier sort threshold 0.0→0.5 (suppress single-keyword noise)
+#               increased repeat_bonus weight 0.70→0.85 in _context_structure_score
+#               SECURITY_PATH_WEIGHT 0.30→0.20, CONTEXT_WEIGHT 0.45→0.55
+#   mult_boost: SECURITY_BOOST_WEIGHT 1.50→1.00 (reduce score clamping at the top)
+#               added -repeats to sort key as tiebreaker after score+depth
+
+
 class ContextNodeRankingStrategy(ABC):
     """Rank context nodes into a ready-to-render order."""
 
@@ -216,7 +231,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
             ranked_nodes,
             key=lambda item: (
                 item.depth != 0,
-                not (item.finding_evidence_score + item.security_path_score > 0.0),
+                not (item.finding_evidence_score + item.security_path_score > 0.5),
                 -item.score,
                 item.depth,
                 str(item.file_path),
@@ -404,7 +419,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         repeat_bonus = min(1.0, repeats / max(max_repeats, 1))
 
         render_kind_bonus = RENDER_KIND_SCORES.get(node_kind or "", 0.20)
-        return self._clamp_score(0.30 * render_kind_bonus + 0.70 * repeat_bonus)
+        return self._clamp_score(0.15 * render_kind_bonus + 0.85 * repeat_bonus)
 
     def _context_file_prior_score(
         self,
@@ -587,6 +602,7 @@ class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):
                 item.depth != 0,
                 -item.score,
                 item.depth,
+                -item.repeats,
                 str(item.file_path),
                 item.line_start,
             ),

@@ -381,7 +381,11 @@ def test_dummy_strategy_returns_same_list_instance() -> None:
 
 
 def test_current_strategy_tiered_sort_promotes_security_nodes(tmp_path: Path) -> None:
-    """Non-root nodes with any security signal should rank above zero-signal nodes."""
+    """Non-root nodes with a strong security signal (>0.5) should rank above zero-signal nodes.
+
+    Weak single-keyword hits (<=0.5 combined) do NOT trigger the tier bump — only genuine
+    signals such as a direct finding or multiple concurrent heuristic indicators qualify.
+    """
 
     source_file = tmp_path / "pkg" / "sample.py"
     source_file.parent.mkdir(parents=True)
@@ -402,6 +406,7 @@ def test_current_strategy_tiered_sort_promotes_security_nodes(tmp_path: Path) ->
         security_path_score=0.0,
         context_score=0.9,
     )
+    # Combined signal = 0.4 + 0.2 = 0.6 > 0.5 threshold — a genuine strong signal
     security_node = CodeContextNode(
         identifier=NodeID("function:has-security"),
         node_kind="FunctionNode",
@@ -410,8 +415,8 @@ def test_current_strategy_tiered_sort_promotes_security_nodes(tmp_path: Path) ->
         line_start=4,
         line_end=5,
         depth=1,
-        finding_evidence_score=0.0,
-        security_path_score=0.3,
+        finding_evidence_score=0.4,
+        security_path_score=0.2,
         context_score=0.2,
     )
 
