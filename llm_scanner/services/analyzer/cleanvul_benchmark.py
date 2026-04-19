@@ -26,6 +26,7 @@ from repositories.context import ContextRepository
 from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
 from services.benchmark.repo_checkout import RepoCheckoutService
 from services.context_assembler.context_assembler import ContextAssemblerService
+from services.context_assembler.cpg_structural_ranking import CPGStructuralRankingStrategy
 from services.context_assembler.ranking import (
     ContextNodeRankingStrategy,
     DepthRepeatsContextNodeRankingStrategy,
@@ -34,6 +35,7 @@ from services.context_assembler.ranking import (
     NodeRelevanceRankingService,
     RandomNodeRankingStrategy,
 )
+from services.context_assembler.ranking_config import RankingCoefficients
 
 logger = logging.getLogger(__name__)
 LOGGING_INTERVAL = 10
@@ -69,6 +71,13 @@ class CleanVulBenchmarkService(BaseModel):
     min_score: int = Field(default=3, ge=0, le=4)
     python_only: bool = True
     exclude_test_files: bool = True
+    cpg_structural_coefficients_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional YAML path with coefficients for CPGStructuralRankingStrategy; "
+            "when omitted, the strategy uses its own default coefficients."
+        ),
+    )
 
     def build(self) -> tuple[Path, Path, Path]:
         """Generate the benchmark JSON files.
@@ -478,6 +487,21 @@ class CleanVulBenchmarkService(BaseModel):
             snippet_cache_max_entries=10000,
         )
 
+    def _build_cpg_structural_ranking_strategy(
+        self, repo_path: Path
+    ) -> ContextNodeRankingStrategy:
+        if self.cpg_structural_coefficients_path is not None:
+            coefficients = RankingCoefficients.from_yaml(self.cpg_structural_coefficients_path)
+            return CPGStructuralRankingStrategy(
+                project_root=repo_path,
+                snippet_cache_max_entries=10000,
+                coefficients=coefficients,
+            )
+        return CPGStructuralRankingStrategy(
+            project_root=repo_path,
+            snippet_cache_max_entries=10000,
+        )
+
     def _build_strategy_factories(self) -> dict[str, RankingStrategyFactory]:
         return {
             CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy,
@@ -494,6 +518,7 @@ class CleanVulBenchmarkService(BaseModel):
                 project_root=repo_path,
                 snippet_cache_max_entries=10000,
             ),
+            "cpg_structural": self._build_cpg_structural_ranking_strategy,
             "dummy": lambda _repo_path: DummyNodeRankingStrategy(),
         }
 

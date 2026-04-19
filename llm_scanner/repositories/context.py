@@ -146,6 +146,70 @@ class ContextRepository(BaseModel):
 
         return self._build_context_nodes(rows)
 
+    def fetch_code_neighborhood_with_edge_paths(
+        self, start_node_ids: list[str], max_depth: int
+    ) -> list[CodeContextNode]:
+        """Return BFS expansion annotated with per-edge-type minimum depths.
+
+        Calls the batch BFS query once per configured edge type and merges
+        results by node identifier, populating ``edge_depths`` with the
+        shallowest depth at which each node is reachable via each edge type.
+
+        Args:
+            start_node_ids: Identifiers of code nodes to start from.
+            max_depth: Maximum traversal depth.
+
+        Returns:
+            Context nodes with ``edge_depths`` populated when reachable via one
+            or more specific edge types; the top-level ``depth`` remains the
+            minimum depth across all edge types.
+        """
+
+        if not start_node_ids:
+            return []
+
+        unique_start_ids = sorted(set(start_node_ids))
+        nodes_by_id: dict[NodeID, CodeContextNode] = {}
+        ordered_node_ids: list[NodeID] = []
+
+        for edge_type in self.traversal_relationship_types:
+            query = code_bfs_nodes_batch_query(max_depth, (edge_type,))
+            rows = self.client.run_read(
+                query,
+                {"start_ids": unique_start_ids, "max_depth": max_depth},
+            )
+            for row in rows:
+                node_id = NodeID(str(row["id"]))
+                row_depth = int(row.get("depth", 0))
+                existing = nodes_by_id.get(node_id)
+                if existing is None:
+                    depths: dict[str, int] = {edge_type: row_depth}
+                    nodes_by_id[node_id] = CodeContextNode(
+                        identifier=node_id,
+                        node_kind=self._coerce_str(row.get("node_kind")),
+                        name=self._coerce_str(row.get("name")),
+                        file_path=Path(
+                            str(row.get("node_file_path") or row.get("file_path", ""))
+                        ),
+                        line_start=int(row["line_start"]),
+                        line_end=int(row["line_end"]),
+                        depth=row_depth,
+                        finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
+                        security_path_score=float(row.get("security_path_score") or 0.0),
+                        edge_depths=depths,
+                    )
+                    ordered_node_ids.append(node_id)
+                    continue
+
+                existing.depth = min(existing.depth, row_depth)
+                current_edge_depths = existing.edge_depths or {}
+                existing_edge_depth = current_edge_depths.get(edge_type)
+                if existing_edge_depth is None or row_depth < existing_edge_depth:
+                    current_edge_depths[edge_type] = row_depth
+                existing.edge_depths = current_edge_depths
+
+        return [nodes_by_id[node_id] for node_id in ordered_node_ids]
+
     def fetch_taint_sources(
         self,
         root_node_ids: list[str],

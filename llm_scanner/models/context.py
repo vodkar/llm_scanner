@@ -49,6 +49,13 @@ class CodeContextNode(BaseModel):
         le=1.0,
         description="Backward DataFlow taint distance score from root nodes",
     )
+    edge_depths: dict[str, int] | None = Field(
+        default=None,
+        description=(
+            "Per-edge-type minimum depth at which this node is reachable. "
+            "Populated only by strategies that request edge-type-aware traversal."
+        ),
+    )
 
 
 class Context(BaseModel):

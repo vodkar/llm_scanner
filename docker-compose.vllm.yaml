@@ -1,0 +1,38 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.19.1
+    container_name: llm_scanner_vllm
+    command: >
+      --model ${MODEL:-Qwen/Qwen3.5-9B}
+      --reasoning-parser ${REASONING_PARSER:-qwen3}
+      --quantization ${QUANTIZATION:-fp8}
+      --max-model-len ${MAX_MODEL_LEN:-32768}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.85}
+      --dtype ${DTYPE:-auto}
+    ports:
+      - "${VLLM_PORT:-8000}:8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HF_HOME=/app/.cache/huggingface
+    volumes:
+      - huggingface_cache:/app/.cache/huggingface
+      - torch_cache:/app/.cache/torch
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/v1/models || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 120
+      start_period: 600s
+
+volumes:
+  huggingface_cache:
+  torch_cache:

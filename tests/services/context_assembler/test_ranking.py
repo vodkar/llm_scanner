@@ -468,3 +468,80 @@ def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) 
     scored_by_id = {node.identifier: node for node in scored_nodes}
     assert scored_by_id[boosted_node.identifier].score > scored_by_id[plain_node.identifier].score
     assert scored_by_id[plain_node.identifier].score == pytest.approx(0.6, abs=0.01)
+
+
+def test_default_coefficients_match_current_yaml_byte_exact(tmp_path: Path) -> None:
+    """Scores with default coefficients must equal scores loaded from current.yaml."""
+
+    from services.context_assembler.ranking_config import RankingCoefficients
+
+    project_root = Path(__file__).resolve().parents[3]
+    current_yaml = project_root / "config" / "ranking_coefficients_current.yaml"
+    yaml_coefficients = RankingCoefficients.from_yaml(current_yaml)
+
+    source_file = tmp_path / "pkg" / "sample.py"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "def handler():\n    render_template('index.html')\n\ndef helper():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    reported_node = FunctionNode(
+        identifier=NodeID("function:reported"),
+        name="handler",
+        file_path=Path("pkg/sample.py"),
+        line_start=1,
+        line_end=2,
+    )
+    finding = BanditFindingNode(
+        file=Path("pkg/sample.py"),
+        line_number=2,
+        cwe_id=79,
+        severity=IssueSeverity.HIGH,
+    )
+    finding_edge = StaticAnalysisReports(
+        src=str(finding.identifier),
+        dst=reported_node.identifier,
+    )
+
+    default_service = NodeRelevanceRankingService(project_root=tmp_path)
+    yaml_service = NodeRelevanceRankingService(
+        project_root=tmp_path, coefficients=yaml_coefficients
+    )
+
+    default_scored = default_service.calculate_security_score(
+        nodes=[reported_node], finding_nodes=[finding], finding_edges=[finding_edge]
+    )
+    yaml_scored = yaml_service.calculate_security_score(
+        nodes=[reported_node], finding_nodes=[finding], finding_edges=[finding_edge]
+    )
+
+    assert default_scored[0].finding_evidence_score == yaml_scored[0].finding_evidence_score
+    assert default_scored[0].security_path_score == yaml_scored[0].security_path_score
+
+    context_nodes = [
+        CodeContextNode(
+            identifier=NodeID("function:anchor"),
+            node_kind="FunctionNode",
+            name="anchor",
+            file_path=Path("pkg/sample.py"),
+            line_start=1,
+            line_end=2,
+            depth=0,
+        ),
+        CodeContextNode(
+            identifier=NodeID("class:helper"),
+            node_kind="ClassNode",
+            name="Helper",
+            file_path=Path("pkg/other.py"),
+            line_start=1,
+            line_end=2,
+            depth=3,
+        ),
+    ]
+
+    default_context = default_service.rank_context_nodes(context_nodes)
+    yaml_context = yaml_service.rank_context_nodes(context_nodes)
+
+    for default_node, yaml_node in zip(default_context, yaml_context, strict=True):
+        assert default_node.context_score == yaml_node.context_score

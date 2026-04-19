@@ -4,9 +4,9 @@ import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from pathlib import Path
-from typing import Final
+from typing import ClassVar, Final
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from models.bandit_report import IssueSeverity
 from models.base import NodeID
@@ -15,6 +15,18 @@ from models.edges.analysis import StaticAnalysisReports
 from models.nodes import Node
 from models.nodes.base import BaseCodeNode
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
+from services.context_assembler.ranking_config import (
+    CombinerWeights,
+    ContextBreakdown,
+    EdgeDecayRates,
+    EdgeTypeWeights,
+    FilePriorBreakdown,
+    FindingEvidenceBreakdown,
+    RankingCoefficients,
+    SecurityPathBreakdown,
+    SeverityScoreMap,
+    StructureBreakdown,
+)
 from services.context_assembler.snippet_reader import SnippetReaderService
 
 FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
@@ -46,6 +58,12 @@ CONFIDENCE_BY_SEVERITY: Final[dict[IssueSeverity, float]] = {
     IssueSeverity.MEDIUM: 0.60,
     IssueSeverity.HIGH: 0.90,
 }
+RENDER_KIND_DEFAULT_SCORE: Final[float] = 0.20
+UNKNOWN_FINDING_SEVERITY_SCORE: Final[float] = 0.50
+UNKNOWN_FINDING_CONFIDENCE_SCORE: Final[float] = 0.40
+AGREEMENT_BOTH_ANALYZERS: Final[float] = 1.00
+AGREEMENT_MULTIPLE_FINDINGS: Final[float] = 0.30
+SECURITY_TIER_THRESHOLD: Final[float] = 0.5
 DLINT_SEVERITY_BY_ISSUE_RANGE: Final[list[tuple[range, IssueSeverity]]] = [
     (range(100, 106), IssueSeverity.HIGH),
     (range(106, 111), IssueSeverity.MEDIUM),
@@ -82,6 +100,87 @@ RENDER_KIND_SCORES: Final[dict[str, float]] = {
     "CodeBlockNode": 0.70,
     "VariableNode": 0.40,
 }
+
+
+def default_coefficients() -> RankingCoefficients:
+    """Build a coefficients object that reproduces the hand-tuned Final constants.
+
+    Returns:
+        Coefficients whose numeric values match the module-level ``Final``
+        constants exactly, so ``NodeRelevanceRankingService(coefficients=None)``
+        stays byte-identical to the pre-refactor behavior.
+    """
+
+    return RankingCoefficients(
+        combiner=CombinerWeights(
+            finding_evidence=FINDING_EVIDENCE_WEIGHT,
+            security_path=SECURITY_PATH_WEIGHT,
+            taint=TAINT_WEIGHT,
+            context=CONTEXT_WEIGHT,
+        ),
+        context_breakdown=ContextBreakdown(
+            depth=CONTEXT_DEPTH_WEIGHT,
+            structure=CONTEXT_STRUCTURE_WEIGHT,
+            file_prior=CONTEXT_FILE_PRIOR_WEIGHT,
+        ),
+        finding_evidence_breakdown=FindingEvidenceBreakdown(
+            severity=0.50,
+            confidence=0.30,
+            agreement=0.20,
+        ),
+        security_path_breakdown=SecurityPathBreakdown(
+            sink=0.35,
+            source=0.25,
+            guard=0.20,
+            path_evidence=0.20,
+            high_risk_cwe_evidence_base=0.70,
+        ),
+        structure_breakdown=StructureBreakdown(
+            render_kind=0.15,
+            repeat_bonus=0.85,
+        ),
+        file_prior_breakdown=FilePriorBreakdown(
+            same_file=0.70,
+            same_module=0.20,
+            generated_penalty=0.10,
+        ),
+        hop_decay_by_depth=dict(HOP_DECAY_BY_DEPTH),
+        hop_decay_default=HOP_DECAY_DEFAULT,
+        severity_scores=SeverityScoreMap(
+            low=SEVERITY_SCORES[IssueSeverity.LOW],
+            medium=SEVERITY_SCORES[IssueSeverity.MEDIUM],
+            high=SEVERITY_SCORES[IssueSeverity.HIGH],
+        ),
+        confidence_by_severity=SeverityScoreMap(
+            low=CONFIDENCE_BY_SEVERITY[IssueSeverity.LOW],
+            medium=CONFIDENCE_BY_SEVERITY[IssueSeverity.MEDIUM],
+            high=CONFIDENCE_BY_SEVERITY[IssueSeverity.HIGH],
+        ),
+        render_kind_scores=dict(RENDER_KIND_SCORES),
+        security_boost_weight=SECURITY_BOOST_WEIGHT,
+        security_tier_threshold=SECURITY_TIER_THRESHOLD,
+        edge_type_weights=EdgeTypeWeights(
+            flows_to=1.00,
+            sanitized_by=0.85,
+            calls=0.70,
+            called_by=0.70,
+            defined_by=0.60,
+            used_by=0.55,
+            contains=0.35,
+        ),
+        edge_decay_rates=EdgeDecayRates(
+            flows_to=0.85,
+            sanitized_by=0.80,
+            calls=0.75,
+            called_by=0.75,
+            defined_by=0.70,
+            used_by=0.70,
+            contains=0.55,
+        ),
+        sanitizer_bypass_bonus=0.25,
+        sanitizer_presence_damp=0.50,
+        source_sink_path_max_depth=4,
+    )
 SINK_HINTS: Final[tuple[str, ...]] = (
     "subprocess",
     "os.system",
@@ -147,6 +246,9 @@ GENERATED_HEADER_MARKERS: Final[tuple[str, ...]] = (
 class ContextNodeRankingStrategy(ABC):
     """Rank context nodes into a ready-to-render order."""
 
+    requires_edge_paths: ClassVar[bool] = False
+    """When True, the assembler fetches per-edge-type depths for each node."""
+
     @abstractmethod
     def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
         """Return context nodes in ready-to-use ranked order.
@@ -166,6 +268,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
 
     project_root: Path
     snippet_cache_max_entries: int = 10000
+    coefficients: RankingCoefficients = Field(default_factory=default_coefficients)
 
     _snippet_reader: SnippetReaderService = PrivateAttr()
 
@@ -228,11 +331,14 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         """
 
         ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
+        security_threshold = self.coefficients.security_tier_threshold
         return sorted(
             ranked_nodes,
             key=lambda item: (
                 item.depth != 0,
-                not (item.finding_evidence_score + item.security_path_score > 0.5),
+                not (
+                    item.finding_evidence_score + item.security_path_score > security_threshold
+                ),
                 -item.score,
                 item.depth,
                 str(item.file_path),
@@ -321,10 +427,11 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
             anchor_files=anchor_files,
             snippet=snippet,
         )
+        context = self.coefficients.context_breakdown
         return self._clamp_score(
-            CONTEXT_DEPTH_WEIGHT * depth_score
-            + CONTEXT_STRUCTURE_WEIGHT * structure_score
-            + CONTEXT_FILE_PRIOR_WEIGHT * file_prior_score
+            context.depth * depth_score
+            + context.structure * structure_score
+            + context.file_prior * file_prior_score
         )
 
     def _final_score(
@@ -337,11 +444,12 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     ) -> float:
         """Combine component scores into the final ranking score."""
 
+        combiner = self.coefficients.combiner
         return self._clamp_score(
-            FINDING_EVIDENCE_WEIGHT * finding_evidence_score
-            + SECURITY_PATH_WEIGHT * security_path_score
-            + TAINT_WEIGHT * taint_score
-            + CONTEXT_WEIGHT * context_score
+            combiner.finding_evidence * finding_evidence_score
+            + combiner.security_path * security_path_score
+            + combiner.taint * taint_score
+            + combiner.context * context_score
         )
 
     def _finding_evidence_score(self, direct_findings: list[FindingNode]) -> float:
@@ -355,13 +463,16 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         has_bandit = any(isinstance(finding, BanditFindingNode) for finding in direct_findings)
         has_dlint = any(isinstance(finding, DlintFindingNode) for finding in direct_findings)
         if has_bandit and has_dlint:
-            agreement_score = 1.00
+            agreement_score = AGREEMENT_BOTH_ANALYZERS
         elif len(direct_findings) > 1:
-            agreement_score = 0.30
+            agreement_score = AGREEMENT_MULTIPLE_FINDINGS
         else:
             agreement_score = 0.00
+        evidence = self.coefficients.finding_evidence_breakdown
         return self._clamp_score(
-            0.50 * severity_score + 0.30 * confidence_score + 0.20 * agreement_score
+            evidence.severity * severity_score
+            + evidence.confidence * confidence_score
+            + evidence.agreement * agreement_score
         )
 
     def _security_path_score(self, *, snippet: str, direct_findings: list[FindingNode]) -> float:
@@ -371,40 +482,59 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         sink_indicator = 1.0 if any(hint in normalized_text for hint in SINK_HINTS) else 0.0
         source_indicator = 1.0 if any(hint in normalized_text for hint in SOURCE_HINTS) else 0.0
         guard_indicator = 1.0 if any(hint in normalized_text for hint in GUARD_HINTS) else 0.0
+        path = self.coefficients.security_path_breakdown
         security_path_evidence = 0.0
         if any(
             isinstance(finding, BanditFindingNode) and finding.cwe_id in HIGH_RISK_CWES
             for finding in direct_findings
         ):
-            security_path_evidence = max(sink_indicator, 0.70)
+            security_path_evidence = max(sink_indicator, path.high_risk_cwe_evidence_base)
         return self._clamp_score(
-            0.35 * sink_indicator
-            + 0.25 * source_indicator
-            + 0.20 * guard_indicator
-            + 0.20 * security_path_evidence
+            path.sink * sink_indicator
+            + path.source * source_indicator
+            + path.guard * guard_indicator
+            + path.path_evidence * security_path_evidence
         )
 
-    @staticmethod
-    def _finding_severity(finding: FindingNode) -> float:
+    def _finding_severity(self, finding: FindingNode) -> float:
         """Return a normalized severity score for any finding type."""
 
         if isinstance(finding, BanditFindingNode):
-            return SEVERITY_SCORES[finding.severity]
+            return self._severity_score(finding.severity)
         if isinstance(finding, DlintFindingNode):
             severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)
-            return SEVERITY_SCORES[severity]
-        return 0.50
+            return self._severity_score(severity)
+        return UNKNOWN_FINDING_SEVERITY_SCORE
 
-    @staticmethod
-    def _finding_confidence(finding: FindingNode) -> float:
+    def _finding_confidence(self, finding: FindingNode) -> float:
         """Return a confidence proxy derived from finding severity."""
 
         if isinstance(finding, BanditFindingNode):
-            return CONFIDENCE_BY_SEVERITY[finding.severity]
+            return self._severity_confidence(finding.severity)
         if isinstance(finding, DlintFindingNode):
             severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)
-            return CONFIDENCE_BY_SEVERITY[severity]
-        return 0.40
+            return self._severity_confidence(severity)
+        return UNKNOWN_FINDING_CONFIDENCE_SCORE
+
+    def _severity_score(self, severity: IssueSeverity) -> float:
+        """Return the tunable severity score for a severity tier."""
+
+        scores = self.coefficients.severity_scores
+        if severity == IssueSeverity.LOW:
+            return scores.low
+        if severity == IssueSeverity.MEDIUM:
+            return scores.medium
+        return scores.high
+
+    def _severity_confidence(self, severity: IssueSeverity) -> float:
+        """Return the tunable confidence score for a severity tier."""
+
+        scores = self.coefficients.confidence_by_severity
+        if severity == IssueSeverity.LOW:
+            return scores.low
+        if severity == IssueSeverity.MEDIUM:
+            return scores.medium
+        return scores.high
 
     @staticmethod
     def _dlint_severity(issue_id: int) -> IssueSeverity:
@@ -422,8 +552,13 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
 
         repeat_bonus = min(1.0, repeats / max(max_repeats, 1))
 
-        render_kind_bonus = RENDER_KIND_SCORES.get(node_kind or "", 0.20)
-        return self._clamp_score(0.15 * render_kind_bonus + 0.85 * repeat_bonus)
+        render_kind_bonus = self.coefficients.render_kind_scores.get(
+            node_kind or "", RENDER_KIND_DEFAULT_SCORE
+        )
+        structure = self.coefficients.structure_breakdown
+        return self._clamp_score(
+            structure.render_kind * render_kind_bonus + structure.repeat_bonus * repeat_bonus
+        )
 
     def _context_file_prior_score(
         self,
@@ -444,8 +579,14 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         generated_penalty = (
             1.00 if self._is_generated_file(file_path=file_path, snippet=snippet) else 0.00
         )
+        prior = self.coefficients.file_prior_breakdown
         return self._clamp_score(
-            max(0.0, 0.70 * same_file_bonus + 0.20 * same_module_bonus - 0.10 * generated_penalty)
+            max(
+                0.0,
+                prior.same_file * same_file_bonus
+                + prior.same_module * same_module_bonus
+                - prior.generated_penalty * generated_penalty,
+            )
         )
 
     def _anchor_files(self, nodes: list[CodeContextNode]) -> set[Path]:
@@ -457,7 +598,9 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     def _hop_decay(self, depth: int) -> float:
         """Return the configured hop decay for traversal depth."""
 
-        return HOP_DECAY_BY_DEPTH.get(depth, HOP_DECAY_DEFAULT)
+        return self.coefficients.hop_decay_by_depth.get(
+            depth, self.coefficients.hop_decay_default
+        )
 
     def _same_module_bonus(self, file_path: Path, anchor_file: Path) -> float:
         """Approximate whether two files belong to the same module or package."""
@@ -581,10 +724,11 @@ class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):
         """
 
         final_nodes: list[CodeContextNode] = []
+        security_boost = self.coefficients.security_boost_weight
         for node in nodes:
             security_signal = node.finding_evidence_score + node.security_path_score
             score = self._clamp_score(
-                node.context_score * (1.0 + SECURITY_BOOST_WEIGHT * security_signal)
+                node.context_score * (1.0 + security_boost * security_signal)
             )
             final_nodes.append(node.model_copy(update={"score": score}))
         return final_nodes

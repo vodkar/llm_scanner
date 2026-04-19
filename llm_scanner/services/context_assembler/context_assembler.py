@@ -61,10 +61,18 @@ class ContextAssemblerService(BaseModel):
         )
         _LOGGER.info("Found %d context nodes overlapping file spans", len(spans_nodes))
 
-        context_nodes = self.context_repository.fetch_code_neighborhood_batch(
-            [node.identifier for node in spans_nodes],
-            self.max_call_depth,
-        )
+        if getattr(self.ranking_strategy, "requires_edge_paths", False):
+            context_nodes = (
+                self.context_repository.fetch_code_neighborhood_with_edge_paths(
+                    [node.identifier for node in spans_nodes],
+                    self.max_call_depth,
+                )
+            )
+        else:
+            context_nodes = self.context_repository.fetch_code_neighborhood_batch(
+                [node.identifier for node in spans_nodes],
+                self.max_call_depth,
+            )
         _LOGGER.info("Fetched neighborhood for %d context nodes", len(context_nodes))
 
         root_ids: list[str] = [node.identifier for node in spans_nodes]

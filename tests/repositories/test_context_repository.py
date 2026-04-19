@@ -116,3 +116,72 @@ def test_context_repository_preserves_security_scores_from_span_lookup() -> None
             security_path_score=0.8,
         )
     ]
+
+
+def test_fetch_with_edge_paths_merges_per_edge_type_depths() -> None:
+    """Per-edge-type depths must be merged into ``edge_depths`` per node."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CONTAINS"}],
+        [
+            {
+                "id": "node-1",
+                "depth": 1,
+                "file_path": "src/app.py",
+                "line_start": 1,
+                "line_end": 5,
+                "node_kind": "FunctionNode",
+                "name": "alpha",
+                "finding_evidence_score": 0.0,
+                "security_path_score": 0.0,
+            },
+        ],
+        [
+            {
+                "id": "node-1",
+                "depth": 3,
+                "file_path": "src/app.py",
+                "line_start": 1,
+                "line_end": 5,
+                "node_kind": "FunctionNode",
+                "name": "alpha",
+                "finding_evidence_score": 0.0,
+                "security_path_score": 0.0,
+            },
+            {
+                "id": "node-2",
+                "depth": 2,
+                "file_path": "src/app.py",
+                "line_start": 10,
+                "line_end": 15,
+                "node_kind": "ClassNode",
+                "name": "Helper",
+                "finding_evidence_score": 0.0,
+                "security_path_score": 0.0,
+            },
+        ],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    nodes = repository.fetch_code_neighborhood_with_edge_paths(["node-1"], 4)
+
+    nodes_by_id = {node.identifier: node for node in nodes}
+    assert nodes_by_id[NodeID("node-1")].depth == 1
+    assert nodes_by_id[NodeID("node-1")].edge_depths == {"FLOWS_TO": 1, "CONTAINS": 3}
+    assert nodes_by_id[NodeID("node-2")].depth == 2
+    assert nodes_by_id[NodeID("node-2")].edge_depths == {"CONTAINS": 2}
+
+
+def test_fetch_with_edge_paths_returns_empty_for_empty_start_ids() -> None:
+    """No start IDs means no Neo4j read should happen and an empty list returns."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.return_value = [{"relationshipType": "FLOWS_TO"}]
+
+    repository = ContextRepository(client=client)
+
+    assert repository.fetch_code_neighborhood_with_edge_paths([], 3) == []

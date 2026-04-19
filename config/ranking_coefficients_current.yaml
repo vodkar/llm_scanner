@@ -1,0 +1,87 @@
+# Reproduces the hand-tuned Final constants in
+# llm_scanner/services/context_assembler/ranking.py as of 2026-04-19.
+# Loading this file and passing it to NodeRelevanceRankingService(coefficients=...)
+# must produce byte-exact the same scores as the default (coefficients=None) path.
+
+combiner:
+  finding_evidence: 0.25
+  security_path: 0.20
+  taint: 0.20
+  context: 0.35
+
+context_breakdown:
+  depth: 0.45
+  structure: 0.25
+  file_prior: 0.30
+
+finding_evidence_breakdown:
+  severity: 0.50
+  confidence: 0.30
+  agreement: 0.20
+
+security_path_breakdown:
+  sink: 0.35
+  source: 0.25
+  guard: 0.20
+  path_evidence: 0.20
+  high_risk_cwe_evidence_base: 0.70
+
+structure_breakdown:
+  render_kind: 0.15
+  repeat_bonus: 0.85
+
+file_prior_breakdown:
+  same_file: 0.70
+  same_module: 0.20
+  generated_penalty: 0.10
+
+hop_decay_by_depth:
+  0: 1.00
+  1: 0.85
+  2: 0.70
+  3: 0.55
+  4: 0.45
+hop_decay_default: 0.35
+
+severity_scores:
+  low: 0.33
+  medium: 0.66
+  high: 1.00
+
+confidence_by_severity:
+  low: 0.30
+  medium: 0.60
+  high: 0.90
+
+render_kind_scores:
+  FunctionNode: 1.00
+  ClassNode: 0.80
+  CodeBlockNode: 0.70
+  VariableNode: 0.40
+
+security_boost_weight: 1.00
+security_tier_threshold: 0.5
+
+# CPG-structural defaults (ignored by the "current" strategy). Present so the
+# schema round-trips; these starting values feed the new strategy's YAML below.
+edge_type_weights:
+  flows_to: 1.00
+  sanitized_by: 0.85
+  calls: 0.70
+  called_by: 0.70
+  defined_by: 0.60
+  used_by: 0.55
+  contains: 0.35
+
+edge_decay_rates:
+  flows_to: 0.85
+  sanitized_by: 0.80
+  calls: 0.75
+  called_by: 0.75
+  defined_by: 0.70
+  used_by: 0.70
+  contains: 0.55
+
+sanitizer_bypass_bonus: 0.25
+sanitizer_presence_damp: 0.50
+source_sink_path_max_depth: 4
