@@ -49,6 +49,12 @@ class CodeContextNode(BaseModel):
         le=1.0,
         description="Backward DataFlow taint distance score from root nodes",
     )
+    finding_proximity_score: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Severity-weighted graph proximity to the nearest reporting anchor",
+    )
 
 
 class Context(BaseModel):

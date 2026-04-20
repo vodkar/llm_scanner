@@ -260,6 +260,21 @@ TAINT_HOP_DECAY: Final[dict[int, float]] = {1: 1.0, 2: 0.70, 3: 0.50, 4: 0.35}
 TAINT_HOP_DECAY_DEFAULT: Final[float] = 0.20
 _BACKWARD_DATAFLOW_REL_TYPES: Final[str] = "FLOWS_TO|DEFINED_BY"
 
+FINDING_PROXIMITY_HOP_DECAY: Final[dict[int, float]] = {
+    0: 1.00,
+    1: 0.85,
+    2: 0.70,
+    3: 0.55,
+    4: 0.45,
+}
+FINDING_PROXIMITY_HOP_DECAY_DEFAULT: Final[float] = 0.35
+
+
+def finding_proximity_score_from_hop(hop: int) -> float:
+    """Map a graph-hop distance to a finding-proximity decay factor."""
+
+    return FINDING_PROXIMITY_HOP_DECAY.get(hop, FINDING_PROXIMITY_HOP_DECAY_DEFAULT)
+
 
 def backward_dataflow_taint_query(max_taint_depth: int) -> LiteralString:
     """Return a Cypher query for backward DataFlow traversal from root nodes.
@@ -284,6 +299,44 @@ def backward_dataflow_taint_query(max_taint_depth: int) -> LiteralString:
 def taint_score_from_hop(taint_hop: int) -> float:
     """Map a DataFlow hop distance to a taint score."""
     return TAINT_HOP_DECAY.get(taint_hop, TAINT_HOP_DECAY_DEFAULT)
+
+
+def finding_proximity_query(
+    max_depth: int,
+    relationship_types: tuple[str, ...] | None = None,
+) -> LiteralString:
+    """Return a Cypher query computing per-anchor hop distances for all reachable nodes.
+
+    Expects parameter ``$anchors`` — a list of ``{id, evidence}`` maps. Server-side
+    UNWIND fans the anchors out, so the whole calculation is one round-trip.
+
+    For each reachable node, returns the list of ``{hop, evidence}`` entries —
+    one per anchor from which the node is reachable within ``max_depth`` hops.
+    Python aggregates these into a single severity-weighted proximity score.
+    """
+
+    depth = _validated_depth(max_depth)
+    rel_union = _relationship_union_pattern(relationship_types)
+
+    if depth == 0 or not rel_union:
+        query = (
+            "UNWIND $anchors AS anchor "
+            "MATCH (n:Code {id: anchor.id}) "
+            "RETURN n.id AS node_id, "
+            "collect({hop: 0, evidence: anchor.evidence}) AS anchor_distances"
+        )
+        return cast(LiteralString, query)
+
+    query = (
+        "UNWIND $anchors AS anchor "
+        "MATCH p=(start:Code {id: anchor.id})"
+        f"-[:{rel_union}*0..{depth}]-(n:Code) "
+        "WITH n.id AS node_id, anchor.id AS anchor_id, "
+        "anchor.evidence AS evidence, min(length(p)) AS hop "
+        "RETURN node_id, "
+        "collect({hop: hop, evidence: evidence}) AS anchor_distances"
+    )
+    return cast(LiteralString, query)
 
 
 def code_traversal_relationship_types() -> tuple[str, ...]:

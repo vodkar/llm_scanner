@@ -13,6 +13,8 @@ from repositories.queries import (
     code_bfs_nodes_query,
     code_nodes_by_file_line_query,
     code_traversal_relationship_types,
+    finding_proximity_query,
+    finding_proximity_score_from_hop,
     taint_score_from_hop,
 )
 
@@ -173,6 +175,45 @@ class ContextRepository(BaseModel):
             for row in rows
             if row.get("id") is not None
         }
+
+    def fetch_finding_proximity_scores(
+        self,
+        anchor_evidence: dict[NodeID, float],
+        max_depth: int,
+    ) -> dict[NodeID, float]:
+        """Return severity-weighted graph-proximity scores keyed by node ID.
+
+        Issues exactly one Cypher round-trip regardless of anchor count (UNWIND).
+
+        Args:
+            anchor_evidence: Map of anchor node IDs to their finding evidence weight.
+            max_depth: Maximum graph-hop distance to consider reachable.
+
+        Returns:
+            Mapping of node_id to a proximity score in [0, 1].
+        """
+        if not anchor_evidence:
+            return {}
+
+        query = finding_proximity_query(max_depth, self.traversal_relationship_types)
+        anchors_param = [
+            {"id": str(node_id), "evidence": float(evidence)}
+            for node_id, evidence in anchor_evidence.items()
+        ]
+        rows = self.client.run_read(query, {"anchors": anchors_param})
+
+        scores: dict[NodeID, float] = {}
+        for row in rows:
+            node_id_raw = row.get("node_id")
+            if node_id_raw is None:
+                continue
+            best = 0.0
+            for entry in row.get("anchor_distances", []) or []:
+                hop = int(entry["hop"])
+                evidence = float(entry["evidence"])
+                best = max(best, finding_proximity_score_from_hop(hop) * evidence)
+            scores[NodeID(str(node_id_raw))] = min(1.0, best)
+        return scores
 
     def _build_context_nodes(self, rows: list[dict[str, Any]]) -> list[CodeContextNode]:
         """Convert Neo4j rows into context nodes.

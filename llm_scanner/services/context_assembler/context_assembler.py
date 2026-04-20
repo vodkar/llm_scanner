@@ -77,6 +77,25 @@ class ContextAssemblerService(BaseModel):
                 for node in context_nodes
             ]
 
+        anchor_evidence = {
+            node.identifier: node.finding_evidence_score
+            for node in spans_nodes
+            if node.finding_evidence_score > 0.0
+        }
+        if anchor_evidence:
+            proximity_scores = self.context_repository.fetch_finding_proximity_scores(
+                anchor_evidence, max_depth=self.max_call_depth
+            )
+            if proximity_scores:
+                context_nodes = [
+                    node.model_copy(
+                        update={"finding_proximity_score": proximity_scores[node.identifier]}
+                    )
+                    if node.identifier in proximity_scores
+                    else node
+                    for node in context_nodes
+                ]
+
         context_text, token_count = self._render_context(repo_path, context_nodes)
 
         return Context(

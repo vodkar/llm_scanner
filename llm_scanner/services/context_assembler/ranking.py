@@ -17,10 +17,11 @@ from models.nodes.base import BaseCodeNode
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
 from services.context_assembler.snippet_reader import SnippetReaderService
 
-FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
-SECURITY_PATH_WEIGHT: Final[float] = 0.20
-TAINT_WEIGHT: Final[float] = 0.20
+FINDING_EVIDENCE_WEIGHT: Final[float] = 0.15
+SECURITY_PATH_WEIGHT: Final[float] = 0.15
+TAINT_WEIGHT: Final[float] = 0.30
 CONTEXT_WEIGHT: Final[float] = 0.35
+FINDING_PROXIMITY_WEIGHT: Final[float] = 0.05
 
 CONTEXT_DEPTH_WEIGHT: Final[float] = 0.45
 CONTEXT_STRUCTURE_WEIGHT: Final[float] = 0.25
@@ -127,6 +128,10 @@ GENERATED_HEADER_MARKERS: Final[tuple[str, ...]] = (
     "auto-generated",
     "do not edit",
 )
+TEST_FILE_PREFIXES: Final[tuple[str, ...]] = ("test_",)
+TEST_FILE_SUFFIXES: Final[tuple[str, ...]] = ("_test.py",)
+TEST_FILENAMES: Final[frozenset[str]] = frozenset({"conftest.py"})
+TEST_PATH_MARKERS: Final[frozenset[str]] = frozenset({"tests", "test", "fixtures", "__tests__"})
 
 
 # Experiment results (2026-04-18, Claude model):
@@ -142,6 +147,26 @@ GENERATED_HEADER_MARKERS: Final[tuple[str, ...]] = (
 #               SECURITY_PATH_WEIGHT 0.30→0.20, CONTEXT_WEIGHT 0.45→0.55
 #   mult_boost: SECURITY_BOOST_WEIGHT 1.50→1.00 (reduce score clamping at the top)
 #               added -repeats to sort key as tiebreaker after score+depth
+#
+# Run 2 results (2026-04-19, after Phase 0 coefficient tuning):
+#   current        0.670  <- new best
+#   depth_repeats  0.650
+#   mult_boost     0.610
+#   dummy          0.530
+#   random_pick    0.480
+#
+# Phase 1 tuning (2026-04-19) — after current hit 0.670:
+#   NEW signals:
+#     - finding-proximity: severity-weighted graph distance; weight 0.05
+#     - test/fixture downweight in _context_file_prior_score; penalty 0.15
+#     - snippet-length penalty in _context_structure_score; 15% of structure
+#   Weight rebalance on `current`:
+#     FINDING_EVIDENCE_WEIGHT  0.25 → 0.15   (noisy; offload to proximity)
+#     SECURITY_PATH_WEIGHT     0.20 → 0.15   (keyword heuristic noisy)
+#     TAINT_WEIGHT             0.20 → 0.30   (strongest single signal)
+#     CONTEXT_WEIGHT           0.35 → 0.35   (unchanged)
+#     FINDING_PROXIMITY_WEIGHT   —  → 0.05   (new; severity-weighted reachability)
+#   `mult_boost`, `depth_repeats`, `dummy`, `random_pick` untouched this phase.
 
 
 class ContextNodeRankingStrategy(ABC):
@@ -295,6 +320,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
                 security_path_score=node.security_path_score,
                 context_score=node.context_score,
                 taint_score=node.taint_score,
+                finding_proximity_score=node.finding_proximity_score,
             )
             final_nodes.append(node.model_copy(update={"score": score}))
 
@@ -315,6 +341,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
             node_kind=node.node_kind,
             repeats=node.repeats,
             max_repeats=max_repeats,
+            line_count=node.line_end - node.line_start + 1,
         )
         file_prior_score = self._context_file_prior_score(
             file_path=node.file_path,
@@ -334,6 +361,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         security_path_score: float,
         context_score: float,
         taint_score: float,
+        finding_proximity_score: float,
     ) -> float:
         """Combine component scores into the final ranking score."""
 
@@ -341,6 +369,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
             FINDING_EVIDENCE_WEIGHT * finding_evidence_score
             + SECURITY_PATH_WEIGHT * security_path_score
             + TAINT_WEIGHT * taint_score
+            + FINDING_PROXIMITY_WEIGHT * finding_proximity_score
             + CONTEXT_WEIGHT * context_score
         )
 
@@ -416,14 +445,21 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         return IssueSeverity.MEDIUM
 
     def _context_structure_score(
-        self, *, node_kind: str | None, repeats: int, max_repeats: int
+        self,
+        *,
+        node_kind: str | None,
+        repeats: int,
+        max_repeats: int,
+        line_count: int,
     ) -> float:
         """Score node structure for final rendering usefulness."""
 
         repeat_bonus = min(1.0, repeats / max(max_repeats, 1))
-
         render_kind_bonus = RENDER_KIND_SCORES.get(node_kind or "", 0.20)
-        return self._clamp_score(0.15 * render_kind_bonus + 0.85 * repeat_bonus)
+        length_bonus = max(0.0, 1.0 - max(1, line_count) / 200.0)
+        return self._clamp_score(
+            0.15 * render_kind_bonus + 0.70 * repeat_bonus + 0.15 * length_bonus
+        )
 
     def _context_file_prior_score(
         self,
@@ -444,8 +480,15 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         generated_penalty = (
             1.00 if self._is_generated_file(file_path=file_path, snippet=snippet) else 0.00
         )
+        test_penalty = 1.00 if self._is_test_file(file_path) else 0.00
         return self._clamp_score(
-            max(0.0, 0.70 * same_file_bonus + 0.20 * same_module_bonus - 0.10 * generated_penalty)
+            max(
+                0.0,
+                0.70 * same_file_bonus
+                + 0.20 * same_module_bonus
+                - 0.10 * generated_penalty
+                - 0.15 * test_penalty,
+            )
         )
 
     def _anchor_files(self, nodes: list[CodeContextNode]) -> set[Path]:
@@ -485,6 +528,20 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
             return True
         header = "\n".join(snippet.splitlines()[:3]).lower()
         return any(marker in header for marker in GENERATED_HEADER_MARKERS)
+
+    @staticmethod
+    def _is_test_file(file_path: Path) -> bool:
+        """Return whether the path looks like a test or fixture file (no I/O)."""
+
+        filename = file_path.name
+        if filename in TEST_FILENAMES:
+            return True
+        if any(filename.startswith(prefix) for prefix in TEST_FILE_PREFIXES):
+            return True
+        if any(filename.endswith(suffix) for suffix in TEST_FILE_SUFFIXES):
+            return True
+        parts = NodeRelevanceRankingService._path_parts(file_path)
+        return any(part in TEST_PATH_MARKERS for part in parts)
 
     def _read_context_snippet(self, node: BaseCodeNode | CodeContextNode) -> str:
         """Read snippet text for a context node when possible."""

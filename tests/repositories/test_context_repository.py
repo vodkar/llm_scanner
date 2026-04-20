@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from clients.neo4j import Neo4jClient
 from models.base import NodeID
 from models.context import CodeContextNode
@@ -116,3 +118,54 @@ def test_context_repository_preserves_security_scores_from_span_lookup() -> None
             security_path_score=0.8,
         )
     ]
+
+
+def test_fetch_finding_proximity_scores_aggregates_per_node() -> None:
+    """Per-node proximity = max(hop_decay(hop) x evidence) across anchors, clamped to 1.0."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "CALLS"}],
+        [
+            {
+                "node_id": "n1",
+                "anchor_distances": [
+                    {"hop": 0, "evidence": 1.0},
+                    {"hop": 2, "evidence": 0.4},
+                ],
+            },
+            {
+                "node_id": "n2",
+                "anchor_distances": [{"hop": 3, "evidence": 0.9}],
+            },
+        ],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    scores = repository.fetch_finding_proximity_scores(
+        anchor_evidence={NodeID("a1"): 1.0, NodeID("a2"): 0.4},
+        max_depth=4,
+    )
+
+    # n1: max(1.00*1.0, 0.70*0.4) = 1.00
+    # n2: 0.55*0.9 = 0.495
+    assert scores[NodeID("n1")] == pytest.approx(1.00)
+    assert scores[NodeID("n2")] == pytest.approx(0.495, rel=1e-3)
+
+
+def test_fetch_finding_proximity_scores_empty_anchors_skips_query() -> None:
+    """No anchors => empty dict, no read invocation beyond repository init."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.return_value = [{"relationshipType": "CALLS"}]
+
+    repository = ContextRepository(client=client)
+
+    scores = repository.fetch_finding_proximity_scores(anchor_evidence={}, max_depth=4)
+
+    assert scores == {}
+    # only the relationship-types query (run during model_post_init) was issued
+    assert client.run_read.call_count == 1

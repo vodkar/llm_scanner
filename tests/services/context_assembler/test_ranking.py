@@ -427,6 +427,122 @@ def test_current_strategy_tiered_sort_promotes_security_nodes(tmp_path: Path) ->
     assert ranked_nodes[0].identifier == security_node.identifier
 
 
+def test_context_structure_score_downweights_long_snippets(tmp_path: Path) -> None:
+    """Shorter node ranges should score higher than long ones, all else equal."""
+
+    service = NodeRelevanceRankingService(project_root=tmp_path)
+
+    short = service._context_structure_score(
+        node_kind="FunctionNode",
+        repeats=1,
+        max_repeats=1,
+        line_count=10,
+    )
+    medium = service._context_structure_score(
+        node_kind="FunctionNode",
+        repeats=1,
+        max_repeats=1,
+        line_count=100,
+    )
+    huge = service._context_structure_score(
+        node_kind="FunctionNode",
+        repeats=1,
+        max_repeats=1,
+        line_count=300,
+    )
+    assert short > medium > huge
+    assert huge >= 0.0
+
+
+def test_context_file_prior_score_downweights_test_files(tmp_path: Path) -> None:
+    """Test and fixture files in the same module should score below non-test peers."""
+
+    service = NodeRelevanceRankingService(project_root=tmp_path)
+    anchor_files = {Path("src/pkg/module.py")}
+
+    # All four files share the same module as the anchor, so same_module_bonus=1.0
+    # for each. Any score difference must come from the test-file penalty.
+    same_module_regular = service._context_file_prior_score(
+        file_path=Path("src/pkg/helper.py"),
+        anchor_files=anchor_files,
+        snippet="def f(): pass",
+    )
+    conftest = service._context_file_prior_score(
+        file_path=Path("src/pkg/conftest.py"),
+        anchor_files=anchor_files,
+        snippet="",
+    )
+    suffix = service._context_file_prior_score(
+        file_path=Path("src/pkg/helper_test.py"),
+        anchor_files=anchor_files,
+        snippet="",
+    )
+    prefix = service._context_file_prior_score(
+        file_path=Path("src/pkg/test_helper.py"),
+        anchor_files=anchor_files,
+        snippet="",
+    )
+    under_tests_dir = service._context_file_prior_score(
+        file_path=Path("tests/pkg/some_file.py"),
+        anchor_files=anchor_files,
+        snippet="",
+    )
+
+    assert conftest < same_module_regular
+    assert suffix < same_module_regular
+    assert prefix < same_module_regular
+    assert under_tests_dir < same_module_regular
+    assert conftest >= 0.0
+
+
+def test_final_score_includes_finding_proximity(tmp_path: Path) -> None:
+    """Non-zero finding_proximity_score raises the final score by FINDING_PROXIMITY_WEIGHT."""
+
+    service = NodeRelevanceRankingService(project_root=tmp_path)
+
+    score_without = service._final_score(
+        finding_evidence_score=0.0,
+        security_path_score=0.0,
+        context_score=0.0,
+        taint_score=0.0,
+        finding_proximity_score=0.0,
+    )
+    score_with = service._final_score(
+        finding_evidence_score=0.0,
+        security_path_score=0.0,
+        context_score=0.0,
+        taint_score=0.0,
+        finding_proximity_score=1.0,
+    )
+    assert score_with > score_without
+    assert score_with == pytest.approx(0.05, abs=1e-6)
+
+
+def test_calculate_final_score_threads_finding_proximity_field(tmp_path: Path) -> None:
+    """calculate_final_score should propagate finding_proximity_score into the score."""
+
+    proximity_node = CodeContextNode(
+        identifier=NodeID("function:proximity"),
+        node_kind="FunctionNode",
+        name="proximity",
+        file_path=Path("pkg/a.py"),
+        line_start=1,
+        line_end=2,
+        depth=1,
+        finding_evidence_score=0.0,
+        security_path_score=0.0,
+        context_score=0.0,
+        taint_score=0.0,
+        finding_proximity_score=1.0,
+    )
+
+    final_nodes = NodeRelevanceRankingService(project_root=tmp_path).calculate_final_score(
+        nodes=[proximity_node]
+    )
+
+    assert final_nodes[0].score == pytest.approx(0.05, abs=1e-6)
+
+
 def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) -> None:
     """Multiplicative boost should give higher final score to security-relevant nodes."""
 
