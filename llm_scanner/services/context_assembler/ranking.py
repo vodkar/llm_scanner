@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -17,9 +18,9 @@ from models.nodes.base import BaseCodeNode
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
 from services.context_assembler.snippet_reader import SnippetReaderService
 
-FINDING_EVIDENCE_WEIGHT: Final[float] = 0.15
+FINDING_EVIDENCE_WEIGHT: Final[float] = 0.20
 SECURITY_PATH_WEIGHT: Final[float] = 0.15
-TAINT_WEIGHT: Final[float] = 0.30
+TAINT_WEIGHT: Final[float] = 0.25
 CONTEXT_WEIGHT: Final[float] = 0.35
 FINDING_PROXIMITY_WEIGHT: Final[float] = 0.05
 
@@ -131,7 +132,7 @@ GENERATED_HEADER_MARKERS: Final[tuple[str, ...]] = (
 TEST_FILE_PREFIXES: Final[tuple[str, ...]] = ("test_",)
 TEST_FILE_SUFFIXES: Final[tuple[str, ...]] = ("_test.py",)
 TEST_FILENAMES: Final[frozenset[str]] = frozenset({"conftest.py"})
-TEST_PATH_MARKERS: Final[frozenset[str]] = frozenset({"tests", "test", "fixtures", "__tests__"})
+TEST_PATH_MARKERS: Final[frozenset[str]] = frozenset({"tests", "__tests__"})
 
 
 # Experiment results (2026-04-18, Claude model):
@@ -167,6 +168,24 @@ TEST_PATH_MARKERS: Final[frozenset[str]] = frozenset({"tests", "test", "fixtures
 #     CONTEXT_WEIGHT           0.35 → 0.35   (unchanged)
 #     FINDING_PROXIMITY_WEIGHT   —  → 0.05   (new; severity-weighted reachability)
 #   `mult_boost`, `depth_repeats`, `dummy`, `random_pick` untouched this phase.
+#
+# Run 3 results (2026-04-20, after Phase 1):
+#   depth_repeats  0.598  (regressed -0.052 from Phase 0 — never touched!)
+#   current        0.570  (regressed -0.100)
+#   mult_boost     0.541  (regressed -0.069)
+#
+# Phase 1.5 correction (2026-04-20) — after Run 3 regressed all shared-helper strategies:
+#   - Restored Phase 0's 0.85 repeat-bonus in _context_structure_score
+#     (length_bonus was inadvertently stealing mass from repeats; removed pending
+#     isolation as a standalone signal).
+#   - Anchor-file exception on test-file penalty in _context_file_prior_score
+#     (CleanVul puts target functions in test-named files; they were being demoted).
+#   - Narrowed TEST_PATH_MARKERS to {"tests", "__tests__"} (dropped "test", "fixtures").
+#   - Walked `current` weights halfway back:
+#     FINDING_EVIDENCE_WEIGHT  0.15 → 0.20   (direct findings still the most reliable)
+#     TAINT_WEIGHT             0.30 → 0.25   (taint may be sparse on this dataset)
+#   - Replaced mult_boost linear form with tanh saturation so extreme security
+#     signal no longer clamps away ordering.
 
 
 class ContextNodeRankingStrategy(ABC):
@@ -341,7 +360,6 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
             node_kind=node.node_kind,
             repeats=node.repeats,
             max_repeats=max_repeats,
-            line_count=node.line_end - node.line_start + 1,
         )
         file_prior_score = self._context_file_prior_score(
             file_path=node.file_path,
@@ -450,16 +468,12 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         node_kind: str | None,
         repeats: int,
         max_repeats: int,
-        line_count: int,
     ) -> float:
         """Score node structure for final rendering usefulness."""
 
         repeat_bonus = min(1.0, repeats / max(max_repeats, 1))
         render_kind_bonus = RENDER_KIND_SCORES.get(node_kind or "", 0.20)
-        length_bonus = max(0.0, 1.0 - max(1, line_count) / 200.0)
-        return self._clamp_score(
-            0.15 * render_kind_bonus + 0.70 * repeat_bonus + 0.15 * length_bonus
-        )
+        return self._clamp_score(0.15 * render_kind_bonus + 0.85 * repeat_bonus)
 
     def _context_file_prior_score(
         self,
@@ -480,7 +494,8 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         generated_penalty = (
             1.00 if self._is_generated_file(file_path=file_path, snippet=snippet) else 0.00
         )
-        test_penalty = 1.00 if self._is_test_file(file_path) else 0.00
+        is_anchor = any(self._paths_match(file_path, anchor) for anchor in anchor_files)
+        test_penalty = 0.00 if is_anchor else (1.00 if self._is_test_file(file_path) else 0.00)
         return self._clamp_score(
             max(
                 0.0,
@@ -628,21 +643,20 @@ class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):
     """Rank nodes using context as base score with multiplicative security boost."""
 
     def calculate_final_score(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
-        """Compose final scores using multiplicative security boost over context base.
+        """Compose final scores using tanh-saturating security boost over context base.
 
         Args:
             nodes: Nodes with context_score already calculated.
 
         Returns:
-            Nodes with final score set via multiplicative formula.
+            Nodes with final score set via tanh-saturating formula.
         """
 
         final_nodes: list[CodeContextNode] = []
         for node in nodes:
             security_signal = node.finding_evidence_score + node.security_path_score
-            score = self._clamp_score(
-                node.context_score * (1.0 + SECURITY_BOOST_WEIGHT * security_signal)
-            )
+            saturated = math.tanh(SECURITY_BOOST_WEIGHT * security_signal)
+            score = self._clamp_score(node.context_score * (1.0 + saturated))
             final_nodes.append(node.model_copy(update={"score": score}))
         return final_nodes
 

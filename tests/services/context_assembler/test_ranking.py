@@ -427,33 +427,6 @@ def test_current_strategy_tiered_sort_promotes_security_nodes(tmp_path: Path) ->
     assert ranked_nodes[0].identifier == security_node.identifier
 
 
-def test_context_structure_score_downweights_long_snippets(tmp_path: Path) -> None:
-    """Shorter node ranges should score higher than long ones, all else equal."""
-
-    service = NodeRelevanceRankingService(project_root=tmp_path)
-
-    short = service._context_structure_score(
-        node_kind="FunctionNode",
-        repeats=1,
-        max_repeats=1,
-        line_count=10,
-    )
-    medium = service._context_structure_score(
-        node_kind="FunctionNode",
-        repeats=1,
-        max_repeats=1,
-        line_count=100,
-    )
-    huge = service._context_structure_score(
-        node_kind="FunctionNode",
-        repeats=1,
-        max_repeats=1,
-        line_count=300,
-    )
-    assert short > medium > huge
-    assert huge >= 0.0
-
-
 def test_context_file_prior_score_downweights_test_files(tmp_path: Path) -> None:
     """Test and fixture files in the same module should score below non-test peers."""
 
@@ -493,6 +466,30 @@ def test_context_file_prior_score_downweights_test_files(tmp_path: Path) -> None
     assert prefix < same_module_regular
     assert under_tests_dir < same_module_regular
     assert conftest >= 0.0
+
+
+def test_context_file_prior_score_does_not_penalize_anchor_test_file(
+    tmp_path: Path,
+) -> None:
+    """When the test-named file IS the anchor, no test-file penalty applies."""
+
+    service = NodeRelevanceRankingService(project_root=tmp_path)
+    anchor_files = {Path("src/pkg/test_module.py")}
+
+    anchor_score = service._context_file_prior_score(
+        file_path=Path("src/pkg/test_module.py"),
+        anchor_files=anchor_files,
+        snippet="def vulnerable(): pass",
+    )
+    peer_score = service._context_file_prior_score(
+        file_path=Path("src/pkg/test_helper.py"),
+        anchor_files=anchor_files,
+        snippet="def helper(): pass",
+    )
+
+    assert anchor_score > peer_score
+    # Anchor: same_file=1.0, same_module=1.0, no penalties → 0.70 + 0.20 = 0.90.
+    assert anchor_score == pytest.approx(0.90, abs=1e-6)
 
 
 def test_final_score_includes_finding_proximity(tmp_path: Path) -> None:
@@ -584,3 +581,41 @@ def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) 
     scored_by_id = {node.identifier: node for node in scored_nodes}
     assert scored_by_id[boosted_node.identifier].score > scored_by_id[plain_node.identifier].score
     assert scored_by_id[plain_node.identifier].score == pytest.approx(0.6, abs=0.01)
+
+
+def test_multiplicative_boost_saturates_and_preserves_ordering(tmp_path: Path) -> None:
+    """Extreme security signal should not push score into the clamp; ordering must survive."""
+
+    high_sec = CodeContextNode(
+        identifier=NodeID("function:high"),
+        node_kind="FunctionNode",
+        name="high",
+        file_path=Path("pkg/a.py"),
+        line_start=1,
+        line_end=2,
+        depth=1,
+        finding_evidence_score=1.0,
+        security_path_score=1.0,
+        context_score=0.5,
+    )
+    mid_sec = CodeContextNode(
+        identifier=NodeID("function:mid"),
+        node_kind="FunctionNode",
+        name="mid",
+        file_path=Path("pkg/a.py"),
+        line_start=3,
+        line_end=4,
+        depth=1,
+        finding_evidence_score=0.3,
+        security_path_score=0.4,
+        context_score=0.5,
+    )
+
+    strategy = MultiplicativeBoostNodeRankingStrategy(project_root=tmp_path)
+    scored = strategy.calculate_final_score([high_sec, mid_sec])
+    scored_by_id = {node.identifier: node for node in scored}
+
+    assert scored_by_id[high_sec.identifier].score > scored_by_id[mid_sec.identifier].score
+    assert scored_by_id[high_sec.identifier].score < 1.0
+    # sec=2.0 → 0.5 * (1 + tanh(2)) ≈ 0.982.
+    assert scored_by_id[high_sec.identifier].score == pytest.approx(0.982, abs=1e-2)
