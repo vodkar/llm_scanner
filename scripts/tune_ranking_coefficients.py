@@ -66,6 +66,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-cache-dir", type=Path, required=True)
     parser.add_argument("--max-call-depth", type=int, default=2)
     parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--judge-max-tokens", type=int, default=2048)
+    parser.add_argument("--judge-timeout", type=float, default=600.0)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -165,8 +167,10 @@ def main() -> None:
             base_url=args.judge_base_url,
             api_key=args.judge_api_key,
             model=args.judge_model,
+            timeout_seconds=args.judge_timeout,
         ),
         concurrency=args.concurrency,
+        max_response_tokens=args.judge_max_tokens,
     )
 
     _DEFAULT_STUDY_DIR.mkdir(parents=True, exist_ok=True)

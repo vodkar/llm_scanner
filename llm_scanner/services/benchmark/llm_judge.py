@@ -59,7 +59,6 @@ class LLMJudgeService(BaseModel):
         responses = asyncio.run(
             self.client.chat_batch(
                 batches,
-                response_format={"type": "json_object"},
                 max_tokens=self.max_response_tokens,
                 concurrency=self.concurrency,
             )

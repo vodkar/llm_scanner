@@ -6,14 +6,17 @@ services:
       --model ${MODEL:-Qwen/Qwen3.5-9B}
       --reasoning-parser ${REASONING_PARSER:-qwen3}
       --quantization ${QUANTIZATION:-fp8}
-      --max-model-len ${MAX_MODEL_LEN:-32768}
-      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.85}
+      --kv-cache-dtype ${KV_CACHE_DTYPE:-fp8}
+      --max-model-len ${MAX_MODEL_LEN:-24576}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.96}
+      --enforce-eager
       --dtype ${DTYPE:-auto}
     ports:
       - "${VLLM_PORT:-8000}:8000"
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
       - HF_HOME=/app/.cache/huggingface
+      - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1
     volumes:
       - huggingface_cache:/app/.cache/huggingface
       - torch_cache:/app/.cache/torch
