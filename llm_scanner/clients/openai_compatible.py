@@ -13,6 +13,27 @@ DEFAULT_BASE_URL: Final[str] = "http://localhost:8000/v1"
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
 
 
+def _extract_text(completion: Any) -> str:
+    """Return assistant content, falling back to vendor-specific reasoning fields.
+
+    vLLM with reasoning parsers (e.g., qwen3) puts thinking under
+    ``message.reasoning`` and the final answer under ``message.content``. When
+    ``max_tokens`` truncates mid-thinking, ``content`` is ``None`` but
+    ``reasoning`` may still contain a parseable answer fragment.
+    """
+
+    message = completion.choices[0].message
+    content = getattr(message, "content", None)
+    if content:
+        return content
+    payload = message.model_dump() if hasattr(message, "model_dump") else {}
+    for key in ("reasoning_content", "reasoning"):
+        value = payload.get(key)
+        if value:
+            return cast(str, value)
+    return ""
+
+
 class ChatMessage(BaseModel):
     """One chat message in a conversation."""
 
@@ -67,8 +88,7 @@ class OpenAICompatibleClient(BaseModel):
             ),
             **extra_kwargs,
         )
-        content = completion.choices[0].message.content
-        return content or ""
+        return _extract_text(completion)
 
     async def chat_batch(
         self,
@@ -105,7 +125,6 @@ class OpenAICompatibleClient(BaseModel):
                     ),
                     **extra_kwargs,
                 )
-                content = completion.choices[0].message.content
-                return content or ""
+                return _extract_text(completion)
 
         return await asyncio.gather(*(_one(messages) for messages in batches))

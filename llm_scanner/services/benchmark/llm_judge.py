@@ -93,18 +93,22 @@ class LLMJudgeService(BaseModel):
     def _parse_prediction(response: str) -> int | None:
         """Extract a binary prediction from a judge's JSON response."""
 
-        match = _JSON_OBJECT_PATTERN.search(response)
-        if not match:
-            _LOGGER.debug("Judge response missing JSON object: %r", response)
+        snippet = response[-400:] if len(response) > 400 else response
+        matches = _JSON_OBJECT_PATTERN.findall(response)
+        if not matches:
+            _LOGGER.warning("Judge response missing JSON object: %r", snippet)
             return None
-        try:
-            parsed = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            _LOGGER.debug("Judge response is not valid JSON: %r", response)
-            return None
-        value = parsed.get("vulnerable")
-        if isinstance(value, bool):
-            return 1 if value else 0
-        if isinstance(value, int) and value in (0, 1):
-            return value
+        for raw in reversed(matches):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, dict) or "vulnerable" not in parsed:
+                continue
+            value = parsed["vulnerable"]
+            if isinstance(value, bool):
+                return 1 if value else 0
+            if isinstance(value, int) and value in (0, 1):
+                return value
+        _LOGGER.warning("Judge response has no usable vulnerable JSON: %r", snippet)
         return None
