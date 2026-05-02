@@ -68,7 +68,7 @@ def test_score_dataset_computes_accuracy_across_correct_and_incorrect() -> None:
     )
     client = _make_client_with_responses(
         [
-            '{"vulnerable": true}',   # correct (label=1)
+            '{"vulnerable": true}',  # correct (label=1)
             '{"vulnerable": false}',  # correct (label=0)
             '{"vulnerable": false}',  # wrong   (label=1)
             '{"vulnerable": false}',  # correct (label=0)
@@ -161,8 +161,8 @@ def test_score_dataset_tolerates_trailing_prose_around_json() -> None:
     assert result.invalid_responses == 0
 
 
-def test_score_dataset_forwards_json_response_format_to_client() -> None:
-    """The judge must request JSON mode from the chat client."""
+def test_score_dataset_does_not_force_json_response_format() -> None:
+    """JSON mode would block thinking; the judge must not request it."""
 
     dataset = _make_dataset([_make_sample("a", label=1)])
     client = _make_client_with_responses(['{"vulnerable": true}'])
@@ -171,6 +171,6 @@ def test_score_dataset_forwards_json_response_format_to_client() -> None:
     service.score_dataset(dataset)
 
     call = client.chat_batch.await_args
-    assert call.kwargs["response_format"] == {"type": "json_object"}
+    assert "response_format" not in call.kwargs
     assert call.kwargs["concurrency"] == 3
     assert call.kwargs["max_tokens"] == 32

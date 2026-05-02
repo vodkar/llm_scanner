@@ -188,9 +188,7 @@ class ContextRepository(BaseModel):
                         identifier=node_id,
                         node_kind=self._coerce_str(row.get("node_kind")),
                         name=self._coerce_str(row.get("name")),
-                        file_path=Path(
-                            str(row.get("node_file_path") or row.get("file_path", ""))
-                        ),
+                        file_path=Path(str(row.get("node_file_path") or row.get("file_path", ""))),
                         line_start=int(row["line_start"]),
                         line_end=int(row["line_end"]),
                         depth=row_depth,

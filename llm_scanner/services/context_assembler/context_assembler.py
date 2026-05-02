@@ -62,11 +62,9 @@ class ContextAssemblerService(BaseModel):
         _LOGGER.info("Found %d context nodes overlapping file spans", len(spans_nodes))
 
         if getattr(self.ranking_strategy, "requires_edge_paths", False):
-            context_nodes = (
-                self.context_repository.fetch_code_neighborhood_with_edge_paths(
-                    [node.identifier for node in spans_nodes],
-                    self.max_call_depth,
-                )
+            context_nodes = self.context_repository.fetch_code_neighborhood_with_edge_paths(
+                [node.identifier for node in spans_nodes],
+                self.max_call_depth,
             )
         else:
             context_nodes = self.context_repository.fetch_code_neighborhood_batch(
@@ -101,7 +99,7 @@ class ContextAssemblerService(BaseModel):
             nodes: Context nodes to render.
 
         Returns:
-            Tuple of rendered context text, token count, and context nodes.
+            Tuple of rendered context text and token count.
         """
 
         _LOGGER.debug("Rendering context for %d nodes", len(nodes))

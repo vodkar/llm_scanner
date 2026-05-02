@@ -75,15 +75,11 @@ def test_flows_to_node_outranks_contains_node_at_same_depth(tmp_path: Path) -> N
         tmp_path=tmp_path,
     )
 
-    strategy = CPGStructuralRankingStrategy(
-        project_root=tmp_path, coefficients=coefficients
-    )
+    strategy = CPGStructuralRankingStrategy(project_root=tmp_path, coefficients=coefficients)
     ranked = strategy.rank_context_nodes([flows_node, contains_node])
 
     scored_by_id = {str(node.identifier): node for node in ranked}
-    assert (
-        scored_by_id["flows"].context_score > scored_by_id["contains"].context_score
-    )
+    assert scored_by_id["flows"].context_score > scored_by_id["contains"].context_score
 
 
 def test_unsanitized_source_sink_path_receives_bonus(tmp_path: Path) -> None:
@@ -113,9 +109,7 @@ def test_unsanitized_source_sink_path_receives_bonus(tmp_path: Path) -> None:
         tmp_path=tmp_path,
     )
 
-    strategy = CPGStructuralRankingStrategy(
-        project_root=tmp_path, coefficients=coefficients
-    )
+    strategy = CPGStructuralRankingStrategy(project_root=tmp_path, coefficients=coefficients)
     ranked = strategy.rank_context_nodes([sink_node, mid_node, source_node])
 
     scored_by_id = {str(node.identifier): node for node in ranked}
@@ -156,15 +150,9 @@ def test_sanitized_path_receives_damped_bonus(tmp_path: Path) -> None:
         tmp_path=tmp_path,
     )
 
-    strategy = CPGStructuralRankingStrategy(
-        project_root=tmp_path, coefficients=coefficients
-    )
-    ranked_unsanitized = strategy.rank_context_nodes(
-        [sink_node, unsanitized_mid, source_node]
-    )
-    ranked_sanitized = strategy.rank_context_nodes(
-        [sink_node, sanitized_mid, source_node]
-    )
+    strategy = CPGStructuralRankingStrategy(project_root=tmp_path, coefficients=coefficients)
+    ranked_unsanitized = strategy.rank_context_nodes([sink_node, unsanitized_mid, source_node])
+    ranked_sanitized = strategy.rank_context_nodes([sink_node, sanitized_mid, source_node])
 
     unsanitized_by_id = {str(node.identifier): node for node in ranked_unsanitized}
     sanitized_by_id = {str(node.identifier): node for node in ranked_sanitized}
@@ -187,9 +175,7 @@ def test_missing_edge_depths_falls_back_to_hop_decay(tmp_path: Path) -> None:
         tmp_path=tmp_path,
     )
 
-    strategy = CPGStructuralRankingStrategy(
-        project_root=tmp_path, coefficients=coefficients
-    )
+    strategy = CPGStructuralRankingStrategy(project_root=tmp_path, coefficients=coefficients)
     ranked = strategy.rank_context_nodes([fallback_node])
 
     assert ranked[0].context_score > 0.0

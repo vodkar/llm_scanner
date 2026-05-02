@@ -16,15 +16,18 @@ from models.benchmark.benchmark import BenchmarkDataset, BenchmarkSample
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
 JUDGE_SYSTEM_PROMPT: Final[str] = (
-    "You are a security engineer. Given a code context assembled from a Python "
-    "project, decide whether it contains a genuine, exploitable vulnerability. "
-    "Respond ONLY with strict JSON of the form {\"vulnerable\": true|false}. "
-    "Do not include any other keys, commentary, or code fences."
+    "You are a security engineer reviewing assembled Python code context. "
+    "Think step by step about whether the code contains a genuine, exploitable "
+    "vulnerability: identify untrusted sources, sinks, sanitizers, and any data "
+    "flow connecting them. After you have finished reasoning, output "
+    "final line containing strict JSON of the form "
+    '{"vulnerable": true} or {"vulnerable": false}.'
 )
 
 USER_PROMPT_TEMPLATE: Final[str] = (
-    "Analyze the following Python code. Determine whether the code is vulnerable. "
-    "Reply with JSON only.\n\n<code>\n{code}\n</code>"
+    "Analyze the following Python code and decide whether it is genuinely "
+    "vulnerable. Reason carefully, then end with the required JSON verdict on "
+    "its own final line.\n\n<code>\n{code}\n</code>"
 )
 
 _JSON_OBJECT_PATTERN: Final[re.Pattern[str]] = re.compile(r"\{.*?\}", re.DOTALL)

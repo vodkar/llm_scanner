@@ -3,12 +3,12 @@ services:
     image: vllm/vllm-openai:v0.19.1
     container_name: llm_scanner_vllm
     command: >
-      --model ${MODEL:-Qwen/Qwen3.5-9B}
+      --model ${MODEL:-Qwen/Qwen3-8B}
       --reasoning-parser ${REASONING_PARSER:-qwen3}
       --quantization ${QUANTIZATION:-fp8}
       --kv-cache-dtype ${KV_CACHE_DTYPE:-fp8}
-      --max-model-len ${MAX_MODEL_LEN:-24576}
-      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.96}
+      --max-model-len ${MAX_MODEL_LEN:-32k}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.88}
       --enforce-eager
       --dtype ${DTYPE:-auto}
     ports:
@@ -38,4 +38,12 @@ services:
 
 volumes:
   huggingface_cache:
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/opt/huggingface_cache
   torch_cache:
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/opt/torch_cache

@@ -380,51 +380,59 @@ def test_dummy_strategy_returns_same_list_instance() -> None:
     assert DummyNodeRankingStrategy().rank_nodes(nodes) is nodes
 
 
-def test_current_strategy_tiered_sort_promotes_security_nodes(tmp_path: Path) -> None:
-    """Non-root nodes with a strong security signal (>0.5) should rank above zero-signal nodes.
+def test_current_strategy_score_only_sort_no_tier_promotion() -> None:
+    """Sort tuple is (depth!=0, -score, depth). No binary tier pre-sort.
 
-    Weak single-keyword hits (<=0.5 combined) do NOT trigger the tier bump — only genuine
-    signals such as a direct finding or multiple concurrent heuristic indicators qualify.
+    Verifies that a low-final-score node carrying a strong security signal (fe+sp>0.5)
+    no longer leapfrogs a high-final-score non-security node — the behavior the old
+    tier pre-sort (now removed) was forcing.
     """
 
-    source_file = tmp_path / "pkg" / "sample.py"
-    source_file.parent.mkdir(parents=True)
-    source_file.write_text(
-        "def context_only():\n    pass\n\ndef has_security():\n    pass\n",
-        encoding="utf-8",
-    )
-
-    context_only_node = CodeContextNode(
-        identifier=NodeID("function:context-only"),
+    anchor = CodeContextNode.model_construct(
+        identifier=NodeID("anchor"),
         node_kind="FunctionNode",
-        name="context_only",
-        file_path=Path("pkg/sample.py"),
+        name="anchor",
+        file_path=Path("a.py"),
+        line_start=1,
+        line_end=2,
+        depth=0,
+        score=0.30,
+        finding_evidence_score=0.0,
+        security_path_score=0.0,
+    )
+    high_score_neighbor = CodeContextNode.model_construct(
+        identifier=NodeID("hi"),
+        node_kind="FunctionNode",
+        name="hi",
+        file_path=Path("a.py"),
+        line_start=3,
+        line_end=4,
+        depth=1,
+        score=0.80,
+        finding_evidence_score=0.0,
+        security_path_score=0.0,
+    )
+    low_score_security_node = CodeContextNode.model_construct(
+        identifier=NodeID("lo"),
+        node_kind="FunctionNode",
+        name="lo",
+        file_path=Path("b.py"),
         line_start=1,
         line_end=2,
         depth=1,
-        finding_evidence_score=0.0,
-        security_path_score=0.0,
-        context_score=0.9,
-    )
-    # Combined signal = 0.4 + 0.2 = 0.6 > 0.5 threshold — a genuine strong signal
-    security_node = CodeContextNode(
-        identifier=NodeID("function:has-security"),
-        node_kind="FunctionNode",
-        name="has_security",
-        file_path=Path("pkg/sample.py"),
-        line_start=4,
-        line_end=5,
-        depth=1,
-        finding_evidence_score=0.4,
-        security_path_score=0.2,
-        context_score=0.2,
+        score=0.20,
+        finding_evidence_score=0.5,
+        security_path_score=0.4,
     )
 
-    ranked_nodes = NodeRelevanceRankingService(project_root=tmp_path).rank_nodes(
-        [context_only_node, security_node]
-    )
+    sort_key = lambda item: (item.depth != 0, -item.score, item.depth)  # noqa: E731
+    sorted_nodes = sorted([low_score_security_node, high_score_neighbor, anchor], key=sort_key)
 
-    assert ranked_nodes[0].identifier == security_node.identifier
+    assert [n.identifier for n in sorted_nodes] == [
+        anchor.identifier,
+        high_score_neighbor.identifier,
+        low_score_security_node.identifier,
+    ]
 
 
 def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) -> None:

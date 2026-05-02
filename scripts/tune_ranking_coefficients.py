@@ -68,13 +68,36 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--judge-max-tokens", type=int, default=2048)
     parser.add_argument("--judge-timeout", type=float, default=600.0)
+    parser.add_argument(
+        "--judge-temperature",
+        type=float,
+        default=0.6,
+        help="Sampling temperature for the judge (Qwen3 thinking recommends 0.6).",
+    )
+    parser.add_argument(
+        "--judge-top-p",
+        type=float,
+        default=0.95,
+        help="Nucleus-sampling top-p for the judge (Qwen3 thinking recommends 0.95).",
+    )
+    parser.add_argument(
+        "--judge-enable-thinking",
+        dest="judge_enable_thinking",
+        action="store_true",
+        default=True,
+        help="Enable chat-template thinking for Qwen3-family models (default: enabled).",
+    )
+    parser.add_argument(
+        "--judge-disable-thinking",
+        dest="judge_enable_thinking",
+        action="store_false",
+        help="Disable chat-template thinking (use for non-thinking models).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
-def _suggest_coefficients(
-    trial: optuna.Trial, base: RankingCoefficients
-) -> RankingCoefficients:
+def _suggest_coefficients(trial: optuna.Trial, base: RankingCoefficients) -> RankingCoefficients:
     """Sample a coefficients object by perturbing the base configuration."""
 
     payload: dict[str, Any] = base.model_dump()
@@ -133,9 +156,8 @@ def _build_benchmark_and_score(
         seed=args.seed,
         neo4j_config=Neo4jConfig(),
         max_call_depth=args.max_call_depth,
-        cpg_structural_coefficients_path=coeff_path
-        if args.strategy == "cpg_structural"
-        else None,
+        token_budget=16384,
+        cpg_structural_coefficients_path=coeff_path if args.strategy == "cpg_structural" else None,
     )
     dataset_paths, _unassociated, _entries = service.build_all_ranking_strategies()
 
@@ -162,12 +184,18 @@ def main() -> None:
     args = _parse_args()
 
     base_coefficients = RankingCoefficients.from_yaml(args.base_coefficients)
+    extra_body: dict[str, Any] | None = (
+        {"chat_template_kwargs": {"enable_thinking": True}} if args.judge_enable_thinking else None
+    )
     judge = LLMJudgeService(
         client=OpenAICompatibleClient(
             base_url=args.judge_base_url,
             api_key=args.judge_api_key,
             model=args.judge_model,
             timeout_seconds=args.judge_timeout,
+            default_temperature=args.judge_temperature,
+            default_top_p=args.judge_top_p,
+            extra_body=extra_body,
         ),
         concurrency=args.concurrency,
         max_response_tokens=args.judge_max_tokens,

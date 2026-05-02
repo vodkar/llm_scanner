@@ -19,9 +19,7 @@ def clear_neo4j_database() -> None:
 
 
 def _make_completion(text: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
-    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
 
 
 def test_chat_returns_content_from_openai_sdk() -> None:
@@ -37,9 +35,7 @@ def test_chat_returns_content_from_openai_sdk() -> None:
     assert result == "vulnerable"
     call = fake_client.chat.completions.create.call_args
     assert call.kwargs["model"] == "test-model"
-    assert call.kwargs["messages"] == [
-        {"role": "user", "content": "Is this vulnerable?"}
-    ]
+    assert call.kwargs["messages"] == [{"role": "user", "content": "Is this vulnerable?"}]
 
 
 def test_chat_forwards_response_format_when_provided() -> None:
@@ -57,6 +53,46 @@ def test_chat_forwards_response_format_when_provided() -> None:
 
     call = fake_client.chat.completions.create.call_args
     assert call.kwargs["response_format"] == {"type": "json_object"}
+
+
+def test_chat_adds_default_repetition_penalty_to_extra_body() -> None:
+    """Chat requests must include the default repetition penalty via extra_body."""
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _make_completion("ok")
+
+    with patch("clients.openai_compatible.OpenAI", return_value=fake_client):
+        client = OpenAICompatibleClient(model="test-model")
+        client.chat([ChatMessage(role="user", content="hi")])
+
+    call = fake_client.chat.completions.create.call_args
+    assert call.kwargs["extra_body"] == {
+        "repetition_penalty": 1.2,
+        "chat_template_kwargs": {"enable_thinking": True},
+    }
+
+
+def test_chat_preserves_explicit_extra_body_repetition_penalty() -> None:
+    """Caller-provided extra_body repetition penalty should take precedence."""
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _make_completion("ok")
+
+    with patch("clients.openai_compatible.OpenAI", return_value=fake_client):
+        client = OpenAICompatibleClient(
+            model="test-model",
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": True},
+                "repetition_penalty": 1.5,
+            },
+        )
+        client.chat([ChatMessage(role="user", content="hi")])
+
+    call = fake_client.chat.completions.create.call_args
+    assert call.kwargs["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": True},
+        "repetition_penalty": 1.5,
+    }
 
 
 def test_chat_omits_response_format_when_none() -> None:
@@ -83,10 +119,13 @@ def test_chat_batch_runs_concurrent_requests() -> None:
 
     with patch("clients.openai_compatible.AsyncOpenAI", return_value=fake_async_client):
         client = OpenAICompatibleClient(model="test-model")
-        batches = [
-            [ChatMessage(role="user", content=f"question-{idx}")] for idx in range(3)
-        ]
+        batches = [[ChatMessage(role="user", content=f"question-{idx}")] for idx in range(3)]
         results = asyncio.run(client.chat_batch(batches))
 
     assert results == ["reply-0", "reply-1", "reply-2"]
     assert fake_async_client.chat.completions.create.await_count == 3
+    for call in fake_async_client.chat.completions.create.await_args_list:
+        assert call.kwargs["extra_body"] == {
+            "repetition_penalty": 1.2,
+            "chat_template_kwargs": {"enable_thinking": True},
+        }

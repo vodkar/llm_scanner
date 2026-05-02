@@ -83,8 +83,7 @@ class AnthropicBatchClient(BaseModel):
                 break
             if time.monotonic() > deadline:
                 raise TimeoutError(
-                    f"Anthropic batch {batch.id} did not finish within "
-                    f"{self.timeout_seconds:.0f}s"
+                    f"Anthropic batch {batch.id} did not finish within {self.timeout_seconds:.0f}s"
                 )
             time.sleep(self.poll_interval_seconds)
 
@@ -120,9 +119,7 @@ class AnthropicBatchClient(BaseModel):
             result = entry.result
             if isinstance(result, MessageBatchSucceededResult):
                 text_parts = [
-                    block.text
-                    for block in result.message.content
-                    if isinstance(block, TextBlock)
+                    block.text for block in result.message.content if isinstance(block, TextBlock)
                 ]
                 by_id[custom_id] = BatchResult(custom_id=custom_id, text="".join(text_parts))
             else:

@@ -181,6 +181,8 @@ def default_coefficients() -> RankingCoefficients:
         sanitizer_presence_damp=0.50,
         source_sink_path_max_depth=4,
     )
+
+
 SINK_HINTS: Final[tuple[str, ...]] = (
     "subprocess",
     "os.system",
@@ -331,19 +333,9 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         """
 
         ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
-        security_threshold = self.coefficients.security_tier_threshold
         return sorted(
             ranked_nodes,
-            key=lambda item: (
-                item.depth != 0,
-                not (
-                    item.finding_evidence_score + item.security_path_score > security_threshold
-                ),
-                -item.score,
-                item.depth,
-                str(item.file_path),
-                item.line_start,
-            ),
+            key=lambda item: (item.depth != 0, -item.score, item.depth),
         )
 
     def rank_context_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
@@ -598,9 +590,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     def _hop_decay(self, depth: int) -> float:
         """Return the configured hop decay for traversal depth."""
 
-        return self.coefficients.hop_decay_by_depth.get(
-            depth, self.coefficients.hop_decay_default
-        )
+        return self.coefficients.hop_decay_by_depth.get(depth, self.coefficients.hop_decay_default)
 
     def _same_module_bonus(self, file_path: Path, anchor_file: Path) -> float:
         """Approximate whether two files belong to the same module or package."""
@@ -727,9 +717,7 @@ class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):
         security_boost = self.coefficients.security_boost_weight
         for node in nodes:
             security_signal = node.finding_evidence_score + node.security_path_score
-            score = self._clamp_score(
-                node.context_score * (1.0 + security_boost * security_signal)
-            )
+            score = self._clamp_score(node.context_score * (1.0 + security_boost * security_signal))
             final_nodes.append(node.model_copy(update={"score": score}))
         return final_nodes
 
@@ -746,14 +734,7 @@ class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):
         ranked_nodes = self.calculate_final_score(self.rank_context_nodes(nodes))
         return sorted(
             ranked_nodes,
-            key=lambda item: (
-                item.depth != 0,
-                -item.score,
-                item.depth,
-                -item.repeats,
-                str(item.file_path),
-                item.line_start,
-            ),
+            key=lambda item: (item.depth != 0, -item.score, item.depth),
         )
 
 

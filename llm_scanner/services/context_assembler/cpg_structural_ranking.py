@@ -161,9 +161,7 @@ class CPGStructuralRankingStrategy(NodeRelevanceRankingService):
             ranked_nodes,
             key=lambda item: (
                 item.depth != 0,
-                not (
-                    item.finding_evidence_score + item.security_path_score > security_threshold
-                ),
+                not (item.finding_evidence_score + item.security_path_score > security_threshold),
                 -item.score,
                 item.depth,
                 str(item.file_path),

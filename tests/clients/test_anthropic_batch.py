@@ -67,9 +67,7 @@ def _make_fake_client(
     results: list[MessageBatchIndividualResponse],
 ) -> MagicMock:
     fake_batches = MagicMock()
-    fake_batches.create.return_value = SimpleNamespace(
-        id=batch_id, processing_status=statuses[0]
-    )
+    fake_batches.create.return_value = SimpleNamespace(id=batch_id, processing_status=statuses[0])
     fake_batches.retrieve.side_effect = [
         SimpleNamespace(id=batch_id, processing_status=status) for status in statuses
     ]
@@ -83,9 +81,7 @@ def _make_fake_client(
 def test_submit_and_wait_returns_empty_for_empty_prompts() -> None:
     """No prompts in → no API calls and empty list out."""
 
-    client = AnthropicBatchClient(
-        api_key="test", model="claude-opus-4-7", system_prompt="sys"
-    )
+    client = AnthropicBatchClient(api_key="test", model="claude-opus-4-7", system_prompt="sys")
     with patch("clients.anthropic_batch.Anthropic") as anthropic_cls:
         assert client.submit_and_wait([]) == []
     anthropic_cls.assert_not_called()
@@ -139,9 +135,7 @@ def test_submit_and_wait_records_errors_for_failed_entries() -> None:
             system_prompt="sys",
             poll_interval_seconds=0.0,
         )
-        results = client.submit_and_wait(
-            [BatchPrompt(custom_id="a", user_content="q-a")]
-        )
+        results = client.submit_and_wait([BatchPrompt(custom_id="a", user_content="q-a")])
 
     assert len(results) == 1
     assert results[0].text is None
@@ -193,9 +187,7 @@ def test_submit_and_wait_polls_until_terminal_status() -> None:
             system_prompt="sys",
             poll_interval_seconds=0.0,
         )
-        results = client.submit_and_wait(
-            [BatchPrompt(custom_id="a", user_content="q-a")]
-        )
+        results = client.submit_and_wait([BatchPrompt(custom_id="a", user_content="q-a")])
 
     assert results[0].text == "reply-a"
     assert fake_client.messages.batches.retrieve.call_count == 3

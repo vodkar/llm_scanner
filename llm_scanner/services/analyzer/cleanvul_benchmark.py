@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import shutil
 import textwrap
 from collections.abc import Callable, Mapping
@@ -132,9 +131,9 @@ class CleanVulBenchmarkService(BaseModel):
             python_only=self.python_only,
             exclude_test_files=self.exclude_test_files,
         )
-        candidate_rows = loader.fetch_entries()
-        rng = random.Random(self.seed)
-        rng.shuffle(candidate_rows)
+        candidate_rows = loader.fetch_entries()[:50]
+        # rng = random.Random(self.seed)
+        # rng.shuffle(candidate_rows)
 
         samples_by_strategy: dict[str, list[BenchmarkSample]] = {
             strategy_name: [] for strategy_name in strategy_factories
@@ -487,9 +486,7 @@ class CleanVulBenchmarkService(BaseModel):
             snippet_cache_max_entries=10000,
         )
 
-    def _build_cpg_structural_ranking_strategy(
-        self, repo_path: Path
-    ) -> ContextNodeRankingStrategy:
+    def _build_cpg_structural_ranking_strategy(self, repo_path: Path) -> ContextNodeRankingStrategy:
         if self.cpg_structural_coefficients_path is not None:
             coefficients = RankingCoefficients.from_yaml(self.cpg_structural_coefficients_path)
             return CPGStructuralRankingStrategy(
@@ -687,6 +684,7 @@ class CleanVulBenchmarkService(BaseModel):
         return dataset_paths
 
     def _delete_checkout(self, repo_path: Path | None) -> None:
+        return
         if not self.delete_checkouts or repo_path is None or not repo_path.exists():
             return
         shutil.rmtree(str(repo_path))

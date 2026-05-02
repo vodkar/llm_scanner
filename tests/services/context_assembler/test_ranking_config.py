@@ -94,9 +94,7 @@ def test_extra_fields_forbidden(tmp_path: Path) -> None:
 def test_out_of_range_weight_rejected(tmp_path: Path) -> None:
     """Weights outside [0, 1] (for bounded fields) must be rejected."""
 
-    yaml_text = CURRENT_YAML.read_text().replace(
-        "finding_evidence: 0.25", "finding_evidence: 1.5"
-    )
+    yaml_text = CURRENT_YAML.read_text().replace("finding_evidence: 0.25", "finding_evidence: 1.5")
     bad_yaml = tmp_path / "bad.yaml"
     bad_yaml.write_text(yaml_text)
 
