@@ -2,6 +2,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import optuna
+
 from cli import RankingStrategy
 from clients.neo4j import Neo4jConfig
 from models.benchmark.benchmark import BenchmarkDataset
