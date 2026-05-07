@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Concatenate matching benchmark datasets from compare_rankings directories."""
 
-from __future__ import annotations
-
 import argparse
 import json
 from collections import Counter, defaultdict

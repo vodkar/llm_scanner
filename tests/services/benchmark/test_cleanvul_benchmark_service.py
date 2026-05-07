@@ -1,7 +1,5 @@
 """Tests for CleanVul benchmark dataset generation."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -170,11 +168,11 @@ def test_find_function_line_span_missing_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_writes_dataset_and_unassociated(
+def test_build_writes_dataset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Happy path: dataset with label pair (1,0) and empty unassociated list."""
+    """Happy path: dataset with label pair (1,0)."""
     row = _make_row()
     pair = _make_pair()
 
@@ -230,7 +228,7 @@ def test_build_writes_dataset_and_unassociated(
     )
 
     service = _make_service(tmp_path)
-    main_path, unassociated_path, _ = service.build()
+    main_path, _ = service.build()
 
     payload = json.loads(main_path.read_text(encoding="utf-8"))
     assert [s["label"] for s in payload["samples"]] == [1, 0]
@@ -239,57 +237,6 @@ def test_build_writes_dataset_and_unassociated(
     # Verify CleanVul-specific metadata alias
     for sample in payload["samples"]:
         assert sample["metadata"]["commit_url"] == _COMMIT_URL
-
-    assert json.loads(unassociated_path.read_text(encoding="utf-8")) == []
-
-
-# ---------------------------------------------------------------------------
-# build — span_not_found
-# ---------------------------------------------------------------------------
-
-
-def test_build_records_span_not_found_as_unassociated(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When _build_entry_pair returns None, the row should be unassociated."""
-    row = _make_row()
-
-    vulnerable_repo = tmp_path / "repos" / "vulnerable"
-    fixed_repo = tmp_path / "repos" / "fixed"
-    vulnerable_repo.mkdir(parents=True)
-    fixed_repo.mkdir(parents=True)
-
-    def _fetch_entries(
-        self: CleanVulLoaderService,
-    ) -> list[tuple[list[CleanVulRow], str, str]]:
-        del self
-        return [([row], "https://github.com/owner/repo", "abcdef123456")]
-
-    def _checkout_repo(
-        self: RepoCheckoutService, repo_url: str, fix_hash: str, is_vulnerable: bool
-    ) -> Path:
-        del self, repo_url, fix_hash
-        return vulnerable_repo if is_vulnerable else fixed_repo
-
-    def _build_entry_pair(self: CleanVulBenchmarkService, **kwargs: object) -> None:
-        del self, kwargs
-        return None
-
-    monkeypatch.setattr(CleanVulLoaderService, "fetch_entries", _fetch_entries)
-    monkeypatch.setattr(RepoCheckoutService, "checkout_repo", _checkout_repo)
-    monkeypatch.setattr(CleanVulBenchmarkService, "_build_entry_pair", _build_entry_pair)
-
-    service = _make_service(tmp_path)
-    main_path, unassociated_path, _ = service.build()
-
-    payload = json.loads(main_path.read_text(encoding="utf-8"))
-    assert payload["samples"] == []
-
-    unassociated = json.loads(unassociated_path.read_text(encoding="utf-8"))
-    assert len(unassociated) == 1
-    assert unassociated[0]["reason"] == "span_not_found"
-    assert "commit_url" in unassociated[0]["entry"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,15 +291,12 @@ def test_build_skips_pairs_over_token_budget(
     )
 
     service = _make_service(tmp_path, token_budget=10)
-    main_path, unassociated_path, _ = service.build()
+    main_path, _ = service.build()
 
     assert scan_calls["count"] == 0
 
     payload = json.loads(main_path.read_text(encoding="utf-8"))
     assert payload["samples"] == []
-
-    unassociated = json.loads(unassociated_path.read_text(encoding="utf-8"))
-    assert all(u["reason"] == "source_sample_exceeds_token_budget" for u in unassociated)
 
 
 # ---------------------------------------------------------------------------
@@ -434,17 +378,12 @@ def test_build_writes_partial_datasets_on_keyboard_interrupt(
         service.build()
 
     dataset_path = tmp_path / "output" / "cleanvul_context_benchmark.json"
-    unassociated_path = tmp_path / "output" / "cleanvul_unassociated.json"
 
     dataset_payload = json.loads(dataset_path.read_text(encoding="utf-8"))
-    unassociated_payload = json.loads(unassociated_path.read_text(encoding="utf-8"))
 
     # First pair's samples were written before the interrupt
     assert len(dataset_payload["samples"]) == 2
     assert [s["label"] for s in dataset_payload["samples"]] == [1, 0]
-
-    # Interrupted pair ends up in unassociated
-    assert any(u["reason"] == "interrupted" for u in unassociated_payload)
 
 
 # ---------------------------------------------------------------------------

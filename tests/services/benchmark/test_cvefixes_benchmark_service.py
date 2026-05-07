@@ -1,7 +1,5 @@
 """Tests for CVEFixes benchmark dataset generation."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -97,7 +95,7 @@ def test_build_all_ranking_strategies_writes_aligned_datasets(
         delete_checkouts=False,
     )
 
-    dataset_paths, unassociated_path = service.build_all_ranking_strategies()
+    dataset_paths = service.build_all_ranking_strategies()
 
     assert set(dataset_paths) == {
         "current",
@@ -122,7 +120,6 @@ def test_build_all_ranking_strategies_writes_aligned_datasets(
 
     assert sample_id_sets == {("ContextAssembler-1", "ContextAssembler-2")}
     assert label_sets == {(1, 0)}
-    assert json.loads(unassociated_path.read_text(encoding="utf-8")) == []
 
 
 def test_build_all_ranking_strategies_skips_pairs_over_token_budget(
@@ -186,19 +183,13 @@ def test_build_all_ranking_strategies_skips_pairs_over_token_budget(
         delete_checkouts=False,
     )
 
-    dataset_paths, unassociated_path = service.build_all_ranking_strategies()
+    dataset_paths = service.build_all_ranking_strategies()
 
     assert scan_calls["count"] == 0
     for dataset_path in dataset_paths.values():
         payload = json.loads(dataset_path.read_text(encoding="utf-8"))
         assert payload["samples"] == []
         assert payload["metadata"]["total_samples"] == 0
-
-    unassociated_payload = json.loads(unassociated_path.read_text(encoding="utf-8"))
-    assert [item["reason"] for item in unassociated_payload] == [
-        "source_sample_exceeds_token_budget",
-        "source_sample_exceeds_token_budget",
-    ]
 
 
 def test_build_all_ranking_strategies_uses_separate_checkout_roots(
@@ -272,7 +263,7 @@ def test_build_all_ranking_strategies_uses_separate_checkout_roots(
         delete_checkouts=False,
     )
 
-    dataset_paths, _ = service.build_all_ranking_strategies()
+    dataset_paths = service.build_all_ranking_strategies()
 
     assert set(dataset_paths) == {
         "current",
@@ -362,21 +353,14 @@ def test_build_writes_partial_datasets_on_keyboard_interrupt(
         service.build()
 
     dataset_path = tmp_path / "output" / "cvefixes_context_benchmark.json"
-    unassociated_path = tmp_path / "output" / "cvefixes_unassociated.json"
 
     dataset_payload = json.loads(dataset_path.read_text(encoding="utf-8"))
-    unassociated_payload = json.loads(unassociated_path.read_text(encoding="utf-8"))
 
     assert [sample["id"] for sample in dataset_payload["samples"]] == [
         "ContextAssembler-1",
         "ContextAssembler-2",
     ]
     assert [sample["label"] for sample in dataset_payload["samples"]] == [1, 0]
-    assert [item["reason"] for item in unassociated_payload] == ["interrupted", "interrupted"]
-    assert [item["entry"]["CVEFixes-Number"] for item in unassociated_payload] == [
-        "CVE-2024-0002",
-        "CVE-2024-0002",
-    ]
 
 
 def test_build_all_depth_sizes_writes_depth_specific_datasets(
@@ -445,10 +429,9 @@ def test_build_all_depth_sizes_writes_depth_specific_datasets(
         delete_checkouts=False,
     )
 
-    dataset_paths, unassociated_paths = service.build_all_depth_sizes()
+    dataset_paths = service.build_all_depth_sizes()
 
     assert set(dataset_paths) == {2, 3, 4, 5, 6}
-    assert set(unassociated_paths) == {2, 3, 4, 5, 6}
     assert sorted(set(observed_depths)) == [2, 3, 4, 5, 6]
 
     for depth, dataset_path in dataset_paths.items():
@@ -459,7 +442,3 @@ def test_build_all_depth_sizes_writes_depth_specific_datasets(
             f"ContextAssemblerDepth{depth}-2",
         ]
         assert [sample["label"] for sample in payload["samples"]] == [1, 0]
-
-    for depth, unassociated_path in unassociated_paths.items():
-        assert unassociated_path.name == f"cvefixes_unassociated_depth_{depth}.json"
-        assert json.loads(unassociated_path.read_text(encoding="utf-8")) == []

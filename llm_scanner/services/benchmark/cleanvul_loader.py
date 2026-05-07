@@ -1,9 +1,8 @@
-from __future__ import annotations
-
 import csv
 import logging
 import re
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -148,7 +147,7 @@ class CleanVulLoaderService(BaseModel):
             return [int(digits_only)]
         return []
 
-    def _load_rows(self) -> list[dict[str, object]]:
+    def _load_rows(self) -> list[dict[str, Any]]:
         """Load raw rows from CSV or Parquet depending on file extension.
 
         Returns:
@@ -179,7 +178,7 @@ class CleanVulLoaderService(BaseModel):
         raise ValueError(f"Unsupported file extension: {suffix!r}. Use .csv, .tsv, or .parquet")
 
     @staticmethod
-    def _coerce_row(raw: dict[str, object]) -> CleanVulRow:
+    def _coerce_row(raw: dict[str, Any]) -> CleanVulRow:
         """Coerce a raw dictionary into a CleanVulRow, handling CSV string types.
 
         CSV files represent all values as strings; this method normalises booleans

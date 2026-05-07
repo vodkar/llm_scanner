@@ -1,0 +1,14 @@
+depth_decay: 0.6
+context_strength: 0.45
+role_prior_temperature: 1.0
+finding_evidence_scale: 1.0
+taint_evidence_scale: 1.0
+cpg_role_evidence_scale: 1.0
+lexical_fallback_cap: 0.4
+token_cost_power: 0.35
+novelty_penalty: 0.4
+role_coverage_bonus: 0.2
+small_node_token_threshold: 220
+local_window_radius: 3
+max_candidates_per_node: 8
+budget_safety_ratio: 0.95

@@ -1,7 +1,5 @@
 """Integration tests for BanditFindingsRepository."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 from clients.neo4j import Neo4jClient

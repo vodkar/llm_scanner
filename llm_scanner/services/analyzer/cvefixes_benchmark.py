@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import random
@@ -16,7 +14,6 @@ from models.benchmark.benchmark import (
     BenchmarkMetadata,
     BenchmarkSample,
     BenchmarkSampleMetadata,
-    UnassociatedSample,
 )
 from models.benchmark.cvefixes import CVEFixesEntry
 from models.context import Context
@@ -67,53 +64,50 @@ class CVEFixesBenchmarkService(BaseModel):
     token_budget: int = 8192
     delete_checkouts: bool = True
 
-    def build(self) -> tuple[Path, Path]:
+    def build(self) -> Path:
         """Generate the benchmark JSON files.
 
         Returns:
-            Tuple of paths to the main dataset and unassociated dataset files.
+            Path to the main dataset file.
         """
 
-        dataset_paths, unassociated_path = self._build_datasets(
+        dataset_paths = self._build_datasets(
             strategy_factories={CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy}
         )
-        return dataset_paths[CURRENT_STRATEGY_NAME], unassociated_path
+        return dataset_paths[CURRENT_STRATEGY_NAME]
 
-    def build_all_ranking_strategies(self) -> tuple[dict[str, Path], Path]:
+    def build_all_ranking_strategies(self) -> dict[str, Path]:
         """Generate aligned benchmark datasets for all available ranking strategies.
 
         Returns:
-            Mapping of strategy names to dataset file paths and the unassociated file path.
+            Mapping of strategy names to dataset file paths.
         """
 
         return self._build_datasets(strategy_factories=self._build_strategy_factories())
 
-    def build_all_depth_sizes(self) -> tuple[dict[int, Path], dict[int, Path]]:
+    def build_all_depth_sizes(self) -> dict[int, Path]:
         """Generate benchmark datasets for a fixed ranking strategy across call depths.
 
         Returns:
-            Dataset paths and unassociated paths keyed by max call depth.
+            Dataset paths keyed by max call depth.
         """
 
         dataset_paths_by_depth: dict[int, Path] = {}
-        unassociated_paths_by_depth: dict[int, Path] = {}
         strategy_factories: dict[str, RankingStrategyFactory] = {
             CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy
         }
 
         for max_call_depth in DEPTH_SWEEP_SIZES:
-            dataset_paths, unassociated_path = self._build_datasets(
+            dataset_paths = self._build_datasets(
                 strategy_factories=strategy_factories,
                 max_call_depth=max_call_depth,
                 dataset_path_factory=self._depth_dataset_path_factory(max_call_depth),
                 metadata_name_factory=self._depth_metadata_name_factory(max_call_depth),
-                unassociated_path=self._depth_unassociated_path(max_call_depth),
                 sample_id_prefix=f"ContextAssemblerDepth{max_call_depth}",
             )
             dataset_paths_by_depth[max_call_depth] = dataset_paths[CURRENT_STRATEGY_NAME]
-            unassociated_paths_by_depth[max_call_depth] = unassociated_path
 
-        return dataset_paths_by_depth, unassociated_paths_by_depth
+        return dataset_paths_by_depth
 
     def _build_datasets(
         self,
@@ -121,9 +115,8 @@ class CVEFixesBenchmarkService(BaseModel):
         max_call_depth: int | None = None,
         dataset_path_factory: DatasetPathFactory | None = None,
         metadata_name_factory: MetadataNameFactory | None = None,
-        unassociated_path: Path | None = None,
         sample_id_prefix: str = "ContextAssembler",
-    ) -> tuple[dict[str, Path], Path]:
+    ) -> dict[str, Path]:
         """Build one or more datasets using the same accepted entry pairs.
 
         Args:
@@ -131,11 +124,10 @@ class CVEFixesBenchmarkService(BaseModel):
             max_call_depth: Optional max traversal depth override.
             dataset_path_factory: Optional dataset path resolver.
             metadata_name_factory: Optional metadata name resolver.
-            unassociated_path: Optional unassociated output path.
             sample_id_prefix: Prefix used for generated sample ids.
 
         Returns:
-            Mapping of strategy names to dataset file paths and the unassociated file path.
+            Mapping of strategy names to dataset file paths.
         """
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -150,13 +142,7 @@ class CVEFixesBenchmarkService(BaseModel):
         samples_by_strategy: dict[str, list[BenchmarkSample]] = {
             strategy_name: [] for strategy_name in strategy_factories
         }
-        unassociated: list[UnassociatedSample] = []
         dataset_paths: dict[str, Path] = {}
-        resolved_unassociated_path = (
-            self.output_dir / "cvefixes_unassociated.json"
-            if unassociated_path is None
-            else unassociated_path
-        )
 
         vulnerable_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "vulnerable")
         fixed_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "fixed")
@@ -189,7 +175,6 @@ class CVEFixesBenchmarkService(BaseModel):
                             pair.vulnerable_entry.repo_url,
                             pair.vulnerable_entry.fix_hash,
                         )
-                        self._append_unassociated_pair(unassociated, pair, reason="checkout_failed")
                         continue
 
                     if current_sample_count % LOGGING_INTERVAL == 0:
@@ -209,7 +194,6 @@ class CVEFixesBenchmarkService(BaseModel):
                             "Skipping %s because source samples exceed budget or are unavailable",
                             pair.vulnerable_entry.cve_id,
                         )
-                        self._append_unassociated_pair(unassociated, pair, reason=budget_reason)
                         continue
 
                     try:
@@ -229,7 +213,6 @@ class CVEFixesBenchmarkService(BaseModel):
                         logger.exception(
                             "Failed to scan repository for %s", pair.vulnerable_entry.cve_id
                         )
-                        self._append_unassociated_pair(unassociated, pair, reason="scan_failed")
                         continue
 
                     if not self._all_contexts_present(
@@ -241,7 +224,6 @@ class CVEFixesBenchmarkService(BaseModel):
                             "No context found for %s in at least one strategy",
                             pair.vulnerable_entry.cve_id,
                         )
-                        self._append_unassociated_pair(unassociated, pair, reason="missing_context")
                         continue
 
                     vulnerable_sample_id = f"{sample_id_prefix}-{current_sample_count + 1}"
@@ -266,7 +248,6 @@ class CVEFixesBenchmarkService(BaseModel):
                         "Interrupted while processing %s; writing partial datasets",
                         pair.vulnerable_entry.cve_id,
                     )
-                    self._append_unassociated_pair(unassociated, pair, reason="interrupted")
                     interrupted_error = error
                     break
                 finally:
@@ -278,15 +259,11 @@ class CVEFixesBenchmarkService(BaseModel):
                 metadata_name_factory=metadata_name_factory,
                 dataset_path_factory=dataset_path_factory,
             )
-            self._write_json(
-                resolved_unassociated_path,
-                [item.model_dump(by_alias=True) for item in unassociated],
-            )
 
         if interrupted_error is not None:
             raise interrupted_error
 
-        return dataset_paths, resolved_unassociated_path
+        return dataset_paths
 
     def _scan_repository_for_entry(
         self,
@@ -488,35 +465,6 @@ class CVEFixesBenchmarkService(BaseModel):
 
         return "\n".join(parts)
 
-    def _append_unassociated_pair(
-        self,
-        unassociated: list[UnassociatedSample],
-        pair: _CVEFixesEntryPair,
-        reason: str,
-    ) -> None:
-        """Append both vulnerable and fixed entries as unassociated.
-
-        Args:
-            unassociated: Existing unassociated entries.
-            pair: Paired entries.
-            reason: Reason for skipping the pair.
-        """
-
-        unassociated.append(
-            UnassociatedSample(
-                entry=self._entry_metadata(pair.vulnerable_entry),
-                reason=reason,
-                contexts=[],
-            )
-        )
-        unassociated.append(
-            UnassociatedSample(
-                entry=self._entry_metadata(pair.fixed_entry),
-                reason=reason,
-                contexts=[],
-            )
-        )
-
     @staticmethod
     def _all_contexts_present(
         vulnerable_contexts: dict[str, Context],
@@ -572,11 +520,6 @@ class CVEFixesBenchmarkService(BaseModel):
         """Return output path for a depth-sweep dataset."""
 
         return self.output_dir / f"cvefixes_context_benchmark_depth_{max_call_depth}.json"
-
-    def _depth_unassociated_path(self, max_call_depth: int) -> Path:
-        """Return output path for depth-sweep unassociated entries."""
-
-        return self.output_dir / f"cvefixes_unassociated_depth_{max_call_depth}.json"
 
     def _depth_dataset_path_factory(self, max_call_depth: int) -> DatasetPathFactory:
         """Build a dataset path resolver for one max call depth."""

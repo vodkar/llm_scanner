@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import shutil
@@ -16,16 +14,19 @@ from models.benchmark.benchmark import (
     BenchmarkMetadata,
     BenchmarkSample,
     CleanVulSampleMetadata,
-    UnassociatedSample,
 )
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import Context, FileSpans
+from models.context_ranking import BudgetedRankingConfig
 from pipeline import GeneralPipeline
 from repositories.context import ContextRepository
 from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
 from services.benchmark.repo_checkout import RepoCheckoutService
 from services.context_assembler.context_assembler import ContextAssemblerService
 from services.context_assembler.cpg_structural_ranking import CPGStructuralRankingStrategy
+from services.context_assembler.evidence_ranking.strategy import (
+    EvidenceAwareBudgetedNodeRankingStrategy,
+)
 from services.context_assembler.ranking import (
     ContextNodeRankingStrategy,
     DepthRepeatsContextNodeRankingStrategy,
@@ -77,24 +78,30 @@ class CleanVulBenchmarkService(BaseModel):
             "when omitted, the strategy uses its own default coefficients."
         ),
     )
+    budgeted_ranking_config_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional YAML path with a BudgetedRankingConfig for "
+            "EvidenceAwareBudgetedNodeRankingStrategy; when omitted, defaults are used."
+        ),
+    )
 
-    def build(self) -> tuple[Path, Path, Path]:
+    def build(self) -> tuple[Path, Path]:
         """Generate the benchmark JSON files.
 
         Returns:
-            Tuple of paths to the main dataset, unassociated dataset, and entries files.
+            Tuple of paths to the main dataset and entries files.
         """
-        dataset_paths, unassociated_path, entries_path = self._build_datasets(
+        dataset_paths, entries_path = self._build_datasets(
             strategy_factories={CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy}
         )
-        return dataset_paths[CURRENT_STRATEGY_NAME], unassociated_path, entries_path
+        return dataset_paths[CURRENT_STRATEGY_NAME], entries_path
 
-    def build_all_ranking_strategies(self) -> tuple[dict[str, Path], Path, Path]:
+    def build_all_ranking_strategies(self) -> tuple[dict[str, Path], Path]:
         """Generate aligned benchmark datasets for all available ranking strategies.
 
         Returns:
-            Mapping of strategy names to dataset file paths, the unassociated file path,
-            and the entries file path.
+            Mapping of strategy names to dataset file paths and the entries file path.
         """
         return self._build_datasets(strategy_factories=self._build_strategy_factories())
 
@@ -103,9 +110,8 @@ class CleanVulBenchmarkService(BaseModel):
         strategy_factories: Mapping[str, RankingStrategyFactory],
         dataset_path_factory: DatasetPathFactory | None = None,
         metadata_name_factory: MetadataNameFactory | None = None,
-        unassociated_path: Path | None = None,
         sample_id_prefix: str = "CleanVulContextAssembler",
-    ) -> tuple[dict[str, Path], Path, Path]:
+    ) -> tuple[dict[str, Path], Path]:
         """Build one or more datasets using the same accepted entry pairs.
 
         Also writes a companion entries file mapping each sample ID to its source
@@ -116,11 +122,10 @@ class CleanVulBenchmarkService(BaseModel):
             strategy_factories: Ranking strategies to evaluate.
             dataset_path_factory: Optional dataset path resolver.
             metadata_name_factory: Optional metadata name resolver.
-            unassociated_path: Optional unassociated output path.
             sample_id_prefix: Prefix used for generated sample ids.
 
         Returns:
-            Tuple of (strategy_name → dataset path, unassociated path, entries path).
+            Tuple of (strategy_name → dataset path, entries path).
         """
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -131,7 +136,7 @@ class CleanVulBenchmarkService(BaseModel):
             python_only=self.python_only,
             exclude_test_files=self.exclude_test_files,
         )
-        candidate_rows = loader.fetch_entries()[:50]
+        candidate_rows = loader.fetch_entries()
         # rng = random.Random(self.seed)
         # rng.shuffle(candidate_rows)
 
@@ -140,13 +145,7 @@ class CleanVulBenchmarkService(BaseModel):
         }
         # Maps sample_id → CleanVulEntry (strategy-independent; written as companion file)
         entries_by_sample_id: dict[str, CleanVulEntry] = {}
-        unassociated: list[UnassociatedSample] = []
         dataset_paths: dict[str, Path] = {}
-        resolved_unassociated_path = (
-            self.output_dir / "cleanvul_unassociated.json"
-            if unassociated_path is None
-            else unassociated_path
-        )
         entries_path = self.output_dir / "cleanvul_entries.json"
 
         vulnerable_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "vulnerable")
@@ -177,9 +176,6 @@ class CleanVulBenchmarkService(BaseModel):
                         )
                     except Exception:
                         logger.exception("Failed to checkout %s at %s", repo_url, fix_hash)
-                        self._append_unassociated_rows(
-                            unassociated, rows, repo_url, fix_hash, reason="checkout_failed"
-                        )
                         continue
 
                     if current_sample_count % LOGGING_INTERVAL == 0:
@@ -198,8 +194,9 @@ class CleanVulBenchmarkService(BaseModel):
                         fixed_repo_path=fixed_repo_path,
                     )
                     if pair is None:
-                        self._append_unassociated_rows(
-                            unassociated, rows, repo_url, fix_hash, reason="span_not_found"
+                        logger.warning(
+                            "Could not build entry pair for %s; skipping this commit",
+                            commit_url,
                         )
                         continue
 
@@ -209,7 +206,6 @@ class CleanVulBenchmarkService(BaseModel):
                             "Skipping %s because source samples exceed budget or are unavailable",
                             commit_url,
                         )
-                        self._append_unassociated_pair(unassociated, pair, reason=budget_reason)
                         continue
 
                     try:
@@ -225,17 +221,15 @@ class CleanVulBenchmarkService(BaseModel):
                         )
                     except Exception:
                         logger.exception("Failed to scan repository for %s", commit_url)
-                        self._append_unassociated_pair(unassociated, pair, reason="scan_failed")
                         continue
 
-                    if not self._all_contexts_present(
+                    if not self._is_all_contexts_present(
                         vulnerable_contexts, fixed_contexts, strategy_factories
                     ):
                         logger.warning(
                             "No context found for %s in at least one strategy",
                             commit_url,
                         )
-                        self._append_unassociated_pair(unassociated, pair, reason="missing_context")
                         continue
 
                     vulnerable_sample_id = f"{sample_id_prefix}-{current_sample_count + 1}"
@@ -262,9 +256,6 @@ class CleanVulBenchmarkService(BaseModel):
                         "Interrupted while processing %s; writing partial datasets",
                         commit_url,
                     )
-                    self._append_unassociated_rows(
-                        unassociated, rows, repo_url, fix_hash, reason="interrupted"
-                    )
                     interrupted_error = error
                     break
                 finally:
@@ -276,16 +267,12 @@ class CleanVulBenchmarkService(BaseModel):
                 metadata_name_factory=metadata_name_factory,
                 dataset_path_factory=dataset_path_factory,
             )
-            self._write_json(
-                resolved_unassociated_path,
-                [item.model_dump(by_alias=True) for item in unassociated],
-            )
             self._write_entries(entries_by_sample_id, entries_path)
 
         if interrupted_error is not None:
             raise interrupted_error
 
-        return dataset_paths, resolved_unassociated_path, entries_path
+        return dataset_paths, entries_path
 
     def _build_entry_pair(
         self,
@@ -499,6 +486,19 @@ class CleanVulBenchmarkService(BaseModel):
             snippet_cache_max_entries=10000,
         )
 
+    def _build_evidence_budgeted_ranking_strategy(
+        self, repo_path: Path
+    ) -> ContextNodeRankingStrategy:
+        if self.budgeted_ranking_config_path is not None:
+            config = BudgetedRankingConfig.from_yaml(self.budgeted_ranking_config_path)
+        else:
+            config = BudgetedRankingConfig()
+        return EvidenceAwareBudgetedNodeRankingStrategy(
+            project_root=repo_path,
+            token_budget=self.token_budget,
+            config=config,
+        )
+
     def _build_strategy_factories(self) -> dict[str, RankingStrategyFactory]:
         return {
             CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy,
@@ -516,6 +516,7 @@ class CleanVulBenchmarkService(BaseModel):
                 snippet_cache_max_entries=10000,
             ),
             "cpg_structural": self._build_cpg_structural_ranking_strategy,
+            "evidence_budgeted": self._build_evidence_budgeted_ranking_strategy,
             "dummy": lambda _repo_path: DummyNodeRankingStrategy(),
         }
 
@@ -568,64 +569,8 @@ class CleanVulBenchmarkService(BaseModel):
             return "source_sample_exceeds_token_budget"
         return None
 
-    def _append_unassociated_rows(
-        self,
-        unassociated: list[UnassociatedSample],
-        rows: list[CleanVulRow],
-        repo_url: str,
-        fix_hash: str,
-        reason: str,
-    ) -> None:
-        """Append a placeholder unassociated entry for a commit group (pre-pair-building).
-
-        Uses the first row in the group as the representative for metadata.
-
-        Args:
-            unassociated: Existing unassociated entries.
-            rows: All CleanVul rows for the commit group.
-            repo_url: Parsed repository URL.
-            fix_hash: Parsed fix commit hash.
-            reason: Skip reason.
-        """
-        row = rows[0]
-        cwe_ids = CleanVulLoaderService._parse_cwe_ids(row.cwe_id)
-        metadata: CleanVulSampleMetadata = CleanVulSampleMetadata(
-            commit_url=row.commit_url,
-            description=row.commit_msg,
-            cwe_number=cwe_ids[0] if cwe_ids else None,
-        )
-        unassociated.append(UnassociatedSample(entry=metadata, reason=reason, contexts=[]))
-
-    def _append_unassociated_pair(
-        self,
-        unassociated: list[UnassociatedSample],
-        pair: _CleanVulEntryPair,
-        reason: str,
-    ) -> None:
-        """Append both vulnerable and fixed entries as unassociated.
-
-        Args:
-            unassociated: Existing unassociated entries.
-            pair: Paired entries.
-            reason: Reason for skipping.
-        """
-        unassociated.append(
-            UnassociatedSample(
-                entry=self._entry_metadata(pair.vulnerable_entry),
-                reason=reason,
-                contexts=[],
-            )
-        )
-        unassociated.append(
-            UnassociatedSample(
-                entry=self._entry_metadata(pair.fixed_entry),
-                reason=reason,
-                contexts=[],
-            )
-        )
-
     @staticmethod
-    def _all_contexts_present(
+    def _is_all_contexts_present(
         vulnerable_contexts: dict[str, Context],
         fixed_contexts: dict[str, Context],
         strategy_factories: Mapping[str, RankingStrategyFactory],
@@ -684,7 +629,6 @@ class CleanVulBenchmarkService(BaseModel):
         return dataset_paths
 
     def _delete_checkout(self, repo_path: Path | None) -> None:
-        return
         if not self.delete_checkouts or repo_path is None or not repo_path.exists():
             return
         shutil.rmtree(str(repo_path))

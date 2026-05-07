@@ -1,11 +1,16 @@
 # flake8: noqa E402
 
+import json
 import logging
 import sys
+import tempfile
+from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Annotated, Final
+from typing import Annotated, Any, Final
 
+import optuna
 import typer
 
 # This project historically uses flat imports like `from clients...` with
@@ -16,7 +21,10 @@ if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
 from clients.neo4j import Neo4jConfig, build_client
+from clients.openai_compatible import OpenAICompatibleClient
 from models.base import NodeID
+from models.benchmark.benchmark import BenchmarkDataset
+from models.context_ranking import BudgetedRankingConfig
 from models.edges import RelationshipBase
 from models.nodes import Node
 from pipeline import GeneralPipeline
@@ -24,6 +32,8 @@ from repositories.graph import GraphRepository
 from repositories.yaml_loader import YamlLoader
 from services.analyzer.cleanvul_benchmark import CleanVulBenchmarkService
 from services.analyzer.cvefixes_benchmark import CVEFixesBenchmarkService
+from services.benchmark.llm_judge import LLMJudgeService
+from services.context_assembler.ranking_config import RankingCoefficients
 from services.cpg_parser.ts_parser.cpg_builder import (
     CPGDirectoryBuilder,
     CPGFileBuilder,
@@ -44,6 +54,131 @@ DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
 DEFAULT_BENCHMARK_DIR: Final[Path] = ROOT_DIR / "data"
 DEFAULT_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cvefixes_repos"
 DEFAULT_CLEANVUL_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cleanvul_repos"
+DEFAULT_STUDY_DIR: Final[Path] = ROOT_DIR / "data" / "tuning_runs"
+DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
+    ROOT_DIR / "config" / "ranking_coefficients_cpg_structural.yaml"
+)
+
+
+class RankingStrategy(str, Enum):
+    cpg_structural = "cpg_structural"
+    current = "current"
+    evidence_budgeted = "evidence_budgeted"
+
+
+def _suggest_coefficients(trial: optuna.Trial, base: RankingCoefficients) -> RankingCoefficients:
+    """Sample a coefficients object by perturbing the base configuration."""
+
+    payload: dict[str, Any] = base.model_dump()
+
+    payload["combiner"] = {
+        "finding_evidence": trial.suggest_float("combiner.finding_evidence", 0.1, 0.5),
+        "security_path": trial.suggest_float("combiner.security_path", 0.1, 0.5),
+        "taint": trial.suggest_float("combiner.taint", 0.1, 0.5),
+        "context": trial.suggest_float("combiner.context", 0.1, 0.5),
+    }
+    payload["context_breakdown"] = {
+        "depth": trial.suggest_float("context_breakdown.depth", 0.2, 0.8),
+        "structure": trial.suggest_float("context_breakdown.structure", 0.05, 0.5),
+        "file_prior": trial.suggest_float("context_breakdown.file_prior", 0.05, 0.5),
+    }
+    payload["edge_type_weights"] = {
+        "flows_to": trial.suggest_float("edge_type_weights.flows_to", 0.6, 1.0),
+        "sanitized_by": trial.suggest_float("edge_type_weights.sanitized_by", 0.5, 1.0),
+        "calls": trial.suggest_float("edge_type_weights.calls", 0.3, 0.9),
+        "called_by": trial.suggest_float("edge_type_weights.called_by", 0.3, 0.9),
+        "defined_by": trial.suggest_float("edge_type_weights.defined_by", 0.3, 0.8),
+        "used_by": trial.suggest_float("edge_type_weights.used_by", 0.2, 0.8),
+        "contains": trial.suggest_float("edge_type_weights.contains", 0.1, 0.6),
+    }
+    payload["edge_decay_rates"] = {
+        "flows_to": trial.suggest_float("edge_decay_rates.flows_to", 0.6, 0.95),
+        "sanitized_by": trial.suggest_float("edge_decay_rates.sanitized_by", 0.6, 0.95),
+        "calls": trial.suggest_float("edge_decay_rates.calls", 0.5, 0.9),
+        "called_by": trial.suggest_float("edge_decay_rates.called_by", 0.5, 0.9),
+        "defined_by": trial.suggest_float("edge_decay_rates.defined_by", 0.5, 0.9),
+        "used_by": trial.suggest_float("edge_decay_rates.used_by", 0.5, 0.9),
+        "contains": trial.suggest_float("edge_decay_rates.contains", 0.3, 0.8),
+    }
+    payload["sanitizer_bypass_bonus"] = trial.suggest_float("sanitizer_bypass_bonus", 0.0, 0.5)
+    payload["sanitizer_presence_damp"] = trial.suggest_float("sanitizer_presence_damp", 0.0, 1.0)
+
+    return RankingCoefficients.model_validate(payload)
+
+
+def _suggest_budgeted_config(trial: optuna.Trial) -> BudgetedRankingConfig:
+    """Sample a BudgetedRankingConfig over the full 14-parameter search space."""
+
+    return BudgetedRankingConfig(
+        depth_decay=trial.suggest_float("depth_decay", 0.25, 1.20),
+        context_strength=trial.suggest_float("context_strength", 0.10, 0.75),
+        role_prior_temperature=trial.suggest_float("role_prior_temperature", 0.60, 1.80),
+        finding_evidence_scale=trial.suggest_float("finding_evidence_scale", 0.60, 1.50),
+        taint_evidence_scale=trial.suggest_float("taint_evidence_scale", 0.60, 1.50),
+        cpg_role_evidence_scale=trial.suggest_float("cpg_role_evidence_scale", 0.60, 1.50),
+        lexical_fallback_cap=trial.suggest_float("lexical_fallback_cap", 0.20, 0.60),
+        token_cost_power=trial.suggest_float("token_cost_power", 0.00, 0.80),
+        novelty_penalty=trial.suggest_float("novelty_penalty", 0.00, 0.70),
+        role_coverage_bonus=trial.suggest_float("role_coverage_bonus", 0.05, 0.40),
+        small_node_token_threshold=trial.suggest_int(
+            "small_node_token_threshold", 120, 420, step=20
+        ),
+        local_window_radius=trial.suggest_int("local_window_radius", 1, 6),
+        budget_safety_ratio=trial.suggest_float("budget_safety_ratio", 0.85, 1.00),
+    )
+
+
+def _build_benchmark_and_score(
+    coefficients: RankingCoefficients | BudgetedRankingConfig,
+    *,
+    strategy: RankingStrategy,
+    dataset: Path,
+    repo_cache_dir: Path,
+    sample_count: int,
+    seed: int,
+    max_call_depth: int,
+    judge: LLMJudgeService,
+    work_dir: Path,
+) -> float:
+    """Run the benchmark with `coefficients`, score it with the judge, return accuracy."""
+
+    coeff_path = work_dir / "coefficients.yaml"
+    coefficients.to_yaml(coeff_path)
+
+    service = CleanVulBenchmarkService(
+        dataset_path=dataset,
+        output_dir=work_dir / "benchmarks",
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=Neo4jConfig(),
+        max_call_depth=max_call_depth,
+        token_budget=16384,
+        cpg_structural_coefficients_path=(
+            coeff_path if strategy == RankingStrategy.cpg_structural else None
+        ),
+        budgeted_ranking_config_path=(
+            coeff_path if strategy == RankingStrategy.evidence_budgeted else None
+        ),
+    )
+    dataset_paths, _entries = service.build_all_ranking_strategies()
+
+    dataset_path = dataset_paths.get(strategy.value)
+    if dataset_path is None or not dataset_path.exists():
+        raise RuntimeError(f"strategy {strategy.value!r} produced no dataset file")
+
+    benchmark_dataset = BenchmarkDataset.model_validate_json(
+        dataset_path.read_text(encoding="utf-8")
+    )
+    result = judge.score_dataset(benchmark_dataset)
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "judge accuracy=%.4f invalid=%d samples=%d",
+        result.accuracy,
+        result.invalid_responses,
+        len(benchmark_dataset.samples),
+    )
+    return result.accuracy
 
 
 def _configure_logging(log_level: str) -> None:
@@ -351,10 +486,10 @@ def build_cvefixes_benchmark(
         max_call_depth=max_call_depth,
         token_budget=token_budget,
     )
-    main_path, unassociated_path = service.build()
+    main_path = service.build()
 
     typer.secho(
-        f"Wrote benchmark dataset to {main_path} and unassociated samples to {unassociated_path}",
+        f"Wrote benchmark dataset to {main_path}",
         fg=typer.colors.GREEN,
     )
 
@@ -450,10 +585,10 @@ def build_cvefixes_benchmark_compare_rankings(
         max_call_depth=max_call_depth,
         token_budget=token_budget,
     )
-    dataset_paths, unassociated_path = service.build_all_ranking_strategies()
+    dataset_paths = service.build_all_ranking_strategies()
 
     typer.secho(
-        f"Wrote benchmark dataset to {dataset_paths} and unassociated samples to {unassociated_path}",
+        f"Wrote benchmark dataset to {dataset_paths}",
         fg=typer.colors.GREEN,
     )
 
@@ -545,10 +680,10 @@ def build_cvefixes_benchmark_compare_depth_sizes(
         max_call_depth=0,  # Will be overridden in build_all_depth_sizes
         token_budget=token_budget,
     )
-    dataset_paths, unassociated_path = service.build_all_depth_sizes()
+    dataset_paths = service.build_all_depth_sizes()
 
     typer.secho(
-        f"Wrote benchmark dataset to {dataset_paths} and unassociated samples to {unassociated_path}",
+        f"Wrote benchmark dataset to {dataset_paths}",
         fg=typer.colors.GREEN,
     )
 
@@ -670,12 +805,10 @@ def build_cleanvul_benchmark(
         python_only=python_only,
         exclude_test_files=exclude_test_files,
     )
-    main_path, unassociated_path, entries_path = service.build()
+    main_path, entries_path = service.build()
 
     typer.secho(
-        f"Wrote benchmark dataset to {main_path}, "
-        f"unassociated samples to {unassociated_path}, "
-        f"entries to {entries_path}",
+        f"Wrote benchmark dataset to {main_path}, entries to {entries_path}",
         fg=typer.colors.GREEN,
     )
 
@@ -797,12 +930,196 @@ def build_cleanvul_benchmark_compare_rankings(
         python_only=python_only,
         exclude_test_files=exclude_test_files,
     )
-    dataset_paths, unassociated_path, entries_path = service.build_all_ranking_strategies()
+    dataset_paths, entries_path = service.build_all_ranking_strategies()
 
     typer.secho(
-        f"Wrote benchmark datasets to {dataset_paths}, "
-        f"unassociated samples to {unassociated_path}, "
-        f"entries to {entries_path}",
+        f"Wrote benchmark datasets to {dataset_paths}, entries to {entries_path}",
+        fg=typer.colors.GREEN,
+    )
+
+
+@app.command("tune-ranking-coefficients")
+def tune_ranking_coefficients(
+    strategy: Annotated[
+        RankingStrategy,
+        typer.Option(
+            "--strategy",
+            help="Ranking strategy to tune.",
+            case_sensitive=False,
+        ),
+    ],
+    judge_model: Annotated[
+        str,
+        typer.Option("--judge-model", help="Model name served by the judge endpoint."),
+    ],
+    dataset: Annotated[
+        Path,
+        typer.Option(
+            "--dataset",
+            help="CleanVul CSV path used to build per-trial benchmarks.",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option(
+            "--output-dir",
+            help="Directory for per-trial benchmark artifacts.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ],
+    repo_cache_dir: Annotated[
+        Path,
+        typer.Option(
+            "--repo-cache-dir",
+            help="Directory to cache cloned repositories.",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=True,
+        ),
+    ],
+    trials: Annotated[int, typer.Option("--trials", help="Number of Optuna trials.")] = 20,
+    sample_count: Annotated[
+        int, typer.Option("--sample-count", help="Benchmark samples per trial.")
+    ] = 40,
+    judge_base_url: Annotated[
+        str,
+        typer.Option("--judge-base-url", help="OpenAI-compatible judge endpoint."),
+    ] = "http://localhost:8000/v1",
+    judge_api_key: Annotated[
+        str, typer.Option("--judge-api-key", help="API key for the judge endpoint.")
+    ] = "not-needed",
+    study_name: Annotated[
+        str | None,
+        typer.Option(
+            "--study-name",
+            help="Optuna study name; defaults to a UTC timestamp.",
+        ),
+    ] = None,
+    base_coefficients: Annotated[
+        Path,
+        typer.Option(
+            "--base-coefficients",
+            help="Base RankingCoefficients YAML to perturb (ignored for evidence_budgeted).",
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_BASE_COEFFICIENTS,
+    max_call_depth: Annotated[
+        int, typer.Option("--max-call-depth", help="Max call depth for context expansion.")
+    ] = 2,
+    concurrency: Annotated[
+        int, typer.Option("--concurrency", help="Concurrent judge requests.")
+    ] = 8,
+    judge_max_tokens: Annotated[
+        int, typer.Option("--judge-max-tokens", help="Max response tokens per judge call.")
+    ] = 2048,
+    judge_timeout: Annotated[
+        float, typer.Option("--judge-timeout", help="Judge request timeout, seconds.")
+    ] = 600.0,
+    judge_temperature: Annotated[
+        float,
+        typer.Option(
+            "--judge-temperature",
+            help="Sampling temperature for the judge (Qwen3 thinking recommends 0.6).",
+        ),
+    ] = 0.6,
+    judge_top_p: Annotated[
+        float,
+        typer.Option(
+            "--judge-top-p",
+            help="Nucleus-sampling top-p (Qwen3 thinking recommends 0.95).",
+        ),
+    ] = 0.95,
+    judge_thinking: Annotated[
+        bool,
+        typer.Option(
+            "--judge-thinking/--no-judge-thinking",
+            help="Enable chat-template thinking for Qwen3-family judges.",
+        ),
+    ] = True,
+    seed: Annotated[int, typer.Option("--seed", help="Optuna sampler seed.")] = 42,
+) -> None:
+    """Tune ranking coefficients with Optuna against an LLM judge."""
+
+    base_coeff_obj: RankingCoefficients | None
+    if strategy == RankingStrategy.evidence_budgeted:
+        base_coeff_obj = None
+    else:
+        base_coeff_obj = RankingCoefficients.from_yaml(base_coefficients)
+
+    extra_body: dict[str, Any] | None = (
+        {"chat_template_kwargs": {"enable_thinking": True}} if judge_thinking else None
+    )
+    judge = LLMJudgeService(
+        client=OpenAICompatibleClient(
+            base_url=judge_base_url,
+            api_key=judge_api_key,
+            model=judge_model,
+            timeout_seconds=judge_timeout,
+            default_temperature=judge_temperature,
+            default_top_p=judge_top_p,
+            extra_body=extra_body,
+        ),
+        concurrency=concurrency,
+        max_response_tokens=judge_max_tokens,
+    )
+
+    DEFAULT_STUDY_DIR.mkdir(parents=True, exist_ok=True)
+    resolved_study_name = study_name or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    storage_url = f"sqlite:///{DEFAULT_STUDY_DIR / f'{resolved_study_name}.db'}"
+
+    study = optuna.create_study(
+        direction="maximize",
+        study_name=resolved_study_name,
+        storage=storage_url,
+        load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(seed=seed),
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger(__name__)
+    with tempfile.TemporaryDirectory(prefix="ranking_tune_") as tmp:
+        tmp_root = Path(tmp)
+
+        def objective(trial: optuna.Trial) -> float:
+            coefficients: RankingCoefficients | BudgetedRankingConfig
+            if strategy == RankingStrategy.evidence_budgeted:
+                coefficients = _suggest_budgeted_config(trial)
+            else:
+                assert base_coeff_obj is not None
+                coefficients = _suggest_coefficients(trial, base_coeff_obj)
+            trial_dir = tmp_root / f"trial_{trial.number:04d}"
+            trial_dir.mkdir()
+            return _build_benchmark_and_score(
+                coefficients,
+                strategy=strategy,
+                dataset=dataset,
+                repo_cache_dir=repo_cache_dir,
+                sample_count=sample_count,
+                seed=seed,
+                max_call_depth=max_call_depth,
+                judge=judge,
+                work_dir=trial_dir,
+            )
+
+        study.optimize(objective, n_trials=trials, show_progress_bar=False)
+
+    logger.info("best accuracy=%.4f", study.best_value)
+    logger.info("best params=%s", json.dumps(study.best_params, indent=2))
+    logger.info("study persisted to %s", storage_url)
+    typer.secho(
+        f"Best accuracy {study.best_value:.4f}; study persisted to {storage_url}",
         fg=typer.colors.GREEN,
     )
 

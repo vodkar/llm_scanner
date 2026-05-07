@@ -1,7 +1,5 @@
 """Tests for ranking coefficient model and YAML persistence."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Final
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Final, LiteralString, cast
 
 from models.edges.call_graph import CallGraphRelationshipType

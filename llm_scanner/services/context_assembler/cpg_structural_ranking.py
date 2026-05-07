@@ -1,7 +1,5 @@
 """Edge-type-aware ranking strategy for CPG context nodes."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import ClassVar, Final
 

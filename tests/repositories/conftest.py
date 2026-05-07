@@ -1,7 +1,5 @@
 """Shared constants for Neo4j repository integration tests."""
 
-from __future__ import annotations
-
 from typing import Final, LiteralString
 
 BANDIT_FINDING_QUERY: Final[LiteralString] = (

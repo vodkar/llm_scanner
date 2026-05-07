@@ -1,7 +1,5 @@
 """OpenAI-compatible chat client usable with vLLM, OpenAI, and Azure endpoints."""
 
-from __future__ import annotations
-
 import asyncio
 from typing import Any, Final, cast
 
