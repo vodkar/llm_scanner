@@ -4,7 +4,7 @@ from typing import Any
 
 import optuna
 
-from cli import RankingStrategy
+from models.ranking_strategy import RankingStrategy
 from clients.neo4j import Neo4jConfig
 from models.benchmark.benchmark import BenchmarkDataset
 from models.context_ranking import BudgetedRankingConfig

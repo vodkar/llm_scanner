@@ -5,7 +5,6 @@ import logging
 import sys
 import tempfile
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from tempfile import gettempdir
 from typing import Annotated, Any, Final
@@ -13,6 +12,7 @@ from typing import Annotated, Any, Final
 import optuna
 import typer
 
+from models.ranking_strategy import RankingStrategy
 from logging_utils import configure_logging
 from services.context_assembler.evidence_ranking.utils import (
     build_benchmark_and_score,
@@ -61,12 +61,6 @@ DEFAULT_STUDY_DIR: Final[Path] = ROOT_DIR / "data" / "tuning_runs"
 DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
     ROOT_DIR / "config" / "ranking_coefficients_cpg_structural.yaml"
 )
-
-
-class RankingStrategy(str, Enum):
-    cpg_structural = "cpg_structural"
-    current = "current"
-    evidence_budgeted = "evidence_budgeted"
 
 
 @app.callback()
