@@ -13,6 +13,13 @@ from typing import Annotated, Any, Final
 import optuna
 import typer
 
+from logging_utils import configure_logging
+from services.context_assembler.evidence_ranking.utils import (
+    build_benchmark_and_score,
+    suggest_budgeted_config,
+    suggest_coefficients,
+)
+
 # This project historically uses flat imports like `from clients...` with
 # `PYTHONPATH=llm_scanner/`. When installed as a console script, that path is
 # not present by default, so we add the package directory to sys.path.
@@ -21,15 +28,12 @@ if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
 from clients.neo4j import Neo4jConfig, build_client
-from clients.openai_compatible import OpenAICompatibleClient
+from clients.openai_compatible import DEFAULT_REPETITION_PENALTY, OpenAICompatibleClient
 from models.base import NodeID
-from models.benchmark.benchmark import BenchmarkDataset
 from models.context_ranking import BudgetedRankingConfig
 from models.edges import RelationshipBase
 from models.nodes import Node
-from pipeline import GeneralPipeline
 from repositories.graph import GraphRepository
-from repositories.yaml_loader import YamlLoader
 from services.analyzer.cleanvul_benchmark import CleanVulBenchmarkService
 from services.analyzer.cvefixes_benchmark import CVEFixesBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeService
@@ -66,136 +70,6 @@ class RankingStrategy(str, Enum):
     evidence_budgeted = "evidence_budgeted"
 
 
-def _suggest_coefficients(trial: optuna.Trial, base: RankingCoefficients) -> RankingCoefficients:
-    """Sample a coefficients object by perturbing the base configuration."""
-
-    payload: dict[str, Any] = base.model_dump()
-
-    payload["combiner"] = {
-        "finding_evidence": trial.suggest_float("combiner.finding_evidence", 0.1, 0.5),
-        "security_path": trial.suggest_float("combiner.security_path", 0.1, 0.5),
-        "taint": trial.suggest_float("combiner.taint", 0.1, 0.5),
-        "context": trial.suggest_float("combiner.context", 0.1, 0.5),
-    }
-    payload["context_breakdown"] = {
-        "depth": trial.suggest_float("context_breakdown.depth", 0.2, 0.8),
-        "structure": trial.suggest_float("context_breakdown.structure", 0.05, 0.5),
-        "file_prior": trial.suggest_float("context_breakdown.file_prior", 0.05, 0.5),
-    }
-    payload["edge_type_weights"] = {
-        "flows_to": trial.suggest_float("edge_type_weights.flows_to", 0.6, 1.0),
-        "sanitized_by": trial.suggest_float("edge_type_weights.sanitized_by", 0.5, 1.0),
-        "calls": trial.suggest_float("edge_type_weights.calls", 0.3, 0.9),
-        "called_by": trial.suggest_float("edge_type_weights.called_by", 0.3, 0.9),
-        "defined_by": trial.suggest_float("edge_type_weights.defined_by", 0.3, 0.8),
-        "used_by": trial.suggest_float("edge_type_weights.used_by", 0.2, 0.8),
-        "contains": trial.suggest_float("edge_type_weights.contains", 0.1, 0.6),
-    }
-    payload["edge_decay_rates"] = {
-        "flows_to": trial.suggest_float("edge_decay_rates.flows_to", 0.6, 0.95),
-        "sanitized_by": trial.suggest_float("edge_decay_rates.sanitized_by", 0.6, 0.95),
-        "calls": trial.suggest_float("edge_decay_rates.calls", 0.5, 0.9),
-        "called_by": trial.suggest_float("edge_decay_rates.called_by", 0.5, 0.9),
-        "defined_by": trial.suggest_float("edge_decay_rates.defined_by", 0.5, 0.9),
-        "used_by": trial.suggest_float("edge_decay_rates.used_by", 0.5, 0.9),
-        "contains": trial.suggest_float("edge_decay_rates.contains", 0.3, 0.8),
-    }
-    payload["sanitizer_bypass_bonus"] = trial.suggest_float("sanitizer_bypass_bonus", 0.0, 0.5)
-    payload["sanitizer_presence_damp"] = trial.suggest_float("sanitizer_presence_damp", 0.0, 1.0)
-
-    return RankingCoefficients.model_validate(payload)
-
-
-def _suggest_budgeted_config(trial: optuna.Trial) -> BudgetedRankingConfig:
-    """Sample a BudgetedRankingConfig over the full 14-parameter search space."""
-
-    return BudgetedRankingConfig(
-        depth_decay=trial.suggest_float("depth_decay", 0.25, 1.20),
-        context_strength=trial.suggest_float("context_strength", 0.10, 0.75),
-        role_prior_temperature=trial.suggest_float("role_prior_temperature", 0.60, 1.80),
-        finding_evidence_scale=trial.suggest_float("finding_evidence_scale", 0.60, 1.50),
-        taint_evidence_scale=trial.suggest_float("taint_evidence_scale", 0.60, 1.50),
-        cpg_role_evidence_scale=trial.suggest_float("cpg_role_evidence_scale", 0.60, 1.50),
-        lexical_fallback_cap=trial.suggest_float("lexical_fallback_cap", 0.20, 0.60),
-        token_cost_power=trial.suggest_float("token_cost_power", 0.00, 0.80),
-        novelty_penalty=trial.suggest_float("novelty_penalty", 0.00, 0.70),
-        role_coverage_bonus=trial.suggest_float("role_coverage_bonus", 0.05, 0.40),
-        small_node_token_threshold=trial.suggest_int(
-            "small_node_token_threshold", 120, 420, step=20
-        ),
-        local_window_radius=trial.suggest_int("local_window_radius", 1, 6),
-        budget_safety_ratio=trial.suggest_float("budget_safety_ratio", 0.85, 1.00),
-    )
-
-
-def _build_benchmark_and_score(
-    coefficients: RankingCoefficients | BudgetedRankingConfig,
-    *,
-    strategy: RankingStrategy,
-    dataset: Path,
-    repo_cache_dir: Path,
-    sample_count: int,
-    seed: int,
-    max_call_depth: int,
-    judge: LLMJudgeService,
-    work_dir: Path,
-) -> float:
-    """Run the benchmark with `coefficients`, score it with the judge, return accuracy."""
-
-    coeff_path = work_dir / "coefficients.yaml"
-    coefficients.to_yaml(coeff_path)
-
-    service = CleanVulBenchmarkService(
-        dataset_path=dataset,
-        output_dir=work_dir / "benchmarks",
-        repo_cache_dir=repo_cache_dir,
-        sample_count=sample_count,
-        seed=seed,
-        neo4j_config=Neo4jConfig(),
-        max_call_depth=max_call_depth,
-        token_budget=16384,
-        cpg_structural_coefficients_path=(
-            coeff_path if strategy == RankingStrategy.cpg_structural else None
-        ),
-        budgeted_ranking_config_path=(
-            coeff_path if strategy == RankingStrategy.evidence_budgeted else None
-        ),
-    )
-    dataset_paths, _entries = service.build_all_ranking_strategies()
-
-    dataset_path = dataset_paths.get(strategy.value)
-    if dataset_path is None or not dataset_path.exists():
-        raise RuntimeError(f"strategy {strategy.value!r} produced no dataset file")
-
-    benchmark_dataset = BenchmarkDataset.model_validate_json(
-        dataset_path.read_text(encoding="utf-8")
-    )
-    result = judge.score_dataset(benchmark_dataset)
-    logger = logging.getLogger(__name__)
-    logger.info(
-        "judge accuracy=%.4f invalid=%d samples=%d",
-        result.accuracy,
-        result.invalid_responses,
-        len(benchmark_dataset.samples),
-    )
-    return result.accuracy
-
-
-def _configure_logging(log_level: str) -> None:
-    """Configure application logging.
-
-    Args:
-        log_level: Desired logging level.
-    """
-
-    level_name = log_level.upper()
-    level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
-
 @app.callback()
 def main(
     log_level: Annotated[
@@ -210,7 +84,7 @@ def main(
 ) -> None:
     """Initialize CLI-wide settings before executing a command."""
 
-    _configure_logging(log_level)
+    configure_logging(log_level)
 
 
 @app.command("load-sample")
@@ -273,51 +147,6 @@ def load_sample(
 
     typer.secho(
         f"Loaded {len(nodes)} nodes and {len(edges)} edges from {sample_path}",
-        fg=typer.colors.GREEN,
-    )
-
-
-@app.command()
-def load_to_yaml(
-    input_dir: Annotated[
-        Path,
-        typer.Argument(
-            help="Directory containing sample .py files.",
-            exists=True,
-            file_okay=False,
-            dir_okay=True,
-            readable=True,
-            resolve_path=True,
-        ),
-    ] = DEFAULT_TESTS_DIR,
-    output_path: Annotated[
-        Path,
-        typer.Option(
-            "--output",
-            "-o",
-            help="Path to write the aggregated YAML graph.",
-            file_okay=True,
-            dir_okay=False,
-            writable=True,
-            resolve_path=True,
-        ),
-    ] = DEFAULT_OUTPUT_FILE,
-) -> None:
-    """Parse all test samples and persist their CPG as YAML.
-
-    Args:
-        input_dir: Directory containing Python files to parse.
-        output_path: Destination path for the generated YAML graph.
-    """
-    resolved_root = input_dir.resolve()
-
-    result_nodes, result_edges = CPGDirectoryBuilder(root=resolved_root).build()
-
-    loader = YamlLoader(output_path)
-    loader.load(result_nodes, result_edges)
-
-    typer.secho(
-        f"Loaded {len(result_nodes)} nodes and {len(result_edges)} edgesinto {output_path}",
         fg=typer.colors.GREEN,
     )
 
@@ -1041,6 +870,27 @@ def tune_ranking_coefficients(
             help="Nucleus-sampling top-p (Qwen3 thinking recommends 0.95).",
         ),
     ] = 0.95,
+    judge_repetition_penalty: Annotated[
+        float,
+        typer.Option(
+            "--judge-repetition-penalty",
+            help="Repetition penalty forwarded to vLLM via extra_body (1.0 disables).",
+        ),
+    ] = DEFAULT_REPETITION_PENALTY,
+    judge_top_k: Annotated[
+        int | None,
+        typer.Option(
+            "--judge-top-k",
+            help="Top-k sampling forwarded to vLLM via extra_body (omit to use server default).",
+        ),
+    ] = None,
+    judge_min_p: Annotated[
+        float | None,
+        typer.Option(
+            "--judge-min-p",
+            help="Min-p sampling forwarded to vLLM via extra_body (omit to use server default).",
+        ),
+    ] = None,
     judge_thinking: Annotated[
         bool,
         typer.Option(
@@ -1049,6 +899,13 @@ def tune_ranking_coefficients(
         ),
     ] = True,
     seed: Annotated[int, typer.Option("--seed", help="Optuna sampler seed.")] = 42,
+    delete_checkouts: Annotated[
+        bool,
+        typer.Option(
+            "--delete-checkouts/--keep-checkouts",
+            help="Whether to delete cloned repositories after each trial.",
+        ),
+    ] = True,
 ) -> None:
     """Tune ranking coefficients with Optuna against an LLM judge."""
 
@@ -1069,6 +926,9 @@ def tune_ranking_coefficients(
             timeout_seconds=judge_timeout,
             default_temperature=judge_temperature,
             default_top_p=judge_top_p,
+            default_repetition_penalty=judge_repetition_penalty,
+            default_top_k=judge_top_k,
+            default_min_p=judge_min_p,
             extra_body=extra_body,
         ),
         concurrency=concurrency,
@@ -1095,13 +955,14 @@ def tune_ranking_coefficients(
         def objective(trial: optuna.Trial) -> float:
             coefficients: RankingCoefficients | BudgetedRankingConfig
             if strategy == RankingStrategy.evidence_budgeted:
-                coefficients = _suggest_budgeted_config(trial)
+                coefficients = suggest_budgeted_config(trial)
             else:
-                assert base_coeff_obj is not None
-                coefficients = _suggest_coefficients(trial, base_coeff_obj)
+                if base_coeff_obj is None:
+                    raise RuntimeError("base_coefficients must be provided for non-budgeted tuning")
+                coefficients = suggest_coefficients(trial, base_coeff_obj)
             trial_dir = tmp_root / f"trial_{trial.number:04d}"
             trial_dir.mkdir()
-            return _build_benchmark_and_score(
+            return build_benchmark_and_score(
                 coefficients,
                 strategy=strategy,
                 dataset=dataset,
@@ -1111,6 +972,7 @@ def tune_ranking_coefficients(
                 max_call_depth=max_call_depth,
                 judge=judge,
                 work_dir=trial_dir,
+                delete_checkouts=delete_checkouts,
             )
 
         study.optimize(objective, n_trials=trials, show_progress_bar=False)
