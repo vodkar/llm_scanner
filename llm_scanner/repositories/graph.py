@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from typing import Final
+from typing import Final, LiteralString
 
 from clients.neo4j import Neo4jClient
 from models.base import NodeID
@@ -24,6 +24,9 @@ NODE_KIND_TO_LABEL: Final[dict[str, str]] = {
 
 _LOGGER = logging.getLogger(__name__)
 
+NODE_WRITE_BATCH_SIZE: Final[int] = 2_000
+EDGE_WRITE_BATCH_SIZE: Final[int] = 2_000
+
 
 class GraphRepository(Neo4jClient):
     """Persist CPG nodes and relationships into Neo4j."""
@@ -41,6 +44,24 @@ class GraphRepository(Neo4jClient):
         """Remove existing graph data before loading new data."""
 
         self.client.run_write("MATCH (n) DETACH DELETE n")
+
+    def _write_rows_in_batches(
+        self,
+        query: LiteralString,
+        rows: list[dict[str, object]],
+        batch_size: int,
+    ) -> None:
+        """Execute a write query over a large payload in smaller batches.
+
+        Args:
+            query: Cypher write query to execute.
+            rows: Serialized rows passed as the `rows` parameter.
+            batch_size: Maximum number of rows per transaction.
+        """
+
+        for start_index in range(0, len(rows), batch_size):
+            batch_rows = rows[start_index : start_index + batch_size]
+            self.client.run_write(query, {"rows": batch_rows})
 
     def load(self, nodes: dict[NodeID, Node], edges: list[RelationshipBase]) -> None:
         """Load nodes and relationships into Neo4j.
@@ -61,7 +82,7 @@ class GraphRepository(Neo4jClient):
 
         for label, rows in nodes_by_label.items():
             query_nodes = NODE_QUERY_BY_LABEL[label]
-            self.client.run_write(query_nodes, {"rows": rows})
+            self._write_rows_in_batches(query_nodes, rows, NODE_WRITE_BATCH_SIZE)
             _LOGGER.info("Loaded %d nodes with label %s.", len(rows), label)
 
         edge_rows_by_type: dict[str, list[dict[str, object]]] = defaultdict(list)
@@ -90,5 +111,5 @@ class GraphRepository(Neo4jClient):
 
         for rel_type, rows in edge_rows_by_type.items():
             query_edges = RELATIONSHIP_QUERY_BY_TYPE[rel_type]
-            self.client.run_write(query_edges, {"rows": rows})
+            self._write_rows_in_batches(query_edges, rows, EDGE_WRITE_BATCH_SIZE)
             _LOGGER.info("Loaded %d edges with type %s.", len(rows), rel_type)

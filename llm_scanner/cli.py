@@ -12,6 +12,13 @@ from typing import Annotated, Any, Final
 import optuna
 import typer
 
+# This project historically uses flat imports like `from clients...` with
+# `PYTHONPATH=llm_scanner/`. When installed as a console script, that path is
+# not present by default, so we add the package directory to sys.path.
+_PACKAGE_DIR: Final[Path] = Path(__file__).resolve().parent
+if str(_PACKAGE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_DIR))
+
 from models.ranking_strategy import RankingStrategy
 from logging_utils import configure_logging
 from services.context_assembler.evidence_ranking.utils import (
@@ -19,13 +26,6 @@ from services.context_assembler.evidence_ranking.utils import (
     suggest_budgeted_config,
     suggest_coefficients,
 )
-
-# This project historically uses flat imports like `from clients...` with
-# `PYTHONPATH=llm_scanner/`. When installed as a console script, that path is
-# not present by default, so we add the package directory to sys.path.
-_PACKAGE_DIR: Final[Path] = Path(__file__).resolve().parent
-if str(_PACKAGE_DIR) not in sys.path:
-    sys.path.insert(0, str(_PACKAGE_DIR))
 
 from clients.neo4j import Neo4jConfig, build_client
 from clients.openai_compatible import DEFAULT_REPETITION_PENALTY, OpenAICompatibleClient
