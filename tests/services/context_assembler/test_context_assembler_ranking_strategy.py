@@ -20,30 +20,33 @@ class FakeContextRepository(ContextRepository):
 
         del __context
 
-    def fetch_code_nodes_by_file_lines(
+    def fetch_code_nodes_by_file_spans(
         self,
-        _: list[dict[str, object]],
+        rows: list[dict[str, object]],
     ) -> list[CodeContextNode]:
         """Return the first node as the span match."""
 
+        del rows
         return [self.context_nodes[0]]
 
     def fetch_code_neighborhood_batch(
         self,
-        _: list[str],
-        __: int,
+        start_node_ids: list[str],
+        max_depth: int,
     ) -> list[CodeContextNode]:
         """Return the configured context neighborhood."""
 
+        del start_node_ids, max_depth
         return self.context_nodes
 
     def fetch_taint_sources(
         self,
-        _: list[str],
-        __: int = 6,
+        root_node_ids: list[str],
+        max_taint_depth: int = 6,
     ) -> dict[NodeID, float]:
         """Return empty taint scores for unit test stub."""
 
+        del root_node_ids, max_taint_depth
         return {}
 
 

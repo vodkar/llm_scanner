@@ -19,23 +19,22 @@ _PACKAGE_DIR: Final[Path] = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
-from models.ranking_strategy import RankingStrategy
+from clients.neo4j import Neo4jConfig, build_client
+from clients.openai_compatible import DEFAULT_REPETITION_PENALTY, OpenAICompatibleClient
 from logging_utils import configure_logging
+from models.base import NodeID
+from models.context_ranking import BudgetedRankingConfig
+from models.edges import RelationshipBase
+from models.nodes import Node
+from models.ranking_strategy import RankingStrategy
+from repositories.graph import GraphRepository
+from services.analyzer.cleanvul_benchmark import CleanVulBenchmarkService
+from services.benchmark.llm_judge import LLMJudgeService
 from services.context_assembler.evidence_ranking.utils import (
     build_benchmark_and_score,
     suggest_budgeted_config,
     suggest_coefficients,
 )
-
-from clients.neo4j import Neo4jConfig, build_client
-from clients.openai_compatible import DEFAULT_REPETITION_PENALTY, OpenAICompatibleClient
-from models.base import NodeID
-from models.context_ranking import BudgetedRankingConfig
-from models.edges import RelationshipBase
-from models.nodes import Node
-from repositories.graph import GraphRepository
-from services.analyzer.cleanvul_benchmark import CleanVulBenchmarkService
-from services.benchmark.llm_judge import LLMJudgeService
 from services.context_assembler.ranking_config import RankingCoefficients
 from services.cpg_parser.ts_parser.cpg_builder import (
     CPGDirectoryBuilder,

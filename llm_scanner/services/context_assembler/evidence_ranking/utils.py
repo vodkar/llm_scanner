@@ -4,10 +4,10 @@ from typing import Any
 
 import optuna
 
-from models.ranking_strategy import RankingStrategy
 from clients.neo4j import Neo4jConfig
 from models.benchmark.benchmark import BenchmarkDataset
 from models.context_ranking import BudgetedRankingConfig
+from models.ranking_strategy import RankingStrategy
 from services.analyzer.cleanvul_benchmark import CleanVulBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeService
 from services.context_assembler.ranking_config import RankingCoefficients

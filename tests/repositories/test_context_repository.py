@@ -97,8 +97,8 @@ def test_context_repository_preserves_security_scores_from_span_lookup() -> None
 
     repository = ContextRepository(client=client)
 
-    rows = repository.fetch_code_nodes_by_file_lines(
-        [{"file_path": "src/app.py", "line_number": 12}]
+    rows = repository.fetch_code_nodes_by_file_spans(
+        [{"file_path": "src/app.py", "start_line": 12, "end_line": 12}]
     )
 
     assert rows == [
@@ -114,6 +114,36 @@ def test_context_repository_preserves_security_scores_from_span_lookup() -> None
             security_path_score=0.8,
         )
     ]
+
+
+def test_context_repository_merges_overlapping_spans_before_query() -> None:
+    """Overlapping and adjacent spans should be coalesced before Neo4j lookup."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "CALLS"}],
+        [],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    repository.fetch_code_nodes_by_file_spans(
+        [
+            {"file_path": "src/app.py", "start_line": 10, "end_line": 12},
+            {"file_path": "src/app.py", "start_line": 11, "end_line": 15},
+            {"file_path": "src/app.py", "start_line": 16, "end_line": 18},
+            {"file_path": "src/other.py", "start_line": 5, "end_line": 5},
+        ]
+    )
+
+    _, params = client.run_read.call_args_list[1].args
+    assert params == {
+        "rows": [
+            {"file_path": "src/app.py", "start_line": 10, "end_line": 18},
+            {"file_path": "src/other.py", "start_line": 5, "end_line": 5},
+        ]
+    }
 
 
 def test_fetch_with_edge_paths_merges_per_edge_type_depths() -> None:

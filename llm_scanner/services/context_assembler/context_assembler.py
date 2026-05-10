@@ -48,15 +48,15 @@ class ContextAssemblerService(BaseModel):
             if any(end < start for start, end in file_span.line_spans):
                 raise ValueError("end_line must be >= start_line")
 
-        spans_nodes = self.context_repository.fetch_code_nodes_by_file_lines(
+        spans_nodes = self.context_repository.fetch_code_nodes_by_file_spans(
             [
                 {
                     "file_path": str(file_span.file_path),
-                    "line_number": line_number,
+                    "start_line": line_span[0],
+                    "end_line": line_span[1],
                 }
                 for file_span in files_spans
                 for line_span in file_span.line_spans
-                for line_number in range(line_span[0], line_span[1] + 1)
             ]
         )
         _LOGGER.info("Found %d context nodes overlapping file spans", len(spans_nodes))

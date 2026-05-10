@@ -95,6 +95,19 @@ CODE_NODES_BY_FILE_LINE_QUERY: Final[LiteralString] = (
     "c.security_path_score AS security_path_score"
 )
 
+CODE_NODES_BY_FILE_SPAN_QUERY: Final[LiteralString] = (
+    "UNWIND $rows AS r "
+    "MATCH (c:Code) "
+    "WHERE c.file_path = r.file_path "
+    "AND c.line_start <= r.end_line "
+    "AND c.line_end >= r.start_line "
+    "RETURN r.file_path AS file_path, r.start_line AS start_line, r.end_line AS end_line, "
+    "c.id AS id, c.file_path AS node_file_path, c.line_start AS line_start, "
+    "c.line_end AS line_end, c.node_kind AS node_kind, "
+    "c.finding_evidence_score AS finding_evidence_score, "
+    "c.security_path_score AS security_path_score"
+)
+
 
 def _relationship_query(rel_type: str) -> LiteralString:
     """Build a literal query for a relationship type.
@@ -252,6 +265,12 @@ def code_bfs_nodes_batch_query(
         "n.security_path_score AS security_path_score "
     )
     return cast(LiteralString, query)
+
+
+def code_nodes_by_file_span_query() -> LiteralString:
+    """Return a literal query for code nodes overlapping file spans."""
+
+    return CODE_NODES_BY_FILE_SPAN_QUERY
 
 
 TAINT_HOP_DECAY: Final[dict[int, float]] = {1: 1.0, 2: 0.70, 3: 0.50, 4: 0.35}

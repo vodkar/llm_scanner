@@ -11,7 +11,7 @@ from repositories.queries import (
     backward_dataflow_taint_query,
     code_bfs_nodes_batch_query,
     code_bfs_nodes_query,
-    code_nodes_by_file_line_query,
+    code_nodes_by_file_span_query,
     code_traversal_relationship_types,
     taint_score_from_hop,
 )
@@ -65,8 +65,7 @@ class ContextRepository(BaseModel):
         if not rows:
             return []
 
-        normalized_rows: list[dict[str, object]] = []
-        seen_keys: set[tuple[str, int]] = set()
+        span_rows: list[dict[str, object]] = []
         for row in rows:
             file_path = str(row.get("file_path", ""))
             line_number_raw = row.get("line_number")
@@ -78,22 +77,90 @@ class ContextRepository(BaseModel):
                 continue
             if line_number < 1:
                 continue
-            key = (file_path, line_number)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            normalized_rows.append(
+            span_rows.append(
                 {
                     "file_path": file_path,
-                    "line_number": line_number,
+                    "start_line": line_number,
+                    "end_line": line_number,
                 }
             )
+
+        return self.fetch_code_nodes_by_file_spans(span_rows)
+
+    def fetch_code_nodes_by_file_spans(
+        self,
+        rows: list[dict[str, object]],
+    ) -> list[CodeContextNode]:
+        """Return code nodes overlapping the supplied file spans.
+
+        Args:
+            rows: Items with ``file_path``, ``start_line``, and ``end_line`` keys.
+
+        Returns:
+            Matching code nodes.
+        """
+
+        normalized_rows = self._normalize_file_spans(rows)
 
         if not normalized_rows:
             return []
 
-        query = code_nodes_by_file_line_query()
+        query = code_nodes_by_file_span_query()
         return self._build_context_nodes(self.client.run_read(query, {"rows": normalized_rows}))
+
+    @staticmethod
+    def _normalize_file_spans(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        """Normalize and merge overlapping file spans.
+
+        Args:
+            rows: Candidate file spans.
+
+        Returns:
+            Normalized spans with overlaps coalesced per file path.
+        """
+
+        spans_by_file: dict[str, list[tuple[int, int]]] = {}
+        for row in rows:
+            file_path = str(row.get("file_path", ""))
+            start_line_raw = row.get("start_line")
+            end_line_raw = row.get("end_line")
+            if not file_path or start_line_raw is None or end_line_raw is None:
+                continue
+            try:
+                start_line = int(str(start_line_raw))
+                end_line = int(str(end_line_raw))
+            except (TypeError, ValueError):
+                continue
+            if start_line < 1 or end_line < start_line:
+                continue
+
+            spans_by_file.setdefault(file_path, []).append((start_line, end_line))
+
+        normalized_rows: list[dict[str, object]] = []
+        for file_path, spans in spans_by_file.items():
+            merged_spans: list[tuple[int, int]] = []
+            for start_line, end_line in sorted(spans):
+                if not merged_spans:
+                    merged_spans.append((start_line, end_line))
+                    continue
+
+                previous_start, previous_end = merged_spans[-1]
+                if start_line <= previous_end + 1:
+                    merged_spans[-1] = (previous_start, max(previous_end, end_line))
+                    continue
+
+                merged_spans.append((start_line, end_line))
+
+            normalized_rows.extend(
+                {
+                    "file_path": file_path,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                }
+                for start_line, end_line in merged_spans
+            )
+
+        return normalized_rows
 
     def fetch_code_neighborhood_batch(
         self, start_node_ids: list[str], max_depth: int
