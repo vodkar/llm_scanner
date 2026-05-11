@@ -7,13 +7,14 @@ from models.base import NodeID
 from models.context import CodeContextNode, FileSpans
 from repositories.context import ContextRepository
 from services.context_assembler.context_assembler import ContextAssemblerService
-from services.context_assembler.ranking import ContextNodeRankingStrategy
+from services.context_assembler.ranking import ContextNodeRankingStrategy, DummyNodeRankingStrategy
 
 
 class FakeContextRepository(ContextRepository):
     """Minimal repository stub for context assembler tests."""
 
     context_nodes: list[CodeContextNode]
+    taint_fetch_calls: int = 0
 
     def model_post_init(self, __context: Any) -> None:
         """Skip Neo4j initialization for a pure unit test stub."""
@@ -47,6 +48,7 @@ class FakeContextRepository(ContextRepository):
         """Return empty taint scores for unit test stub."""
 
         del root_node_ids, max_taint_depth
+        self.taint_fetch_calls += 1
         return {}
 
 
@@ -118,3 +120,46 @@ def test_context_assembler_uses_injected_ranking_strategy(tmp_path: Path) -> Non
 
     assert "def beta_function_name" in context.context_text
     assert "def alpha_function_name" not in context.context_text
+
+
+def test_context_assembler_skips_taint_lookup_for_strategies_without_taint(
+    tmp_path: Path,
+) -> None:
+    """Dummy ranking should not trigger the backward-taint traversal."""
+
+    alpha_file = tmp_path / "alpha.py"
+    alpha_file.write_text(
+        "def alpha_function_name():\n    return 'alpha-value'\n",
+        encoding="utf-8",
+    )
+
+    alpha_node = CodeContextNode(
+        identifier=NodeID("function:alpha"),
+        node_kind="FunctionNode",
+        name="alpha_function_name",
+        file_path=Path("alpha.py"),
+        line_start=1,
+        line_end=2,
+        depth=0,
+    )
+
+    repository = FakeContextRepository.model_construct(
+        client=None,
+        context_nodes=[alpha_node],
+        traversal_relationship_types=(),
+        taint_fetch_calls=0,
+    )
+    service = ContextAssemblerService(
+        project_root=tmp_path,
+        context_repository=repository,
+        max_call_depth=2,
+        token_budget=18,
+        ranking_strategy=DummyNodeRankingStrategy(),
+    )
+
+    service.assemble_for_spans(
+        tmp_path,
+        [FileSpans(tmp_path / "alpha.py", [(1, 1)])],
+    )
+
+    assert repository.taint_fetch_calls == 0

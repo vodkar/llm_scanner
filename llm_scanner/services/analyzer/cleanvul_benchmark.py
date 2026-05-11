@@ -4,7 +4,7 @@ import shutil
 import textwrap
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,8 +15,9 @@ from models.benchmark.benchmark import (
     BenchmarkSample,
     CleanVulSampleMetadata,
 )
+from models.base import NodeID
 from models.benchmark.cleanvul import CleanVulEntry
-from models.context import Context, FileSpans
+from models.context import CodeContextNode, Context, FileSpans
 from models.context_ranking import BudgetedRankingConfig
 from pipeline import GeneralPipeline
 from repositories.context import ContextRepository
@@ -52,6 +53,15 @@ class _CleanVulEntryPair(BaseModel):
 
     vulnerable_entry: CleanVulEntry
     fixed_entry: CleanVulEntry
+
+
+class _SharedContextInputs(NamedTuple):
+    """Shared fetched inputs reused across ranking strategies."""
+
+    root_ids: list[str]
+    plain_context_nodes: list[CodeContextNode]
+    edge_path_context_nodes: list[CodeContextNode]
+    taint_scores: dict[NodeID, float]
 
 
 class CleanVulBenchmarkService(BaseModel):
@@ -452,20 +462,121 @@ class CleanVulBenchmarkService(BaseModel):
             GeneralPipeline(src=repo_path, neo4j_client=neo4j_client).run()
 
             context_repository = ContextRepository(client=neo4j_client)
-            contexts: dict[str, Context] = {}
-            for strategy_name, factory in strategy_factories.items():
-                context_service = ContextAssemblerService(
-                    project_root=repo_path,
-                    context_repository=context_repository,
-                    max_call_depth=self.max_call_depth,
-                    token_budget=self.token_budget,
-                    ranking_strategy=factory(repo_path),
+            strategies: dict[str, ContextNodeRankingStrategy] = {
+                strategy_name: factory(repo_path)
+                for strategy_name, factory in strategy_factories.items()
+            }
+            shared_inputs = self._prepare_shared_context_inputs(
+                repo_path=repo_path,
+                entry=entry,
+                context_repository=context_repository,
+                strategies=strategies,
+            )
+
+            return self._render_contexts_from_shared_inputs(
+                repo_path=repo_path,
+                context_repository=context_repository,
+                strategies=strategies,
+                shared_inputs=shared_inputs,
+            )
+
+    def _prepare_shared_context_inputs(
+        self,
+        repo_path: Path,
+        entry: CleanVulEntry,
+        context_repository: ContextRepository,
+        strategies: Mapping[str, ContextNodeRankingStrategy],
+    ) -> _SharedContextInputs:
+        """Fetch shared context inputs needed by the supplied strategies."""
+
+        fetch_service = self._build_context_service(
+            repo_path=repo_path,
+            context_repository=context_repository,
+            ranking_strategy=next(iter(strategies.values())),
+        )
+
+        root_ids = fetch_service.fetch_root_ids_for_spans(entry.files_spans)
+        needs_plain_context_nodes = any(
+            not strategy.requires_edge_paths for strategy in strategies.values()
+        )
+        needs_edge_path_context_nodes = any(
+            strategy.requires_edge_paths for strategy in strategies.values()
+        )
+        needs_taint_scores = any(
+            strategy.requires_taint_scores for strategy in strategies.values()
+        )
+
+        plain_context_nodes: list[CodeContextNode] = []
+        if needs_plain_context_nodes:
+            plain_context_nodes = fetch_service.fetch_context_nodes_for_root_ids(
+                root_ids,
+                requires_edge_paths=False,
+            )
+
+        edge_path_context_nodes: list[CodeContextNode] = []
+        if needs_edge_path_context_nodes:
+            edge_path_context_nodes = fetch_service.fetch_context_nodes_for_root_ids(
+                root_ids,
+                requires_edge_paths=True,
+            )
+
+        taint_scores: dict[NodeID, float] = {}
+        if needs_taint_scores:
+            taint_scores = fetch_service.fetch_taint_scores(root_ids)
+
+        return _SharedContextInputs(
+            root_ids=root_ids,
+            plain_context_nodes=plain_context_nodes,
+            edge_path_context_nodes=edge_path_context_nodes,
+            taint_scores=taint_scores,
+        )
+
+    def _render_contexts_from_shared_inputs(
+        self,
+        repo_path: Path,
+        context_repository: ContextRepository,
+        strategies: Mapping[str, ContextNodeRankingStrategy],
+        shared_inputs: _SharedContextInputs,
+    ) -> dict[str, Context]:
+        """Render one context per strategy using shared fetched inputs."""
+
+        contexts: dict[str, Context] = {}
+        for strategy_name, strategy in strategies.items():
+            base_context_nodes = (
+                shared_inputs.edge_path_context_nodes
+                if strategy.requires_edge_paths
+                else shared_inputs.plain_context_nodes
+            )
+            context_nodes = base_context_nodes
+            if strategy.requires_taint_scores:
+                context_nodes = ContextAssemblerService.apply_taint_scores(
+                    base_context_nodes,
+                    shared_inputs.taint_scores,
                 )
-                contexts[strategy_name] = context_service.assemble_for_spans(
-                    repo_path,
-                    entry.files_spans,
-                )
-            return contexts
+            context_service = self._build_context_service(
+                repo_path=repo_path,
+                context_repository=context_repository,
+                ranking_strategy=strategy,
+            )
+            contexts[strategy_name] = context_service.assemble_from_nodes(repo_path, context_nodes)
+
+        return contexts
+
+    def _build_context_service(
+        self,
+        repo_path: Path,
+        context_repository: ContextRepository,
+        ranking_strategy: ContextNodeRankingStrategy,
+    ) -> ContextAssemblerService:
+        """Build a context assembler with the current benchmark settings."""
+
+        return ContextAssemblerService(
+            project_root=repo_path,
+            context_repository=context_repository,
+            max_call_depth=self.max_call_depth,
+            token_budget=self.token_budget,
+            ranking_strategy=ranking_strategy,
+        )
 
     def _build_current_ranking_strategy(self, repo_path: Path) -> ContextNodeRankingStrategy:
         return NodeRelevanceRankingService(

@@ -31,6 +31,7 @@ class EvidenceAwareBudgetedNodeRankingStrategy(BaseModel, ContextNodeRankingStra
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     requires_edge_paths: ClassVar[bool] = True
+    requires_taint_scores: ClassVar[bool] = True
 
     project_root: Path
     token_budget: int = Field(..., gt=0)

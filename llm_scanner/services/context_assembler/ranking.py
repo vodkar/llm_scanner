@@ -249,6 +249,9 @@ class ContextNodeRankingStrategy(ABC):
     requires_edge_paths: ClassVar[bool] = False
     """When True, the assembler fetches per-edge-type depths for each node."""
 
+    requires_taint_scores: ClassVar[bool] = False
+    """When True, the assembler fetches backward-taint scores for each root."""
+
     @abstractmethod
     def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
         """Return context nodes in ready-to-use ranked order.
@@ -265,6 +268,8 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     """Calculate security, context, and final ranking scores for one context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    requires_taint_scores: ClassVar[bool] = True
 
     project_root: Path
     snippet_cache_max_entries: int = 10000

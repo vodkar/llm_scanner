@@ -235,16 +235,23 @@ class ContextRepository(BaseModel):
         if not start_node_ids:
             return []
 
-        unique_start_ids = sorted(set(start_node_ids))
+        unique_start_ids: tuple[str, ...] = tuple(sorted(set(start_node_ids)))
         nodes_by_id: dict[NodeID, CodeContextNode] = {}
         ordered_node_ids: list[NodeID] = []
 
         for edge_type in self.traversal_relationship_types:
-            query = code_bfs_nodes_batch_query(max_depth, (edge_type,))
-            rows = self.client.run_read(
-                query,
-                {"start_ids": unique_start_ids, "max_depth": max_depth},
-            )
+            if len(unique_start_ids) == 1:
+                query = code_bfs_nodes_query(max_depth, (edge_type,))
+                rows = self.client.run_read(
+                    query,
+                    {"start_id": unique_start_ids[0], "max_depth": max_depth},
+                )
+            else:
+                query = code_bfs_nodes_batch_query(max_depth, (edge_type,))
+                rows = self.client.run_read(
+                    query,
+                    {"start_ids": list(unique_start_ids), "max_depth": max_depth},
+                )
             for row in rows:
                 node_id = NodeID(str(row["id"]))
                 row_depth = int(row.get("depth", 0))
@@ -295,8 +302,10 @@ class ContextRepository(BaseModel):
         if not root_node_ids:
             return {}
 
+        unique_root_ids: list[str] = sorted(set(root_node_ids))
+
         query = backward_dataflow_taint_query(max_taint_depth)
-        rows = self.client.run_read(query, {"root_ids": root_node_ids})
+        rows = self.client.run_read(query, {"root_ids": unique_root_ids})
         return {
             NodeID(str(row["id"])): taint_score_from_hop(int(row["taint_hop"]))
             for row in rows

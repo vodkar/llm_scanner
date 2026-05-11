@@ -1,18 +1,22 @@
 """Tests for CleanVul benchmark dataset generation."""
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from models.benchmark.cleanvul import CleanVulEntry
-from models.context import Context, FileSpans
+from models.context import CodeContextNode, Context, FileSpans
+from clients.neo4j import Neo4jClient
+from repositories.context import ContextRepository
 from services.analyzer.cleanvul_benchmark import (
     CleanVulBenchmarkService,
     _CleanVulEntryPair,
 )
 from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
 from services.benchmark.repo_checkout import RepoCheckoutService
+from services.context_assembler.ranking import ContextNodeRankingStrategy
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -75,7 +79,7 @@ def _make_service(tmp_path: Path, **overrides: object) -> CleanVulBenchmarkServi
         delete_checkouts=False,
     )
     defaults.update(overrides)
-    return CleanVulBenchmarkService(**defaults)
+    return CleanVulBenchmarkService.model_validate(defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -448,3 +452,4 @@ def test_build_uses_separate_checkout_roots(
     # Both cache dirs are subdirectories of repo_cache_dir
     for d in seen_cache_dirs:
         assert d.parent == tmp_path / "repos"
+

@@ -213,3 +213,44 @@ def test_fetch_with_edge_paths_returns_empty_for_empty_start_ids() -> None:
     repository = ContextRepository(client=client)
 
     assert repository.fetch_code_neighborhood_with_edge_paths([], 3) == []
+
+
+def test_fetch_with_edge_paths_uses_single_start_query_for_one_root() -> None:
+    """Single-root edge-path traversal should avoid the batch UNWIND query shape."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CONTAINS"}],
+        [],
+        [],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    repository.fetch_code_neighborhood_with_edge_paths(["node-1"], 2)
+
+    first_query, first_params = client.run_read.call_args_list[1].args
+    second_query, second_params = client.run_read.call_args_list[2].args
+    assert "$start_id" in first_query
+    assert "$start_id" in second_query
+    assert first_params == {"start_id": "node-1", "max_depth": 2}
+    assert second_params == {"start_id": "node-1", "max_depth": 2}
+
+
+def test_fetch_taint_sources_deduplicates_root_ids_before_query() -> None:
+    """Backward taint traversal should not receive duplicate root IDs."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "FLOWS_TO"}],
+        [],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    repository.fetch_taint_sources(["node-2", "node-1", "node-2"])
+
+    _, params = client.run_read.call_args_list[1].args
+    assert params == {"root_ids": ["node-1", "node-2"]}
