@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from models.base import NodeID
 from models.context import CodeContextNode
 from models.context_ranking import BudgetedRankingConfig, RankingCandidate
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.snippet_reader import SnippetReaderService
 
 
 def estimate_tokens(text: str) -> int:

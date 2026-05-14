@@ -6,7 +6,7 @@ import pytest
 
 from models.context import CodeContextNode
 from models.context_ranking import EvidenceRole, RankingCandidate
-from services.context_assembler.evidence_ranking.node_mapper import NodeMapper
+from services.ranking.evidence_ranking.node_mapper import NodeMapper
 
 
 @pytest.fixture(autouse=True)

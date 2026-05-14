@@ -1,11 +1,11 @@
-from .context_assembler import ContextAssemblerService
-from .ranking import (
+from ..ranking.ranking import (
     ContextNodeRankingStrategy,
     DepthRepeatsContextNodeRankingStrategy,
     DummyNodeRankingStrategy,
     MultiplicativeBoostNodeRankingStrategy,
     RandomNodeRankingStrategy,
 )
+from .context_assembler import ContextAssemblerService
 
 __all__ = [
     "ContextAssemblerService",

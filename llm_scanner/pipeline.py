@@ -9,8 +9,8 @@ from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.graph import GraphRepository
 from services.analyzer.bandit import BanditAnalyzerService
 from services.analyzer.dlint import DlintAnalyzerService
-from services.context_assembler.ranking import NodeRelevanceRankingService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
+from services.ranking.ranking import NodeRelevanceRankingService
 
 
 class GeneralPipeline(BaseModel):

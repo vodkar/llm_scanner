@@ -6,10 +6,10 @@ import pytest
 
 from models.context import CodeContextNode
 from models.context_ranking import BudgetedRankingConfig
-from services.context_assembler.evidence_ranking.strategy import (
+from services.ranking.evidence_ranking.strategy import (
     EvidenceAwareBudgetedNodeRankingStrategy,
 )
-from services.context_assembler.ranking import ContextNodeRankingStrategy
+from services.ranking.ranking import ContextNodeRankingStrategy
 
 
 @pytest.fixture(autouse=True)

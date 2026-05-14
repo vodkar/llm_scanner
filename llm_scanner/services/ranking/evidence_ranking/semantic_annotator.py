@@ -15,7 +15,7 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict
 
 from models.context_ranking import EvidenceRole, RankingCandidate
-from services.context_assembler.ranking import (
+from services.ranking.ranking import (
     GENERATED_FILE_SUFFIXES,
     GENERATED_HEADER_MARKERS,
     GENERATED_PATH_MARKERS,
@@ -23,7 +23,7 @@ from services.context_assembler.ranking import (
     SINK_HINTS,
     SOURCE_HINTS,
 )
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.snippet_reader import SnippetReaderService
 
 # CPG edge types we treat as evidence channels. Order is stable so
 # cpg_confidence is reproducible across runs.

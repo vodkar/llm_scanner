@@ -10,7 +10,7 @@ from models.context_ranking import (
     EvidenceRole,
     RankingCandidate,
 )
-from services.context_assembler.evidence_ranking.budgeted_selector import (
+from services.ranking.evidence_ranking.budgeted_selector import (
     BudgetedSelector,
 )
 

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from models.base import NodeID
 from models.context import CodeContextNode, Context, FileSpans
 from repositories.context import ContextRepository
-from services.context_assembler.ranking import (
+from services.ranking.ranking import (
     ContextNodeRankingStrategy,
 )
 

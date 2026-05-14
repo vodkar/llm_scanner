@@ -1,7 +1,5 @@
-import json
 import logging
 import shutil
-import textwrap
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Final, NamedTuple
@@ -11,32 +9,27 @@ from pydantic import BaseModel, ConfigDict, Field
 from clients.neo4j import Neo4jConfig, build_client
 from models.base import NodeID
 from models.benchmark.benchmark import (
-    BenchmarkDataset,
-    BenchmarkMetadata,
     BenchmarkSample,
     CleanVulSampleMetadata,
 )
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import CodeContextNode, Context, FileSpans
-from models.context_ranking import BudgetedRankingConfig
 from pipeline import GeneralPipeline
 from repositories.context import ContextRepository
 from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
+from services.benchmark.dataset_builder import (
+    DatasetBuilderService,
+    DatasetPathFactory,
+    MetadataNameFactory,
+)
 from services.benchmark.repo_checkout import RepoCheckoutService
 from services.context_assembler.context_assembler import ContextAssemblerService
-from services.context_assembler.cpg_structural_ranking import CPGStructuralRankingStrategy
-from services.context_assembler.evidence_ranking.strategy import (
-    EvidenceAwareBudgetedNodeRankingStrategy,
-)
-from services.context_assembler.ranking import (
+from services.ranking.ranking import (
     ContextNodeRankingStrategy,
-    DepthRepeatsContextNodeRankingStrategy,
-    DummyNodeRankingStrategy,
-    MultiplicativeBoostNodeRankingStrategy,
     NodeRelevanceRankingService,
-    RandomNodeRankingStrategy,
 )
-from services.context_assembler.ranking_config import RankingCoefficients
+from services.ranking.strategy_factory import build_strategy_factories
+from services.source_code import SourceCodeService
 
 logger = logging.getLogger(__name__)
 LOGGING_INTERVAL = 10
@@ -44,8 +37,6 @@ CLEAR_DATABASE_QUERY: Final[str] = "MATCH (n) DETACH DELETE n"
 CURRENT_STRATEGY_NAME: Final[str] = "current"
 
 RankingStrategyFactory = Callable[[Path], ContextNodeRankingStrategy]
-DatasetPathFactory = Callable[[str], Path]
-MetadataNameFactory = Callable[[str], str]
 
 
 class _CleanVulEntryPair(BaseModel):
@@ -109,7 +100,12 @@ class CleanVulBenchmarkService(BaseModel):
             Tuple of paths to the main dataset and entries files.
         """
         dataset_paths, entries_path = self._build_datasets(
-            strategy_factories={CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy}
+            strategy_factories={
+                CURRENT_STRATEGY_NAME: lambda repo_path: NodeRelevanceRankingService(
+                    project_root=repo_path,
+                    snippet_cache_max_entries=10000,
+                )
+            }
         )
         return dataset_paths[CURRENT_STRATEGY_NAME], entries_path
 
@@ -119,7 +115,14 @@ class CleanVulBenchmarkService(BaseModel):
         Returns:
             Mapping of strategy names to dataset file paths and the entries file path.
         """
-        return self._build_datasets(strategy_factories=self._build_strategy_factories())
+        return self._build_datasets(
+            build_strategy_factories(
+                self.token_budget,
+                self.seed,
+                self.cpg_structural_coefficients_path,
+                self.budgeted_ranking_config_path,
+            )
+        )
 
     def _build_datasets(
         self,
@@ -284,7 +287,8 @@ class CleanVulBenchmarkService(BaseModel):
                     self._delete_checkout(vulnerable_repo_path)
                     self._delete_checkout(fixed_repo_path)
         finally:
-            dataset_paths = self._write_datasets(
+            dataset_builder = DatasetBuilderService(output_dir=self.output_dir)
+            dataset_paths = dataset_builder.write_datasets(
                 samples_by_strategy=samples_by_strategy,
                 metadata_name_factory=metadata_name_factory,
                 dataset_path_factory=dataset_path_factory,
@@ -331,8 +335,8 @@ class CleanVulBenchmarkService(BaseModel):
             vuln_file = vulnerable_repo_path / row.file_name
             fixed_file = fixed_repo_path / row.file_name
 
-            vuln_span = self._find_function_line_span(vuln_file, row.func_before)
-            fixed_span = self._find_function_line_span(fixed_file, row.func_after)
+            vuln_span = SourceCodeService.find_function_line_span(vuln_file, row.func_before)
+            fixed_span = SourceCodeService.find_function_line_span(fixed_file, row.func_after)
 
             if vuln_span is None or fixed_span is None:
                 logger.warning(
@@ -356,10 +360,7 @@ class CleanVulBenchmarkService(BaseModel):
         representative = rows[0]
         cwe_ids = CleanVulLoaderService._parse_cwe_ids(representative.cwe_id)
 
-        def _make_files_spans(spans_by_file: dict[str, list[tuple[int, int]]]) -> list[FileSpans]:
-            return [FileSpans(Path(fname), spans) for fname, spans in spans_by_file.items()]
-
-        def _make_entry(func_codes: list[str], is_vulnerable: bool) -> CleanVulEntry:
+        def _make_entry(func_codes: list[str], *, is_vulnerable: bool) -> CleanVulEntry:
             spans_by_file = vuln_spans_by_file if is_vulnerable else fixed_spans_by_file
             return CleanVulEntry(
                 commit_url=representative.commit_url,
@@ -367,7 +368,9 @@ class CleanVulBenchmarkService(BaseModel):
                 fix_hash=fix_hash,
                 file_name=representative.file_name,
                 func_code="\n".join(func_codes),
-                files_spans=_make_files_spans(spans_by_file),
+                files_spans=[
+                    FileSpans(Path(fname), spans) for fname, spans in spans_by_file.items()
+                ],
                 cve_id=representative.cve_id,
                 cwe_id=cwe_ids[0] if cwe_ids else None,
                 cwe_ids=cwe_ids,
@@ -380,84 +383,6 @@ class CleanVulBenchmarkService(BaseModel):
             vulnerable_entry=_make_entry(vuln_func_codes, is_vulnerable=True),
             fixed_entry=_make_entry(fixed_func_codes, is_vulnerable=False),
         )
-
-    @staticmethod
-    def _find_function_line_span(
-        file_path: Path,
-        func_code: str,
-    ) -> tuple[int, int] | None:
-        """Locate ``func_code`` in a file by text matching.
-
-        Tries three increasingly lenient matching strategies in order:
-
-        1. Exact match (rstrip each line; skip blank file lines while scanning).
-        2. Whitespace-normalised match (collapse all runs of whitespace).
-        3. Dedented match (``textwrap.dedent`` the needle, then whitespace-normalise).
-
-        Args:
-            file_path: Path to the source file in the checked-out repository.
-            func_code: Function source text from the dataset.
-
-        Returns:
-            1-based ``(start_line, end_line)`` tuple, or ``None`` if not found.
-        """
-        try:
-            file_text = file_path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            return None
-
-        file_lines = file_text.splitlines()
-
-        def _rstrip_needle(code: str) -> list[str]:
-            return [ln.rstrip() for ln in code.splitlines() if ln.strip()]
-
-        def _normalise(line: str) -> str:
-            return " ".join(line.split())
-
-        def _normalise_needle(code: str) -> list[str]:
-            return [_normalise(ln) for ln in code.splitlines() if ln.strip()]
-
-        def _search(
-            needle_lines: list[str], transform: Callable[[str], str]
-        ) -> tuple[int, int] | None:
-            if not needle_lines:
-                return None
-            first = needle_lines[0]
-            for i, file_line in enumerate(file_lines):
-                if transform(file_line) != first:
-                    continue
-                # Candidate start at file line i
-                candidate_end = i
-                needle_idx = 1
-                j = i + 1
-                while needle_idx < len(needle_lines) and j < len(file_lines):
-                    file_transformed = transform(file_lines[j])
-                    if file_transformed == needle_lines[needle_idx]:
-                        needle_idx += 1
-                        candidate_end = j
-                    elif file_transformed == "":
-                        pass  # skip blank file lines not in needle
-                    else:
-                        break  # mismatch
-                    j += 1
-                if needle_idx == len(needle_lines):
-                    return (i + 1, candidate_end + 1)  # 1-based
-            return None
-
-        # Tier 1: exact (rstrip)
-        result = _search(_rstrip_needle(func_code), str.rstrip)
-        if result is not None:
-            return result
-
-        # Tier 2: whitespace-normalised
-        result = _search(_normalise_needle(func_code), _normalise)
-        if result is not None:
-            return result
-
-        # Tier 3: dedented + whitespace-normalised
-        dedented = textwrap.dedent(func_code)
-        result = _search(_normalise_needle(dedented), _normalise)
-        return result
 
     def _scan_repository_for_entry(
         self,
@@ -588,59 +513,6 @@ class CleanVulBenchmarkService(BaseModel):
             ranking_strategy=ranking_strategy,
         )
 
-    def _build_current_ranking_strategy(self, repo_path: Path) -> ContextNodeRankingStrategy:
-        return NodeRelevanceRankingService(
-            project_root=repo_path,
-            snippet_cache_max_entries=10000,
-        )
-
-    def _build_cpg_structural_ranking_strategy(self, repo_path: Path) -> ContextNodeRankingStrategy:
-        if self.cpg_structural_coefficients_path is not None:
-            coefficients = RankingCoefficients.from_yaml(self.cpg_structural_coefficients_path)
-            return CPGStructuralRankingStrategy(
-                project_root=repo_path,
-                snippet_cache_max_entries=10000,
-                coefficients=coefficients,
-            )
-        return CPGStructuralRankingStrategy(
-            project_root=repo_path,
-            snippet_cache_max_entries=10000,
-        )
-
-    def _build_evidence_budgeted_ranking_strategy(
-        self, repo_path: Path
-    ) -> ContextNodeRankingStrategy:
-        if self.budgeted_ranking_config_path is not None:
-            config = BudgetedRankingConfig.from_yaml(self.budgeted_ranking_config_path)
-        else:
-            config = BudgetedRankingConfig()
-        return EvidenceAwareBudgetedNodeRankingStrategy(
-            project_root=repo_path,
-            token_budget=self.token_budget,
-            config=config,
-        )
-
-    def _build_strategy_factories(self) -> dict[str, RankingStrategyFactory]:
-        return {
-            CURRENT_STRATEGY_NAME: self._build_current_ranking_strategy,
-            "depth_repeats_context": lambda repo_path: DepthRepeatsContextNodeRankingStrategy(
-                project_root=repo_path,
-                snippet_cache_max_entries=10000,
-            ),
-            "random_picking": lambda repo_path: RandomNodeRankingStrategy(
-                project_root=repo_path,
-                snippet_cache_max_entries=10000,
-                random_seed=self.seed,
-            ),
-            "multiplicative_boost": lambda repo_path: MultiplicativeBoostNodeRankingStrategy(
-                project_root=repo_path,
-                snippet_cache_max_entries=10000,
-            ),
-            "cpg_structural": self._build_cpg_structural_ranking_strategy,
-            "evidence_budgeted": self._build_evidence_budgeted_ranking_strategy,
-            "dummy": lambda _repo_path: DummyNodeRankingStrategy(),
-        }
-
     def _to_sample(
         self,
         entry: CleanVulEntry,
@@ -661,26 +533,6 @@ class CleanVulBenchmarkService(BaseModel):
             commit_url=entry.commit_url,
             description=entry.commit_msg,
             cwe_number=entry.cwe_id,
-        )
-
-    def _build_metadata(
-        self,
-        samples: list[BenchmarkSample],
-        dataset_name: str,
-    ) -> BenchmarkMetadata:
-        distribution: dict[str, int] = {}
-        for sample in samples:
-            cwe_number = sample.metadata.cwe_number
-            if cwe_number is None:
-                continue
-            key = f"CWE-{cwe_number}"
-            distribution[key] = distribution.get(key, 0) + 1
-
-        return BenchmarkMetadata(
-            name=dataset_name,
-            task_type="binary",
-            total_samples=len(samples),
-            cwe_distribution=distribution,
         )
 
     def _entry_pair_budget_reason(self, pair: _CleanVulEntryPair) -> str | None:
@@ -756,49 +608,9 @@ class CleanVulBenchmarkService(BaseModel):
                 return False
         return True
 
-    def _dataset_path(
-        self,
-        strategy_name: str,
-        dataset_path_factory: DatasetPathFactory | None = None,
-    ) -> Path:
-        if dataset_path_factory is not None:
-            return dataset_path_factory(strategy_name)
-        if strategy_name == CURRENT_STRATEGY_NAME:
-            return self.output_dir / "cleanvul_context_benchmark.json"
-        return self.output_dir / f"cleanvul_context_benchmark_{strategy_name}.json"
-
-    @staticmethod
-    def _metadata_name(
-        strategy_name: str,
-        metadata_name_factory: MetadataNameFactory | None = None,
-    ) -> str:
-        if metadata_name_factory is not None:
-            return metadata_name_factory(strategy_name)
-        return f"CleanVul-with-Context-Benchmark-{strategy_name}"
-
     @staticmethod
     def _estimate_tokens(text: str) -> int:
         return max(1, len(text) // 3) if text else 0
-
-    def _write_datasets(
-        self,
-        samples_by_strategy: Mapping[str, list[BenchmarkSample]],
-        metadata_name_factory: MetadataNameFactory | None = None,
-        dataset_path_factory: DatasetPathFactory | None = None,
-    ) -> dict[str, Path]:
-        dataset_paths: dict[str, Path] = {}
-        for strategy_name, samples in samples_by_strategy.items():
-            dataset = BenchmarkDataset(
-                metadata=self._build_metadata(
-                    samples,
-                    self._metadata_name(strategy_name, metadata_name_factory),
-                ),
-                samples=samples,
-            )
-            dataset_path = self._dataset_path(strategy_name, dataset_path_factory)
-            self._write_json(dataset_path, dataset.model_dump(by_alias=True))
-            dataset_paths[strategy_name] = dataset_path
-        return dataset_paths
 
     def _delete_checkout(self, repo_path: Path | None) -> None:
         if not self.delete_checkouts or repo_path is None or not repo_path.exists():
@@ -838,8 +650,4 @@ class CleanVulBenchmarkService(BaseModel):
             }
             for sample_id, entry in entries_by_sample_id.items()
         ]
-        CleanVulBenchmarkService._write_json(path, records)
-
-    @staticmethod
-    def _write_json(path: Path, payload: object) -> None:
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=True, default=str) + "\n")
+        DatasetBuilderService.write_json(path, records)

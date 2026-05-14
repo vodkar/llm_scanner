@@ -3,11 +3,11 @@
 from pathlib import Path
 
 from models.context_ranking import BudgetedRankingConfig
-from services.context_assembler.evidence_ranking.utils import (
+from services.ranking.evidence_ranking.utils import (
     budgeted_config_from_best_params,
     coefficients_from_best_params,
 )
-from services.context_assembler.ranking_config import RankingCoefficients
+from services.ranking.ranking_config import RankingCoefficients
 
 _BASE_COEFFICIENTS_PATH = (
     Path(__file__).resolve().parents[4] / "config" / "ranking_coefficients_cpg_structural.yaml"

@@ -12,11 +12,11 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict
 
 from models.context_ranking import EvidenceRole, RankingCandidate
-from services.context_assembler.ranking import (
+from services.ranking.ranking import (
     RENDER_KIND_DEFAULT_SCORE,
     RENDER_KIND_SCORES,
 )
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.snippet_reader import SnippetReaderService
 
 _SAME_FILE_BONUS: Final[float] = 0.70
 _SAME_MODULE_FULL_BONUS: Final[float] = 0.20

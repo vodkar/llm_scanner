@@ -14,15 +14,15 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from models.context import CodeContextNode
 from models.context_ranking import BudgetedRankingConfig
-from services.context_assembler.evidence_ranking import budgeted_selector as bs
-from services.context_assembler.evidence_ranking import candidate_builder as cb
-from services.context_assembler.evidence_ranking import context_scorer as cs
-from services.context_assembler.evidence_ranking import evidence_scorer as es
-from services.context_assembler.evidence_ranking import graph_distance_scorer as gd
-from services.context_assembler.evidence_ranking import node_mapper as nm
-from services.context_assembler.evidence_ranking import semantic_annotator as sa
-from services.context_assembler.ranking import ContextNodeRankingStrategy
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.ranking.evidence_ranking import budgeted_selector as bs
+from services.ranking.evidence_ranking import candidate_builder as cb
+from services.ranking.evidence_ranking import context_scorer as cs
+from services.ranking.evidence_ranking import evidence_scorer as es
+from services.ranking.evidence_ranking import graph_distance_scorer as gd
+from services.ranking.evidence_ranking import node_mapper as nm
+from services.ranking.evidence_ranking import semantic_annotator as sa
+from services.ranking.ranking import ContextNodeRankingStrategy
+from services.snippet_reader import SnippetReaderService
 
 
 class EvidenceAwareBudgetedNodeRankingStrategy(BaseModel, ContextNodeRankingStrategy):

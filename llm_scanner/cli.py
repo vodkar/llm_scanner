@@ -28,20 +28,20 @@ from models.edges import RelationshipBase
 from models.nodes import Node
 from models.ranking_strategy import RankingStrategy
 from repositories.graph import GraphRepository
-from services.analyzer.cleanvul_benchmark import CleanVulBenchmarkService
+from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeService
-from services.context_assembler.evidence_ranking.utils import (
+from services.cpg_parser.ts_parser.cpg_builder import (
+    CPGDirectoryBuilder,
+    CPGFileBuilder,
+)
+from services.ranking.evidence_ranking.utils import (
     budgeted_config_from_best_params,
     build_benchmark_and_score,
     coefficients_from_best_params,
     suggest_budgeted_config,
     suggest_coefficients,
 )
-from services.context_assembler.ranking_config import RankingCoefficients
-from services.cpg_parser.ts_parser.cpg_builder import (
-    CPGDirectoryBuilder,
-    CPGFileBuilder,
-)
+from services.ranking.ranking_config import RankingCoefficients
 
 app = typer.Typer(
     name="llm-scanner",

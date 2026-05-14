@@ -6,8 +6,8 @@ import pytest
 
 from models.context import CodeContextNode
 from models.context_ranking import BudgetedRankingConfig
-from services.context_assembler.evidence_ranking.candidate_builder import CandidateBuilder
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.ranking.evidence_ranking.candidate_builder import CandidateBuilder
+from services.snippet_reader import SnippetReaderService
 
 
 @pytest.fixture(autouse=True)

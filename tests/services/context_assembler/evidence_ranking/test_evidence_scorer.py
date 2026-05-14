@@ -11,7 +11,7 @@ from models.context_ranking import (
     EvidenceRole,
     RankingCandidate,
 )
-from services.context_assembler.evidence_ranking.evidence_scorer import (
+from services.ranking.evidence_ranking.evidence_scorer import (
     clamp,
     noisy_or,
     score,

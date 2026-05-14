@@ -13,7 +13,7 @@ from models.edges.analysis import StaticAnalysisReports
 from models.nodes import Node
 from models.nodes.base import BaseCodeNode
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
-from services.context_assembler.ranking_config import (
+from services.ranking.ranking_config import (
     CombinerWeights,
     ContextBreakdown,
     EdgeDecayRates,
@@ -25,7 +25,7 @@ from services.context_assembler.ranking_config import (
     SeverityScoreMap,
     StructureBreakdown,
 )
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.snippet_reader import SnippetReaderService
 
 FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
 SECURITY_PATH_WEIGHT: Final[float] = 0.20

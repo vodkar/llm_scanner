@@ -10,14 +10,14 @@ from models.context import CodeContextNode
 from models.edges.analysis import StaticAnalysisReports
 from models.nodes.code import FunctionNode
 from models.nodes.finding import BanditFindingNode
-from services.context_assembler.ranking import (
+from services.ranking.ranking import (
     DepthRepeatsContextNodeRankingStrategy,
     DummyNodeRankingStrategy,
     MultiplicativeBoostNodeRankingStrategy,
     NodeRelevanceRankingService,
     RandomNodeRankingStrategy,
 )
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.snippet_reader import SnippetReaderService
 
 
 @pytest.fixture(autouse=True)
@@ -479,7 +479,7 @@ def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) 
 def test_default_coefficients_match_current_yaml_byte_exact(tmp_path: Path) -> None:
     """Scores with default coefficients must equal scores loaded from current.yaml."""
 
-    from services.context_assembler.ranking_config import RankingCoefficients
+    from services.ranking.ranking_config import RankingCoefficients
 
     project_root = Path(__file__).resolve().parents[3]
     current_yaml = project_root / "config" / "ranking_coefficients_current.yaml"

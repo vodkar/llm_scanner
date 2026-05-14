@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import ClassVar, Final
 
 from models.context import CodeContextNode
-from services.context_assembler.ranking import (
+from services.ranking.ranking import (
     SINK_HINTS,
     SOURCE_HINTS,
     NodeRelevanceRankingService,

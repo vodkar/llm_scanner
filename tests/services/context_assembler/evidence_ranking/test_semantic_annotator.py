@@ -6,11 +6,11 @@ import pytest
 
 from models.context import CodeContextNode
 from models.context_ranking import EvidenceRole, RankingCandidate
-from services.context_assembler.evidence_ranking.semantic_annotator import (
+from services.ranking.evidence_ranking.semantic_annotator import (
     KNOWN_CPG_EDGE_TYPES,
     SemanticAnnotator,
 )
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.snippet_reader import SnippetReaderService
 
 
 @pytest.fixture(autouse=True)

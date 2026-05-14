@@ -7,7 +7,7 @@ from models.base import NodeID
 from models.context import CodeContextNode, FileSpans
 from repositories.context import ContextRepository
 from services.context_assembler.context_assembler import ContextAssemblerService
-from services.context_assembler.ranking import ContextNodeRankingStrategy
+from services.ranking.ranking import ContextNodeRankingStrategy
 
 
 class _StubRepo(ContextRepository):
