@@ -78,9 +78,7 @@ class CleanVulBenchmarkService(BaseModel):
     max_call_depth: int = Field(ge=0, description="Maximum call graph depth for context assembly")
     token_budget: int = 8192
     delete_checkouts: bool = True
-    min_score: int = Field(default=3, ge=0, le=4)
-    python_only: bool = True
-    exclude_test_files: bool = True
+    min_score: int = Field(default=4, ge=0, le=4)
     max_repo_size_bytes: int | None = Field(
         default=1024 * 1024 * 100,  # 100 MB
         ge=1,
@@ -151,8 +149,6 @@ class CleanVulBenchmarkService(BaseModel):
         loader = CleanVulLoaderService(
             dataset_path=self.dataset_path,
             min_score=self.min_score,
-            python_only=self.python_only,
-            exclude_test_files=self.exclude_test_files,
         )
         candidate_rows = loader.fetch_entries()
         # rng = random.Random(self.seed)

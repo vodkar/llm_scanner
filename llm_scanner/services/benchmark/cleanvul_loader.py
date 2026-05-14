@@ -34,10 +34,6 @@ class CleanVulLoaderService(BaseModel):
     min_score: int = Field(
         default=3, ge=0, le=4, description="Minimum vulnerability_score to include"
     )
-    python_only: bool = Field(
-        default=True, description="Restrict to Python files (extension == 'py')"
-    )
-    exclude_test_files: bool = Field(default=True, description="Exclude rows where is_test is True")
 
     def fetch_entries(self) -> list[tuple[list[CleanVulRow], str, str]]:
         """Load and filter rows from the dataset, grouped by commit.
@@ -56,9 +52,9 @@ class CleanVulLoaderService(BaseModel):
         for raw in raw_rows:
             row = self._coerce_row(raw)
 
-            if self.python_only and row.extension != "py":
+            if row.extension != "py":
                 continue
-            if self.exclude_test_files and row.is_test:
+            if row.is_test:
                 continue
             if row.vulnerability_score < self.min_score:
                 continue

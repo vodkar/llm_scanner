@@ -31,7 +31,9 @@ from repositories.graph import GraphRepository
 from services.analyzer.cleanvul_benchmark import CleanVulBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeService
 from services.context_assembler.evidence_ranking.utils import (
+    budgeted_config_from_best_params,
     build_benchmark_and_score,
+    coefficients_from_best_params,
     suggest_budgeted_config,
     suggest_coefficients,
 )
@@ -267,29 +269,6 @@ def build_cleanvul_benchmark(
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
     ] = 2048,
-    min_score: Annotated[
-        int,
-        typer.Option(
-            "--min-score",
-            help="Minimum vulnerability_score to include (0-4; dataset authors recommend >=3).",
-            min=0,
-            max=4,
-        ),
-    ] = 3,
-    python_only: Annotated[
-        bool,
-        typer.Option(
-            "--python-only/--all-languages",
-            help="Restrict to Python files only.",
-        ),
-    ] = True,
-    exclude_test_files: Annotated[
-        bool,
-        typer.Option(
-            "--exclude-tests/--include-tests",
-            help="Exclude rows flagged as test files.",
-        ),
-    ] = True,
     neo4j_uri: Annotated[
         str,
         typer.Option(
@@ -329,9 +308,6 @@ def build_cleanvul_benchmark(
         neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
         max_call_depth=max_call_depth,
         token_budget=token_budget,
-        min_score=min_score,
-        python_only=python_only,
-        exclude_test_files=exclude_test_files,
     )
     main_path, entries_path = service.build()
 
@@ -392,29 +368,6 @@ def build_cleanvul_benchmark_compare_rankings(
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
     ] = 2048,
-    min_score: Annotated[
-        int,
-        typer.Option(
-            "--min-score",
-            help="Minimum vulnerability_score to include (0-4; dataset authors recommend >=3).",
-            min=0,
-            max=4,
-        ),
-    ] = 3,
-    python_only: Annotated[
-        bool,
-        typer.Option(
-            "--python-only/--all-languages",
-            help="Restrict to Python files only.",
-        ),
-    ] = True,
-    exclude_test_files: Annotated[
-        bool,
-        typer.Option(
-            "--exclude-tests/--include-tests",
-            help="Exclude rows flagged as test files.",
-        ),
-    ] = True,
     neo4j_uri: Annotated[
         str,
         typer.Option(
@@ -442,6 +395,38 @@ def build_cleanvul_benchmark_compare_rankings(
             show_default=False,
         ),
     ] = Neo4jConfig().password,
+    cpg_structural_coefficients: Annotated[
+        Path | None,
+        typer.Option(
+            "--cpg-structural-coefficients",
+            help=(
+                "Optional YAML with tuned RankingCoefficients for the "
+                "cpg_structural strategy. Defaults to the strategy's built-in "
+                "coefficients when omitted."
+            ),
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ] = None,
+    budgeted_ranking_config: Annotated[
+        Path | None,
+        typer.Option(
+            "--budgeted-ranking-config",
+            help=(
+                "Optional YAML with a tuned BudgetedRankingConfig for the "
+                "evidence_budgeted strategy. Defaults to BudgetedRankingConfig() "
+                "when omitted."
+            ),
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ] = None,
 ) -> None:
     """Build aligned CleanVul-with-context datasets for all ranking strategies."""
 
@@ -454,9 +439,8 @@ def build_cleanvul_benchmark_compare_rankings(
         neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
         max_call_depth=max_call_depth,
         token_budget=token_budget,
-        min_score=min_score,
-        python_only=python_only,
-        exclude_test_files=exclude_test_files,
+        cpg_structural_coefficients_path=cpg_structural_coefficients,
+        budgeted_ranking_config_path=budgeted_ranking_config,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
 
@@ -609,7 +593,7 @@ def tune_ranking_coefficients(
     """Tune ranking coefficients with Optuna against an LLM judge."""
 
     base_coeff_obj: RankingCoefficients | None
-    if strategy == RankingStrategy.evidence_budgeted:
+    if strategy == RankingStrategy.EVIDENCE_BUDGETED:
         base_coeff_obj = None
     else:
         base_coeff_obj = RankingCoefficients.from_yaml(base_coefficients)
@@ -653,7 +637,7 @@ def tune_ranking_coefficients(
 
         def objective(trial: optuna.Trial) -> float:
             coefficients: RankingCoefficients | BudgetedRankingConfig
-            if strategy == RankingStrategy.evidence_budgeted:
+            if strategy == RankingStrategy.EVIDENCE_BUDGETED:
                 coefficients = suggest_budgeted_config(trial)
             else:
                 if base_coeff_obj is None:
@@ -681,6 +665,100 @@ def tune_ranking_coefficients(
     logger.info("study persisted to %s", storage_url)
     typer.secho(
         f"Best accuracy {study.best_value:.4f}; study persisted to {storage_url}",
+        fg=typer.colors.GREEN,
+    )
+
+
+@app.command("export-best-coefficients")
+def export_best_coefficients(
+    strategy: Annotated[
+        RankingStrategy,
+        typer.Option(
+            "--strategy",
+            help="Ranking strategy whose tuned coefficients to export.",
+            case_sensitive=False,
+        ),
+    ],
+    study_name: Annotated[
+        str,
+        typer.Option(
+            "--study-name",
+            help="Optuna study name passed to tune-ranking-coefficients.",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            help="Destination YAML path for the tuned coefficients.",
+            file_okay=True,
+            dir_okay=False,
+            writable=True,
+            resolve_path=True,
+        ),
+    ],
+    base_coefficients: Annotated[
+        Path,
+        typer.Option(
+            "--base-coefficients",
+            help=(
+                "Base RankingCoefficients YAML to merge tuned params onto "
+                "(required for cpg_structural; ignored for evidence_budgeted)."
+            ),
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_BASE_COEFFICIENTS,
+    study_dir: Annotated[
+        Path,
+        typer.Option(
+            "--study-dir",
+            help="Directory containing the Optuna SQLite study DBs.",
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            resolve_path=True,
+        ),
+    ] = DEFAULT_STUDY_DIR,
+) -> None:
+    """Materialize the best params of a tuning study as a ready-to-use YAML.
+
+    Loads ``<study-dir>/<study-name>.db``, reads ``study.best_params``, merges
+    onto the base coefficients (for ``cpg_structural``) or builds a
+    ``BudgetedRankingConfig`` directly (for ``evidence_budgeted``), and writes
+    the result as YAML at ``--output``. The output is the same shape consumed
+    by ``--cpg-structural-coefficients`` / ``--budgeted-ranking-config`` on
+    ``build-cleanvul-benchmark-compare-rankings``.
+    """
+
+    storage_url = f"sqlite:///{study_dir / f'{study_name}.db'}"
+    study = optuna.load_study(study_name=study_name, storage=storage_url)
+    best_params = study.best_params
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "loaded study %s (best accuracy=%.4f, %d params)",
+        study_name,
+        study.best_value,
+        len(best_params),
+    )
+
+    if strategy == RankingStrategy.EVIDENCE_BUDGETED:
+        config = budgeted_config_from_best_params(best_params)
+        config.to_yaml(output)
+    elif strategy == RankingStrategy.CPG_STRUCTURAL:
+        base = RankingCoefficients.from_yaml(base_coefficients)
+        coefficients = coefficients_from_best_params(best_params, base)
+        coefficients.to_yaml(output)
+    else:
+        raise typer.BadParameter(
+            f"strategy {strategy.value!r} has no tunable coefficients to export",
+            param_hint="--strategy",
+        )
+
+    typer.secho(
+        f"Wrote tuned coefficients for {strategy.value} to {output}",
         fg=typer.colors.GREEN,
     )
 

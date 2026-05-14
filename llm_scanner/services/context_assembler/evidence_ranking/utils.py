@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -41,10 +42,10 @@ def build_benchmark_and_score(
         max_call_depth=max_call_depth,
         token_budget=16384,
         cpg_structural_coefficients_path=(
-            coeff_path if strategy == RankingStrategy.cpg_structural else None
+            coeff_path if strategy == RankingStrategy.CPG_STRUCTURAL else None
         ),
         budgeted_ranking_config_path=(
-            coeff_path if strategy == RankingStrategy.evidence_budgeted else None
+            coeff_path if strategy == RankingStrategy.EVIDENCE_BUDGETED else None
         ),
         delete_checkouts=delete_checkouts,
     )
@@ -128,3 +129,58 @@ def suggest_coefficients(trial: optuna.Trial, base: RankingCoefficients) -> Rank
     payload["sanitizer_presence_damp"] = trial.suggest_float("sanitizer_presence_damp", 0.0, 1.0)
 
     return RankingCoefficients.model_validate(payload)
+
+
+def coefficients_from_best_params(
+    best_params: Mapping[str, Any],
+    base: RankingCoefficients,
+) -> RankingCoefficients:
+    """Apply Optuna's flat dotted-key best_params on top of base coefficients.
+
+    Tuning emits keys like ``combiner.finding_evidence`` and
+    ``sanitizer_bypass_bonus``. This rebuilds the nested ``RankingCoefficients``
+    payload by writing each value into the corresponding section of ``base``.
+    Sections not touched by ``best_params`` keep their ``base`` values, so the
+    output is always a fully-populated coefficients object.
+
+    Args:
+        best_params: Flat mapping of tuned parameter names to values (from
+            ``study.best_params``).
+        base: Coefficients used as the starting payload — anything not in
+            ``best_params`` is preserved from here.
+
+    Returns:
+        A validated ``RankingCoefficients`` instance.
+    """
+
+    payload: dict[str, Any] = base.model_dump()
+    for key, value in best_params.items():
+        head, sep, tail = key.partition(".")
+        if not sep:
+            payload[head] = value
+            continue
+        section = payload.get(head)
+        if not isinstance(section, dict):
+            section = {}
+        section[tail] = value
+        payload[head] = section
+    return RankingCoefficients.model_validate(payload)
+
+
+def budgeted_config_from_best_params(
+    best_params: Mapping[str, Any],
+) -> BudgetedRankingConfig:
+    """Build a ``BudgetedRankingConfig`` from Optuna ``best_params``.
+
+    All ``BudgetedRankingConfig`` fields are flat, so the params dict maps
+    directly to constructor arguments. Any field absent from ``best_params``
+    falls back to its model default.
+
+    Args:
+        best_params: Flat mapping of tuned parameter names to values.
+
+    Returns:
+        A validated ``BudgetedRankingConfig`` instance.
+    """
+
+    return BudgetedRankingConfig.model_validate(dict(best_params))
