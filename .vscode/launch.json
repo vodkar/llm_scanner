@@ -30,19 +30,21 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "Python Debugger: build CVEFixes benchmark",
+            "name": "Python Debugger: build CleanVUL compare rankings benchmark",
             "type": "debugpy",
             "request": "launch",
             "program": "llm_scanner/cli.py",
             "args": [
-                "build-cvefixes-benchmark",
-                "/Users/somen/Downloads/CVEfixes_v1.0.8/Data/CVEfixes.db",
+                "build-cleanvul-benchmark-compare-rankings",
+                "/var/opt/llm4codesec-framework/benchmarks/CleanVul/vulnerability_score_4.csv",
                 "-n",
                 "300",
                 "--max-call-depth",
                 "6",
                 "--token-budget",
-                "16000"
+                "16000",
+                "--repo-cache-dir",
+                "data/repo_cache",
             ],
             "console": "integratedTerminal"
         }

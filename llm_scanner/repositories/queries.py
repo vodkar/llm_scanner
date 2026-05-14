@@ -277,6 +277,41 @@ TAINT_HOP_DECAY: Final[dict[int, float]] = {1: 1.0, 2: 0.70, 3: 0.50, 4: 0.35}
 TAINT_HOP_DECAY_DEFAULT: Final[float] = 0.20
 _BACKWARD_DATAFLOW_REL_TYPES: Final[str] = "FLOWS_TO|DEFINED_BY"
 
+PATH_FILL_RELATIONSHIP_TYPES: Final[tuple[str, ...]] = (
+    CallGraphRelationshipType.CALLS,
+    CallGraphRelationshipType.CALLED_BY,
+    DataFlowRelationshipType.FLOWS_TO,
+    DataFlowRelationshipType.DEFINED_BY,
+    DataFlowRelationshipType.USED_BY,
+    DataFlowRelationshipType.SANITIZED_BY,
+)
+
+
+NEIGHBORHOOD_EDGES_QUERY: Final[LiteralString] = (
+    "MATCH (s:Code)-[r]->(d:Code) "
+    "WHERE s.id IN $node_ids AND d.id IN $node_ids "
+    "AND type(r) IN $edge_types "
+    "RETURN s.id AS src, d.id AS dst, type(r) AS rel"
+)
+
+
+def neighborhood_edges_query() -> LiteralString:
+    """Return a literal query for edges restricted to a given node set.
+
+    Returns:
+        Cypher query yielding ``(src, dst, rel)`` triples between any two nodes
+        whose ``id`` is in ``$node_ids`` and whose relationship type is in
+        ``$edge_types``.
+    """
+
+    return NEIGHBORHOOD_EDGES_QUERY
+
+
+def path_fill_relationship_types() -> tuple[str, ...]:
+    """Return the relationship types used to connect ranked nodes via paths."""
+
+    return PATH_FILL_RELATIONSHIP_TYPES
+
 
 def backward_dataflow_taint_query(max_taint_depth: int) -> LiteralString:
     """Return a Cypher query for backward DataFlow traversal from root nodes.

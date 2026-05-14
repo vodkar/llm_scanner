@@ -1,22 +1,18 @@
 """Tests for CleanVul benchmark dataset generation."""
 
 import json
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from models.benchmark.cleanvul import CleanVulEntry
-from models.context import CodeContextNode, Context, FileSpans
-from clients.neo4j import Neo4jClient
-from repositories.context import ContextRepository
+from models.context import Context, FileSpans
 from services.analyzer.cleanvul_benchmark import (
     CleanVulBenchmarkService,
     _CleanVulEntryPair,
 )
 from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
 from services.benchmark.repo_checkout import RepoCheckoutService
-from services.context_assembler.ranking import ContextNodeRankingStrategy
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -453,3 +449,59 @@ def test_build_uses_separate_checkout_roots(
     for d in seen_cache_dirs:
         assert d.parent == tmp_path / "repos"
 
+
+def test_build_skips_repositories_over_size_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Checked-out repositories larger than the configured limit should be skipped."""
+
+    row = _make_row()
+    pair = _make_pair()
+
+    vulnerable_repo = tmp_path / "repos" / "vulnerable"
+    fixed_repo = tmp_path / "repos" / "fixed"
+    vulnerable_repo.mkdir(parents=True)
+    fixed_repo.mkdir(parents=True)
+    (vulnerable_repo / "big.py").write_text("x" * 128, encoding="utf-8")
+    (fixed_repo / "big.py").write_text("x" * 128, encoding="utf-8")
+
+    def _fetch_entries(
+        self: CleanVulLoaderService,
+    ) -> list[tuple[list[CleanVulRow], str, str]]:
+        del self
+        return [([row], "https://github.com/owner/repo", "abcdef123456")]
+
+    def _checkout_repo(
+        self: RepoCheckoutService, repo_url: str, fix_hash: str, is_vulnerable: bool
+    ) -> Path:
+        del self, repo_url, fix_hash
+        return vulnerable_repo if is_vulnerable else fixed_repo
+
+    def _build_entry_pair(self: CleanVulBenchmarkService, **kwargs: object) -> _CleanVulEntryPair:
+        del self, kwargs
+        return pair
+
+    scan_calls = {"count": 0}
+
+    def _scan_repository_for_entry(
+        self: CleanVulBenchmarkService, **kwargs: object
+    ) -> dict[str, Context]:
+        del self, kwargs
+        scan_calls["count"] += 1
+        return {}
+
+    monkeypatch.setattr(CleanVulLoaderService, "fetch_entries", _fetch_entries)
+    monkeypatch.setattr(RepoCheckoutService, "checkout_repo", _checkout_repo)
+    monkeypatch.setattr(CleanVulBenchmarkService, "_build_entry_pair", _build_entry_pair)
+    monkeypatch.setattr(
+        CleanVulBenchmarkService, "_scan_repository_for_entry", _scan_repository_for_entry
+    )
+
+    service = _make_service(tmp_path, max_repo_size_bytes=64)
+    main_path, _ = service.build()
+
+    assert scan_calls["count"] == 0
+
+    payload = json.loads(main_path.read_text(encoding="utf-8"))
+    assert payload["samples"] == []

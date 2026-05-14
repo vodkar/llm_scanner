@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Any, LiteralString
 
@@ -13,12 +14,15 @@ from repositories.queries import (
     code_bfs_nodes_query,
     code_nodes_by_file_span_query,
     code_traversal_relationship_types,
+    neighborhood_edges_query,
+    path_fill_relationship_types,
     taint_score_from_hop,
 )
 
 RELATIONSHIP_TYPES_QUERY: LiteralString = (
     "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
 )
+_LOGGER = logging.getLogger(__name__)
 
 
 class ContextRepository(BaseModel):
@@ -26,6 +30,7 @@ class ContextRepository(BaseModel):
 
     client: Neo4jClient
     traversal_relationship_types: tuple[str, ...] = ()
+    path_fill_edge_types: tuple[str, ...] = ()
     # neighborhood_cache_max_entries: int = 1000
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -47,6 +52,9 @@ class ContextRepository(BaseModel):
         }
         self.traversal_relationship_types = tuple(
             rel_type for rel_type in configured_types if rel_type in available_types
+        )
+        self.path_fill_edge_types = tuple(
+            rel_type for rel_type in path_fill_relationship_types() if rel_type in available_types
         )
 
     def fetch_code_nodes_by_file_lines(
@@ -281,6 +289,53 @@ class ContextRepository(BaseModel):
                 existing.edge_depths = current_edge_depths
 
         return [nodes_by_id[node_id] for node_id in ordered_node_ids]
+
+    def fetch_neighborhood_edges(
+        self,
+        node_ids: list[str],
+        edge_types: tuple[str, ...] | None = None,
+    ) -> list[tuple[NodeID, NodeID, str]]:
+        """Return edges whose endpoints both belong to the supplied node set.
+
+        Args:
+            node_ids: Identifiers of nodes already fetched into the context.
+            edge_types: Relationship types to include. Defaults to the path-fill
+                set discovered in ``model_post_init``.
+
+        Returns:
+            Triples of ``(src_id, dst_id, rel_type)`` for every matching edge.
+        """
+
+        if not node_ids:
+            return []
+
+        rel_types: tuple[str, ...] = self.path_fill_edge_types if edge_types is None else edge_types
+
+        if not rel_types:
+            return []
+
+        unique_ids = sorted(set(node_ids))
+        rows = self.client.run_read(
+            neighborhood_edges_query(),
+            {"node_ids": unique_ids, "edge_types": list(rel_types)},
+        )
+
+        edges: list[tuple[NodeID, NodeID, str]] = []
+        for row in rows:
+            src_raw = row.get("src")
+            dst_raw = row.get("dst")
+            rel_raw = row.get("rel")
+            if src_raw is None or dst_raw is None or rel_raw is None:
+                continue
+            edges.append((NodeID(str(src_raw)), NodeID(str(dst_raw)), str(rel_raw)))
+
+        _LOGGER.info(
+            "Fetched %d neighborhood edges for %d nodes with types %s",
+            len(edges),
+            len(unique_ids),
+            rel_types,
+        )
+        return edges
 
     def fetch_taint_sources(
         self,

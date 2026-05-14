@@ -238,6 +238,45 @@ def test_fetch_with_edge_paths_uses_single_start_query_for_one_root() -> None:
     assert second_params == {"start_id": "node-1", "max_depth": 2}
 
 
+def test_fetch_neighborhood_edges_filters_by_available_relationship_types() -> None:
+    """``fetch_neighborhood_edges`` only queries types Neo4j actually exposes."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "CALLS"}, {"relationshipType": "FLOWS_TO"}],
+        [
+            {"src": "node-1", "dst": "node-2", "rel": "CALLS"},
+            {"src": "node-2", "dst": "node-3", "rel": "FLOWS_TO"},
+        ],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    edges = repository.fetch_neighborhood_edges(["node-1", "node-2", "node-3"])
+
+    _, params = client.run_read.call_args_list[1].args
+    assert params["node_ids"] == ["node-1", "node-2", "node-3"]
+    assert set(params["edge_types"]) == {"CALLS", "FLOWS_TO"}
+    assert edges == [
+        (NodeID("node-1"), NodeID("node-2"), "CALLS"),
+        (NodeID("node-2"), NodeID("node-3"), "FLOWS_TO"),
+    ]
+
+
+def test_fetch_neighborhood_edges_skips_query_when_no_node_ids() -> None:
+    """Empty input must short-circuit before Neo4j read."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.return_value = [{"relationshipType": "CALLS"}]
+
+    repository = ContextRepository(client=client)
+
+    assert repository.fetch_neighborhood_edges([]) == []
+    assert client.run_read.call_count == 1  # only the startup relationship-types lookup
+
+
 def test_fetch_taint_sources_deduplicates_root_ids_before_query() -> None:
     """Backward taint traversal should not receive duplicate root IDs."""
 

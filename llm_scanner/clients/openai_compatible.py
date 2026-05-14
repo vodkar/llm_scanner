@@ -7,13 +7,9 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ConfigDict, Field
 
-from logging_utils import setup_logging
-
 DEFAULT_BASE_URL: Final[str] = "http://localhost:8000/v1"
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
 DEFAULT_REPETITION_PENALTY: Final[float] = 1.2
-
-setup_logging()
 
 
 def _extract_text(completion: Any) -> str:

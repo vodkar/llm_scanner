@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -38,10 +39,14 @@ class GeneralPipeline(BaseModel):
         )
 
         nodes, edges = CPGDirectoryBuilder(root=project_root).build()
-        dlint_findings, dlint_edges = dlint_service.get_findings_with_edges(list(nodes.values()))
-        bandit_findings, bandit_edges = bandit_service.get_findings_with_edges(list(nodes.values()))
+        code_nodes = list(nodes.values())
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            dlint_future = executor.submit(dlint_service.get_findings_with_edges, code_nodes)
+            bandit_future = executor.submit(bandit_service.get_findings_with_edges, code_nodes)
+            dlint_findings, dlint_edges = dlint_future.result()
+            bandit_findings, bandit_edges = bandit_future.result()
         _nodes = ranking_service.calculate_security_score(
-            list(nodes.values()), dlint_findings + bandit_findings, dlint_edges + bandit_edges
+            code_nodes, dlint_findings + bandit_findings, dlint_edges + bandit_edges
         )
         nodes = {node.identifier: node for node in _nodes}
 

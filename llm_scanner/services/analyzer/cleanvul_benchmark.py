@@ -9,13 +9,13 @@ from typing import Final, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field
 
 from clients.neo4j import Neo4jConfig, build_client
+from models.base import NodeID
 from models.benchmark.benchmark import (
     BenchmarkDataset,
     BenchmarkMetadata,
     BenchmarkSample,
     CleanVulSampleMetadata,
 )
-from models.base import NodeID
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import CodeContextNode, Context, FileSpans
 from models.context_ranking import BudgetedRankingConfig
@@ -81,6 +81,14 @@ class CleanVulBenchmarkService(BaseModel):
     min_score: int = Field(default=3, ge=0, le=4)
     python_only: bool = True
     exclude_test_files: bool = True
+    max_repo_size_bytes: int | None = Field(
+        default=1024 * 1024 * 100,  # 100 MB
+        ge=1,
+        description=(
+            "Optional upper bound for checked-out repository size in bytes. "
+            "Repositories larger than this are skipped before scanning."
+        ),
+    )
     cpg_structural_coefficients_path: Path | None = Field(
         default=None,
         description=(
@@ -186,6 +194,14 @@ class CleanVulBenchmarkService(BaseModel):
                         )
                     except Exception:
                         logger.exception("Failed to checkout %s at %s", repo_url, fix_hash)
+                        continue
+
+                    repo_size_reason = self._repo_size_reason(
+                        vulnerable_repo_path,
+                        fixed_repo_path,
+                    )
+                    if repo_size_reason is not None:
+                        logger.warning("Skipping %s because %s", commit_url, repo_size_reason)
                         continue
 
                     if current_sample_count % LOGGING_INTERVAL == 0:
@@ -502,9 +518,7 @@ class CleanVulBenchmarkService(BaseModel):
         needs_edge_path_context_nodes = any(
             strategy.requires_edge_paths for strategy in strategies.values()
         )
-        needs_taint_scores = any(
-            strategy.requires_taint_scores for strategy in strategies.values()
-        )
+        needs_taint_scores = any(strategy.requires_taint_scores for strategy in strategies.values())
 
         plain_context_nodes: list[CodeContextNode] = []
         if needs_plain_context_nodes:
@@ -679,6 +693,57 @@ class CleanVulBenchmarkService(BaseModel):
         if self._estimate_tokens(pair.fixed_entry.func_code) > self.token_budget:
             return "source_sample_exceeds_token_budget"
         return None
+
+    def _repo_size_reason(
+        self,
+        vulnerable_repo_path: Path,
+        fixed_repo_path: Path,
+    ) -> str | None:
+        """Return a skip reason when a checked-out repository exceeds the size limit."""
+
+        max_repo_size_bytes = self.max_repo_size_bytes
+        if max_repo_size_bytes is None:
+            return None
+
+        vulnerable_repo_size = self._estimate_repo_size_bytes(
+            vulnerable_repo_path,
+            cutoff_bytes=max_repo_size_bytes,
+        )
+        if vulnerable_repo_size > max_repo_size_bytes:
+            return (
+                f"vulnerable_repository_exceeds_size_limit "
+                f"({vulnerable_repo_size}>{max_repo_size_bytes} bytes)"
+            )
+
+        fixed_repo_size = self._estimate_repo_size_bytes(
+            fixed_repo_path,
+            cutoff_bytes=max_repo_size_bytes,
+        )
+        if fixed_repo_size > max_repo_size_bytes:
+            return (
+                f"fixed_repository_exceeds_size_limit "
+                f"({fixed_repo_size}>{max_repo_size_bytes} bytes)"
+            )
+
+        return None
+
+    @staticmethod
+    def _estimate_repo_size_bytes(repo_path: Path, cutoff_bytes: int | None = None) -> int:
+        """Estimate repository size in bytes, skipping `.git` and stopping at an optional cutoff."""
+
+        total_size_bytes = 0
+        for path in repo_path.rglob("*"):
+            if ".git" in path.parts:
+                continue
+            if not path.is_file():
+                continue
+            try:
+                total_size_bytes += path.stat().st_size
+            except OSError:
+                continue
+            if cutoff_bytes is not None and total_size_bytes > cutoff_bytes:
+                return total_size_bytes
+        return total_size_bytes
 
     @staticmethod
     def _is_all_contexts_present(

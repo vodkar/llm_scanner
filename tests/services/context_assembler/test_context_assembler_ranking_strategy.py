@@ -51,6 +51,16 @@ class FakeContextRepository(ContextRepository):
         self.taint_fetch_calls += 1
         return {}
 
+    def fetch_neighborhood_edges(
+        self,
+        node_ids: list[str],
+        edge_types: tuple[str, ...] | None = None,
+    ) -> list[tuple[NodeID, NodeID, str]]:
+        """Return no edges by default; path-fill is exercised separately."""
+
+        del node_ids, edge_types
+        return []
+
 
 class ReverseRankingStrategy(ContextNodeRankingStrategy):
     """Return nodes in reverse order for injection tests."""
@@ -82,6 +92,8 @@ def test_context_assembler_uses_injected_ranking_strategy(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
+    # Both nodes are non-roots so the path-fill root-anchor invariant does not
+    # force either into the selection; the injected strategy controls order.
     alpha_node = CodeContextNode(
         identifier=NodeID("function:alpha"),
         node_kind="FunctionNode",
@@ -89,7 +101,7 @@ def test_context_assembler_uses_injected_ranking_strategy(tmp_path: Path) -> Non
         file_path=Path("alpha.py"),
         line_start=1,
         line_end=2,
-        depth=0,
+        depth=2,
     )
     beta_node = CodeContextNode(
         identifier=NodeID("function:beta"),
