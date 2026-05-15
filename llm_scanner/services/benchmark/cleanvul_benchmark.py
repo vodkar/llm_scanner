@@ -99,6 +99,14 @@ class CleanVulBenchmarkService(BaseModel):
             "when omitted, the strategy uses its own default coefficients."
         ),
     )
+    current_coefficients_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional YAML path with coefficients for the 'current' "
+            "NodeRelevanceRankingService; when omitted, the strategy uses its "
+            "own default coefficients."
+        ),
+    )
 
     def build(self) -> tuple[Path, Path]:
         """Generate the benchmark JSON files.
@@ -129,6 +137,7 @@ class CleanVulBenchmarkService(BaseModel):
                 self.cpg_structural_coefficients_path,
                 self.budgeted_ranking_config_path,
                 self.multiplicative_boost_coefficients_path,
+                self.current_coefficients_path,
             )
         )
 

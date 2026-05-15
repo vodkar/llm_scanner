@@ -82,6 +82,23 @@ def _build_multiplicative_boost_ranking_strategy(
     )
 
 
+def _build_current_ranking_strategy(
+    repo_path: Path,
+    current_coefficients: Path | None = None,
+) -> ContextNodeRankingStrategy:
+    if current_coefficients is not None:
+        coefficients = RankingCoefficients.from_yaml(current_coefficients)
+        return NodeRelevanceRankingService(
+            project_root=repo_path,
+            snippet_cache_max_entries=10000,
+            coefficients=coefficients,
+        )
+    return NodeRelevanceRankingService(
+        project_root=repo_path,
+        snippet_cache_max_entries=10000,
+    )
+
+
 def _build_depth_repeats_ranking_strategy(repo_path: Path) -> ContextNodeRankingStrategy:
     return DepthRepeatsContextNodeRankingStrategy(
         project_root=repo_path,
@@ -95,11 +112,11 @@ def build_strategy_factories(
     cpg_structural_coefficients: Path | None = None,
     budgeted_ranking_config_path: Path | None = None,
     multiplicative_boost_coefficients: Path | None = None,
+    current_coefficients: Path | None = None,
 ) -> dict[str, RankingStrategyFactory]:
     return {
-        RankingStrategies.CURRENT: lambda repo_path: NodeRelevanceRankingService(
-            project_root=repo_path,
-            snippet_cache_max_entries=10000,
+        RankingStrategies.CURRENT: lambda repo_path: _build_current_ranking_strategy(
+            repo_path, current_coefficients
         ),
         RankingStrategies.DEPTH_REPEATS_CONTEXT: _build_depth_repeats_ranking_strategy,
         RankingStrategies.RANDOM_PICKING: lambda repo_path: RandomNodeRankingStrategy(

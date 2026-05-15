@@ -40,6 +40,7 @@ from services.ranking.evidence_ranking.utils import (
     coefficients_from_best_params,
     suggest_budgeted_config,
     suggest_coefficients,
+    suggest_current_coefficients,
     suggest_multiplicative_boost_coefficients,
 )
 from services.ranking.ranking_config import RankingCoefficients
@@ -444,6 +445,22 @@ def build_cleanvul_benchmark_compare_rankings(
             resolve_path=True,
         ),
     ] = None,
+    current_coefficients: Annotated[
+        Path | None,
+        typer.Option(
+            "--current-coefficients",
+            help=(
+                "Optional YAML with tuned RankingCoefficients for the "
+                "current (NodeRelevanceRankingService) strategy. Defaults to "
+                "the strategy's built-in coefficients when omitted."
+            ),
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ] = None,
 ) -> None:
     """Build aligned CleanVul-with-context datasets for all ranking strategies."""
 
@@ -459,6 +476,7 @@ def build_cleanvul_benchmark_compare_rankings(
         cpg_structural_coefficients_path=cpg_structural_coefficients,
         budgeted_ranking_config_path=budgeted_ranking_config,
         multiplicative_boost_coefficients_path=multiplicative_boost_coefficients,
+        current_coefficients_path=current_coefficients,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
 
@@ -661,6 +679,10 @@ def tune_ranking_coefficients(
                 if base_coeff_obj is None:
                     raise RuntimeError("base_coefficients must be provided for non-budgeted tuning")
                 coefficients = suggest_multiplicative_boost_coefficients(trial, base_coeff_obj)
+            elif strategy == RankingStrategy.CURRENT:
+                if base_coeff_obj is None:
+                    raise RuntimeError("base_coefficients must be provided for non-budgeted tuning")
+                coefficients = suggest_current_coefficients(trial, base_coeff_obj)
             else:
                 if base_coeff_obj is None:
                     raise RuntimeError("base_coefficients must be provided for non-budgeted tuning")
@@ -771,7 +793,11 @@ def export_best_coefficients(
     if strategy == RankingStrategy.EVIDENCE_BUDGETED:
         config = budgeted_config_from_best_params(best_params)
         config.to_yaml(output)
-    elif strategy in (RankingStrategy.CPG_STRUCTURAL, RankingStrategy.MULTIPLICATIVE_BOOST):
+    elif strategy in (
+        RankingStrategy.CPG_STRUCTURAL,
+        RankingStrategy.MULTIPLICATIVE_BOOST,
+        RankingStrategy.CURRENT,
+    ):
         base = RankingCoefficients.from_yaml(base_coefficients)
         coefficients = coefficients_from_best_params(best_params, base)
         coefficients.to_yaml(output)

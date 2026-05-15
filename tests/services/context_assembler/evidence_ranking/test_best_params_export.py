@@ -8,6 +8,7 @@ from models.context_ranking import BudgetedRankingConfig
 from services.ranking.evidence_ranking.utils import (
     budgeted_config_from_best_params,
     coefficients_from_best_params,
+    suggest_current_coefficients,
     suggest_multiplicative_boost_coefficients,
 )
 from services.ranking.ranking_config import RankingCoefficients
@@ -149,6 +150,59 @@ def test_suggest_multiplicative_boost_coefficients_perturbs_relevant_fields_only
 
     # Out-of-scope sections come straight from the base.
     assert sampled.combiner == base.combiner
+    assert sampled.edge_type_weights == base.edge_type_weights
+    assert sampled.edge_decay_rates == base.edge_decay_rates
+    assert sampled.sanitizer_bypass_bonus == base.sanitizer_bypass_bonus
+    assert sampled.sanitizer_presence_damp == base.sanitizer_presence_damp
+
+
+def test_suggest_current_coefficients_perturbs_combiner_and_breakdowns_only() -> None:
+    """current sampler must touch combiner + breakdown weights.
+
+    It must NOT touch the cpg_structural-only knobs (edge_*, sanitizer_*) or
+    the multiplicative_boost-only ``security_boost_weight`` — those are
+    inherited from the base coefficients unchanged.
+    """
+
+    base = RankingCoefficients.from_yaml(_BASE_COEFFICIENTS_PATH)
+    trial = optuna.trial.FixedTrial(
+        {
+            "combiner.finding_evidence": 0.40,
+            "combiner.security_path": 0.20,
+            "combiner.taint": 0.15,
+            "combiner.context": 0.25,
+            "context_breakdown.depth": 0.55,
+            "context_breakdown.structure": 0.20,
+            "context_breakdown.file_prior": 0.25,
+            "finding_evidence_breakdown.severity": 0.50,
+            "finding_evidence_breakdown.confidence": 0.30,
+            "finding_evidence_breakdown.agreement": 0.20,
+            "security_path_breakdown.sink": 0.30,
+            "security_path_breakdown.source": 0.20,
+            "security_path_breakdown.guard": 0.15,
+            "security_path_breakdown.path_evidence": 0.35,
+            "security_path_breakdown.high_risk_cwe_evidence_base": 0.70,
+            "structure_breakdown.render_kind": 0.15,
+            "structure_breakdown.repeat_bonus": 0.85,
+            "file_prior_breakdown.same_file": 0.60,
+            "file_prior_breakdown.same_module": 0.30,
+            "file_prior_breakdown.generated_penalty": 0.20,
+        }
+    )
+
+    sampled = suggest_current_coefficients(trial, base)
+
+    # Tuned levers.
+    assert sampled.combiner.finding_evidence == 0.40
+    assert sampled.combiner.context == 0.25
+    assert sampled.context_breakdown.depth == 0.55
+    assert sampled.finding_evidence_breakdown.severity == 0.50
+    assert sampled.security_path_breakdown.high_risk_cwe_evidence_base == 0.70
+    assert sampled.structure_breakdown.repeat_bonus == 0.85
+    assert sampled.file_prior_breakdown.same_file == 0.60
+
+    # Out-of-scope sections come straight from the base.
+    assert sampled.security_boost_weight == base.security_boost_weight
     assert sampled.edge_type_weights == base.edge_type_weights
     assert sampled.edge_decay_rates == base.edge_decay_rates
     assert sampled.sanitizer_bypass_bonus == base.sanitizer_bypass_bonus

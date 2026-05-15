@@ -50,6 +50,7 @@ def build_benchmark_and_score(
         multiplicative_boost_coefficients_path=(
             coeff_path if strategy == RankingStrategy.MULTIPLICATIVE_BOOST else None
         ),
+        current_coefficients_path=(coeff_path if strategy == RankingStrategy.CURRENT else None),
         delete_checkouts=delete_checkouts,
     )
     dataset_paths, _entries = service.build_all_ranking_strategies()
@@ -130,6 +131,61 @@ def suggest_coefficients(trial: optuna.Trial, base: RankingCoefficients) -> Rank
     }
     payload["sanitizer_bypass_bonus"] = trial.suggest_float("sanitizer_bypass_bonus", 0.0, 0.5)
     payload["sanitizer_presence_damp"] = trial.suggest_float("sanitizer_presence_damp", 0.0, 1.0)
+
+    return RankingCoefficients.model_validate(payload)
+
+
+def suggest_current_coefficients(
+    trial: optuna.trial.BaseTrial, base: RankingCoefficients
+) -> RankingCoefficients:
+    """Sample a coefficients object focused on the ``current`` ranking strategy.
+
+    ``NodeRelevanceRankingService.calculate_final_score`` mixes the four
+    component scores via ``combiner`` weights, and each component is itself
+    a weighted sum of its breakdown sub-weights. So the relevant tuning
+    surface is: ``combiner`` + the five breakdowns. The CPG-structural-only
+    knobs (``edge_*``, ``sanitizer_*``, ``security_boost_weight``) are NOT
+    perturbed because ``NodeRelevanceRankingService`` ignores them.
+    """
+
+    payload: dict[str, Any] = base.model_dump()
+
+    payload["combiner"] = {
+        "finding_evidence": trial.suggest_float("combiner.finding_evidence", 0.1, 0.5),
+        "security_path": trial.suggest_float("combiner.security_path", 0.1, 0.5),
+        "taint": trial.suggest_float("combiner.taint", 0.1, 0.5),
+        "context": trial.suggest_float("combiner.context", 0.1, 0.5),
+    }
+    payload["context_breakdown"] = {
+        "depth": trial.suggest_float("context_breakdown.depth", 0.2, 0.8),
+        "structure": trial.suggest_float("context_breakdown.structure", 0.05, 0.5),
+        "file_prior": trial.suggest_float("context_breakdown.file_prior", 0.05, 0.5),
+    }
+    payload["finding_evidence_breakdown"] = {
+        "severity": trial.suggest_float("finding_evidence_breakdown.severity", 0.2, 0.7),
+        "confidence": trial.suggest_float("finding_evidence_breakdown.confidence", 0.1, 0.6),
+        "agreement": trial.suggest_float("finding_evidence_breakdown.agreement", 0.05, 0.5),
+    }
+    payload["security_path_breakdown"] = {
+        "sink": trial.suggest_float("security_path_breakdown.sink", 0.1, 0.5),
+        "source": trial.suggest_float("security_path_breakdown.source", 0.1, 0.4),
+        "guard": trial.suggest_float("security_path_breakdown.guard", 0.05, 0.3),
+        "path_evidence": trial.suggest_float("security_path_breakdown.path_evidence", 0.15, 0.6),
+        "high_risk_cwe_evidence_base": trial.suggest_float(
+            "security_path_breakdown.high_risk_cwe_evidence_base", 0.3, 0.9
+        ),
+    }
+    payload["structure_breakdown"] = {
+        "render_kind": trial.suggest_float("structure_breakdown.render_kind", 0.05, 0.5),
+        "repeat_bonus": trial.suggest_float("structure_breakdown.repeat_bonus", 0.5, 1.0),
+    }
+    payload["file_prior_breakdown"] = {
+        "same_file": trial.suggest_float("file_prior_breakdown.same_file", 0.3, 0.9),
+        "same_module": trial.suggest_float("file_prior_breakdown.same_module", 0.1, 0.6),
+        "generated_penalty": trial.suggest_float(
+            "file_prior_breakdown.generated_penalty", 0.0, 0.5
+        ),
+    }
 
     return RankingCoefficients.model_validate(payload)
 
