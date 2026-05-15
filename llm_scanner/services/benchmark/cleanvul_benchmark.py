@@ -92,6 +92,13 @@ class CleanVulBenchmarkService(BaseModel):
             "EvidenceAwareBudgetedNodeRankingStrategy; when omitted, defaults are used."
         ),
     )
+    multiplicative_boost_coefficients_path: Path | None = Field(
+        default=None,
+        description=(
+            "Optional YAML path with coefficients for MultiplicativeBoostNodeRankingStrategy; "
+            "when omitted, the strategy uses its own default coefficients."
+        ),
+    )
 
     def build(self) -> tuple[Path, Path]:
         """Generate the benchmark JSON files.
@@ -121,6 +128,7 @@ class CleanVulBenchmarkService(BaseModel):
                 self.seed,
                 self.cpg_structural_coefficients_path,
                 self.budgeted_ranking_config_path,
+                self.multiplicative_boost_coefficients_path,
             )
         )
 

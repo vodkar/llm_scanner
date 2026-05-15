@@ -65,7 +65,17 @@ def _build_evidence_budgeted_strategy(
     )
 
 
-def _build_multiplicative_boost_ranking_strategy(repo_path: Path) -> ContextNodeRankingStrategy:
+def _build_multiplicative_boost_ranking_strategy(
+    repo_path: Path,
+    multiplicative_boost_coefficients: Path | None = None,
+) -> ContextNodeRankingStrategy:
+    if multiplicative_boost_coefficients is not None:
+        coefficients = RankingCoefficients.from_yaml(multiplicative_boost_coefficients)
+        return MultiplicativeBoostNodeRankingStrategy(
+            project_root=repo_path,
+            snippet_cache_max_entries=10000,
+            coefficients=coefficients,
+        )
     return MultiplicativeBoostNodeRankingStrategy(
         project_root=repo_path,
         snippet_cache_max_entries=10000,
@@ -84,6 +94,7 @@ def build_strategy_factories(
     seed: int | None = None,
     cpg_structural_coefficients: Path | None = None,
     budgeted_ranking_config_path: Path | None = None,
+    multiplicative_boost_coefficients: Path | None = None,
 ) -> dict[str, RankingStrategyFactory]:
     return {
         RankingStrategies.CURRENT: lambda repo_path: NodeRelevanceRankingService(
@@ -96,7 +107,11 @@ def build_strategy_factories(
             snippet_cache_max_entries=10000,
             random_seed=seed,
         ),
-        RankingStrategies.MULTIPLICATIVE_BOOST: _build_multiplicative_boost_ranking_strategy,
+        RankingStrategies.MULTIPLICATIVE_BOOST: (
+            lambda repo_path: _build_multiplicative_boost_ranking_strategy(
+                repo_path, multiplicative_boost_coefficients
+            )
+        ),
         RankingStrategies.CPG_STRUCTURAL: lambda repo_path: _build_cpg_structural_ranking_strategy(
             repo_path, cpg_structural_coefficients
         ),

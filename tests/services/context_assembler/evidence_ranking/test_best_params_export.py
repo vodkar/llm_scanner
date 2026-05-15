@@ -2,10 +2,13 @@
 
 from pathlib import Path
 
+import optuna
+
 from models.context_ranking import BudgetedRankingConfig
 from services.ranking.evidence_ranking.utils import (
     budgeted_config_from_best_params,
     coefficients_from_best_params,
+    suggest_multiplicative_boost_coefficients,
 )
 from services.ranking.ranking_config import RankingCoefficients
 
@@ -104,3 +107,73 @@ def test_budgeted_config_from_best_params_falls_back_to_defaults_for_missing_key
     assert config.depth_decay == 0.50
     assert config.budget_safety_ratio == BudgetedRankingConfig().budget_safety_ratio
     assert config.role_coverage_bonus == BudgetedRankingConfig().role_coverage_bonus
+
+
+def test_suggest_multiplicative_boost_coefficients_perturbs_relevant_fields_only() -> None:
+    """multiplicative_boost sampler must touch the boost lever + breakdown weights.
+
+    It must NOT touch the cpg_structural-only knobs (combiner, edge_*,
+    sanitizer_*) — those are inherited from the base coefficients unchanged.
+    """
+
+    base = RankingCoefficients.from_yaml(_BASE_COEFFICIENTS_PATH)
+    trial = optuna.trial.FixedTrial(
+        {
+            "security_boost_weight": 1.75,
+            "context_breakdown.depth": 0.55,
+            "context_breakdown.structure": 0.20,
+            "context_breakdown.file_prior": 0.25,
+            "finding_evidence_breakdown.severity": 0.50,
+            "finding_evidence_breakdown.confidence": 0.30,
+            "finding_evidence_breakdown.agreement": 0.20,
+            "security_path_breakdown.sink": 0.30,
+            "security_path_breakdown.source": 0.20,
+            "security_path_breakdown.guard": 0.15,
+            "security_path_breakdown.path_evidence": 0.35,
+            "security_path_breakdown.high_risk_cwe_evidence_base": 0.70,
+            "structure_breakdown.render_kind": 0.15,
+            "structure_breakdown.repeat_bonus": 0.85,
+            "file_prior_breakdown.same_file": 0.60,
+            "file_prior_breakdown.same_module": 0.30,
+            "file_prior_breakdown.generated_penalty": 0.20,
+        }
+    )
+
+    sampled = suggest_multiplicative_boost_coefficients(trial, base)
+
+    # Tuned levers.
+    assert sampled.security_boost_weight == 1.75
+    assert sampled.context_breakdown.depth == 0.55
+    assert sampled.structure_breakdown.repeat_bonus == 0.85
+    assert sampled.security_path_breakdown.high_risk_cwe_evidence_base == 0.70
+
+    # Out-of-scope sections come straight from the base.
+    assert sampled.combiner == base.combiner
+    assert sampled.edge_type_weights == base.edge_type_weights
+    assert sampled.edge_decay_rates == base.edge_decay_rates
+    assert sampled.sanitizer_bypass_bonus == base.sanitizer_bypass_bonus
+    assert sampled.sanitizer_presence_damp == base.sanitizer_presence_damp
+
+
+def test_coefficients_from_best_params_round_trips_multiplicative_boost_keys(
+    tmp_path: Path,
+) -> None:
+    """The export helper must also handle a study tuned for multiplicative_boost."""
+
+    base = RankingCoefficients.from_yaml(_BASE_COEFFICIENTS_PATH)
+    best_params = {
+        "security_boost_weight": 2.10,
+        "context_breakdown.depth": 0.45,
+        "finding_evidence_breakdown.severity": 0.55,
+    }
+
+    merged = coefficients_from_best_params(best_params, base)
+    out = tmp_path / "tuned_mboost.yaml"
+    merged.to_yaml(out)
+    reloaded = RankingCoefficients.from_yaml(out)
+
+    assert reloaded.security_boost_weight == 2.10
+    assert reloaded.context_breakdown.depth == 0.45
+    assert reloaded.finding_evidence_breakdown.severity == 0.55
+    # Unmodified sections survive the round trip.
+    assert reloaded.combiner == base.combiner
