@@ -160,7 +160,7 @@ class ContextAssemblerService(BaseModel):
         context_nodes = self.fetch_context_nodes_for_root_ids(root_ids)
 
         taint_scores: dict[NodeID, float] = {}
-        if getattr(self.ranking_strategy, "requires_taint_scores", True):
+        if self.ranking_strategy.requires_taint_scores:
             taint_scores = self.fetch_taint_scores(root_ids)
         context_nodes = self.apply_taint_scores(context_nodes, taint_scores)
 
@@ -379,4 +379,4 @@ class ContextAssemblerService(BaseModel):
         estimator = self.token_estimator
         if estimator is not None:
             return estimator(text)
-        return max(1, len(text) // 3) if text else 0
+        return max(1, len(text) // 3)

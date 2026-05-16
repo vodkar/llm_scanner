@@ -883,7 +883,7 @@ class CleanVulBenchmarkService(BaseModel):
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
-        return max(1, len(text) // 3) if text else 0
+        return max(1, len(text) // 3)
 
     def _delete_checkout(self, repo_path: Path | None) -> None:
         if not self.delete_checkouts or repo_path is None or not repo_path.exists():
