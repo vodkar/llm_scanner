@@ -1,7 +1,5 @@
 """Unit tests for the LLM-as-judge benchmark scoring service."""
 
-from __future__ import annotations
-
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

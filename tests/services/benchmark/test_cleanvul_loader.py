@@ -1,7 +1,5 @@
 """Tests for the CleanVul dataset loader."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest

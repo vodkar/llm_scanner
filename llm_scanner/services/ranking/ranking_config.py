@@ -1,7 +1,5 @@
 """Tunable coefficient configuration for context-node ranking strategies."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
@@ -144,7 +142,7 @@ class RankingCoefficients(BaseModel):
     source_sink_path_max_depth: int = Field(..., ge=0)
 
     @classmethod
-    def from_yaml(cls, path: Path) -> RankingCoefficients:
+    def from_yaml(cls, path: Path) -> "RankingCoefficients":
         """Load coefficients from a YAML file.
 
         Args:

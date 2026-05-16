@@ -5,8 +5,6 @@ runs (50% discount vs. online calls). Callers submit a list of prompts and
 receive the model's text responses correlated by ``custom_id``.
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from typing import Any, Final, cast

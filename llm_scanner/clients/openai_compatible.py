@@ -1,7 +1,5 @@
 """OpenAI-compatible chat client usable with vLLM, OpenAI, and Azure endpoints."""
 
-from __future__ import annotations
-
 import asyncio
 from typing import Any, Final, cast
 
@@ -9,13 +7,9 @@ from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ConfigDict, Field
 
-from logging_utils import setup_logging
-
 DEFAULT_BASE_URL: Final[str] = "http://localhost:8000/v1"
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
 DEFAULT_REPETITION_PENALTY: Final[float] = 1.2
-
-setup_logging()
 
 
 def _extract_text(completion: Any) -> str:
@@ -64,6 +58,8 @@ class OpenAICompatibleClient(BaseModel):
     default_temperature: float = 0.0
     default_top_p: float | None = None
     default_repetition_penalty: float | None = DEFAULT_REPETITION_PENALTY
+    default_top_k: int | None = None
+    default_min_p: float | None = None
     default_enable_thinking: bool = True
     """Send ``chat_template_kwargs.enable_thinking=true`` so thinking-capable
     chat templates (e.g. Qwen3) emit ``<think>`` blocks. Set False for
@@ -91,6 +87,10 @@ class OpenAICompatibleClient(BaseModel):
         extra_body = dict(self.extra_body or {})
         if self.default_repetition_penalty is not None:
             extra_body.setdefault("repetition_penalty", self.default_repetition_penalty)
+        if self.default_top_k is not None:
+            extra_body.setdefault("top_k", self.default_top_k)
+        if self.default_min_p is not None:
+            extra_body.setdefault("min_p", self.default_min_p)
         if self.default_enable_thinking:
             chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
             chat_template_kwargs.setdefault("enable_thinking", True)

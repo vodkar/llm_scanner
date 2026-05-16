@@ -1,0 +1,376 @@
+import logging
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+import optuna
+
+from clients.neo4j import Neo4jConfig
+from models.benchmark.benchmark import BenchmarkDataset
+from models.context_ranking import BudgetedRankingConfig
+from models.ranking_strategy import RankingStrategy
+from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService
+from services.benchmark.llm_judge import LLMJudgeService
+from services.benchmark.prepared_sample import PreparedSample
+from services.ranking.ranking_config import RankingCoefficients
+from services.ranking.strategy_factory import build_strategy_factories
+
+
+def build_benchmark_and_score(
+    coefficients: RankingCoefficients | BudgetedRankingConfig,
+    *,
+    strategy: RankingStrategy,
+    dataset: Path,
+    repo_cache_dir: Path,
+    sample_count: int,
+    seed: int,
+    max_call_depth: int,
+    judge: LLMJudgeService,
+    work_dir: Path,
+    delete_checkouts: bool = True,
+) -> float:
+    """Run the benchmark with `coefficients`, score it with the judge, return accuracy."""
+
+    coeff_path = work_dir / "coefficients.yaml"
+    coefficients.to_yaml(coeff_path)
+
+    strategy_factories = build_strategy_factories(
+        token_budget=16384,
+        seed=seed,
+        cpg_structural_coefficients=(
+            coeff_path if strategy == RankingStrategy.CPG_STRUCTURAL else None
+        ),
+        budgeted_ranking_config_path=(
+            coeff_path if strategy == RankingStrategy.EVIDENCE_BUDGETED else None
+        ),
+        multiplicative_boost_coefficients=(
+            coeff_path if strategy == RankingStrategy.MULTIPLICATIVE_BOOST else None
+        ),
+        current_coefficients=(coeff_path if strategy == RankingStrategy.CURRENT else None),
+    )
+    service = CleanVulBenchmarkService(
+        dataset_path=dataset,
+        output_dir=work_dir / "benchmarks",
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=Neo4jConfig(),
+        max_call_depth=max_call_depth,
+        token_budget=16384,
+        strategy_factories=strategy_factories,
+        delete_checkouts=delete_checkouts,
+    )
+    dataset_paths, _entries = service.build_all_ranking_strategies()
+
+    dataset_path = dataset_paths.get(strategy.value)
+    if dataset_path is None or not dataset_path.exists():
+        raise RuntimeError(f"strategy {strategy.value!r} produced no dataset file")
+
+    benchmark_dataset = BenchmarkDataset.model_validate_json(
+        dataset_path.read_text(encoding="utf-8")
+    )
+    result = judge.score_dataset(benchmark_dataset)
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "judge accuracy=%.4f invalid=%d samples=%d",
+        result.accuracy,
+        result.invalid_responses,
+        len(benchmark_dataset.samples),
+    )
+    return result.accuracy
+
+
+def build_benchmark_and_score_from_prepared(
+    coefficients: RankingCoefficients | BudgetedRankingConfig,
+    *,
+    strategy: RankingStrategy,
+    prepared_samples: Sequence[PreparedSample],
+    dataset: Path,
+    repo_cache_dir: Path,
+    seed: int,
+    max_call_depth: int,
+    judge: LLMJudgeService,
+    work_dir: Path,
+) -> float:
+    """Phase-2 equivalent of ``build_benchmark_and_score`` using prepared samples.
+
+    Skips repo checkout, CPG parsing, Neo4j ingest and DB clearing — only
+    renders + ranks using the cached ``PreparedSample`` set. The dataset and
+    repo_cache_dir arguments are accepted only so the underlying service can
+    construct itself; they are not read when prepared samples are provided.
+    """
+
+    coeff_path = work_dir / "coefficients.yaml"
+    coefficients.to_yaml(coeff_path)
+
+    strategy_factories = build_strategy_factories(
+        token_budget=16384,
+        seed=seed,
+        cpg_structural_coefficients=(
+            coeff_path if strategy == RankingStrategy.CPG_STRUCTURAL else None
+        ),
+        budgeted_ranking_config_path=(
+            coeff_path if strategy == RankingStrategy.EVIDENCE_BUDGETED else None
+        ),
+        multiplicative_boost_coefficients=(
+            coeff_path if strategy == RankingStrategy.MULTIPLICATIVE_BOOST else None
+        ),
+        current_coefficients=(coeff_path if strategy == RankingStrategy.CURRENT else None),
+        only_strategies=[strategy.value],
+    )
+    service = CleanVulBenchmarkService(
+        dataset_path=dataset,
+        output_dir=work_dir / "benchmarks",
+        repo_cache_dir=repo_cache_dir,
+        sample_count=len(prepared_samples),
+        seed=seed,
+        neo4j_config=Neo4jConfig(),
+        max_call_depth=max_call_depth,
+        token_budget=16384,
+        strategy_factories=strategy_factories,
+        delete_checkouts=False,
+    )
+    dataset_paths, _entries = service.build_all_from_prepared(prepared_samples)
+
+    dataset_path = dataset_paths.get(strategy.value)
+    if dataset_path is None or not dataset_path.exists():
+        raise RuntimeError(f"strategy {strategy.value!r} produced no dataset file")
+
+    benchmark_dataset = BenchmarkDataset.model_validate_json(
+        dataset_path.read_text(encoding="utf-8")
+    )
+    result = judge.score_dataset(benchmark_dataset)
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "judge accuracy=%.4f invalid=%d samples=%d",
+        result.accuracy,
+        result.invalid_responses,
+        len(benchmark_dataset.samples),
+    )
+    return result.accuracy
+
+
+def suggest_budgeted_config(trial: optuna.Trial) -> BudgetedRankingConfig:
+    """Sample a BudgetedRankingConfig over the full 14-parameter search space."""
+
+    return BudgetedRankingConfig(
+        depth_decay=trial.suggest_float("depth_decay", 0.25, 1.20),
+        context_strength=trial.suggest_float("context_strength", 0.10, 0.75),
+        role_prior_temperature=trial.suggest_float("role_prior_temperature", 0.60, 1.80),
+        finding_evidence_scale=trial.suggest_float("finding_evidence_scale", 0.60, 1.50),
+        taint_evidence_scale=trial.suggest_float("taint_evidence_scale", 0.60, 1.50),
+        cpg_role_evidence_scale=trial.suggest_float("cpg_role_evidence_scale", 0.60, 1.50),
+        lexical_fallback_cap=trial.suggest_float("lexical_fallback_cap", 0.20, 0.60),
+        token_cost_power=trial.suggest_float("token_cost_power", 0.00, 0.80),
+        novelty_penalty=trial.suggest_float("novelty_penalty", 0.00, 0.70),
+        role_coverage_bonus=trial.suggest_float("role_coverage_bonus", 0.05, 0.40),
+        small_node_token_threshold=trial.suggest_int(
+            "small_node_token_threshold", 120, 420, step=20
+        ),
+        local_window_radius=trial.suggest_int("local_window_radius", 1, 6),
+        budget_safety_ratio=trial.suggest_float("budget_safety_ratio", 0.85, 1.00),
+    )
+
+
+def suggest_coefficients(trial: optuna.Trial, base: RankingCoefficients) -> RankingCoefficients:
+    """Sample a coefficients object by perturbing the base configuration."""
+
+    payload: dict[str, Any] = base.model_dump()
+
+    payload["combiner"] = {
+        "finding_evidence": trial.suggest_float("combiner.finding_evidence", 0.1, 0.5),
+        "security_path": trial.suggest_float("combiner.security_path", 0.1, 0.5),
+        "taint": trial.suggest_float("combiner.taint", 0.1, 0.5),
+        "context": trial.suggest_float("combiner.context", 0.1, 0.5),
+    }
+    payload["context_breakdown"] = {
+        "depth": trial.suggest_float("context_breakdown.depth", 0.2, 0.8),
+        "structure": trial.suggest_float("context_breakdown.structure", 0.05, 0.5),
+        "file_prior": trial.suggest_float("context_breakdown.file_prior", 0.05, 0.5),
+    }
+    payload["edge_type_weights"] = {
+        "flows_to": trial.suggest_float("edge_type_weights.flows_to", 0.6, 1.0),
+        "sanitized_by": trial.suggest_float("edge_type_weights.sanitized_by", 0.5, 1.0),
+        "calls": trial.suggest_float("edge_type_weights.calls", 0.3, 0.9),
+        "called_by": trial.suggest_float("edge_type_weights.called_by", 0.3, 0.9),
+        "defined_by": trial.suggest_float("edge_type_weights.defined_by", 0.3, 0.8),
+        "used_by": trial.suggest_float("edge_type_weights.used_by", 0.2, 0.8),
+        "contains": trial.suggest_float("edge_type_weights.contains", 0.1, 0.6),
+    }
+    payload["edge_decay_rates"] = {
+        "flows_to": trial.suggest_float("edge_decay_rates.flows_to", 0.6, 0.95),
+        "sanitized_by": trial.suggest_float("edge_decay_rates.sanitized_by", 0.6, 0.95),
+        "calls": trial.suggest_float("edge_decay_rates.calls", 0.5, 0.9),
+        "called_by": trial.suggest_float("edge_decay_rates.called_by", 0.5, 0.9),
+        "defined_by": trial.suggest_float("edge_decay_rates.defined_by", 0.5, 0.9),
+        "used_by": trial.suggest_float("edge_decay_rates.used_by", 0.5, 0.9),
+        "contains": trial.suggest_float("edge_decay_rates.contains", 0.3, 0.8),
+    }
+    payload["sanitizer_bypass_bonus"] = trial.suggest_float("sanitizer_bypass_bonus", 0.0, 0.5)
+    payload["sanitizer_presence_damp"] = trial.suggest_float("sanitizer_presence_damp", 0.0, 1.0)
+
+    return RankingCoefficients.model_validate(payload)
+
+
+def suggest_current_coefficients(
+    trial: optuna.trial.BaseTrial, base: RankingCoefficients
+) -> RankingCoefficients:
+    """Sample a coefficients object focused on the ``current`` ranking strategy.
+
+    ``NodeRelevanceRankingService.calculate_final_score`` mixes the four
+    component scores via ``combiner`` weights, and each component is itself
+    a weighted sum of its breakdown sub-weights. So the relevant tuning
+    surface is: ``combiner`` + the five breakdowns. The CPG-structural-only
+    knobs (``edge_*``, ``sanitizer_*``, ``security_boost_weight``) are NOT
+    perturbed because ``NodeRelevanceRankingService`` ignores them.
+    """
+
+    payload: dict[str, Any] = base.model_dump()
+
+    payload["combiner"] = {
+        "finding_evidence": trial.suggest_float("combiner.finding_evidence", 0.1, 0.5),
+        "security_path": trial.suggest_float("combiner.security_path", 0.1, 0.5),
+        "taint": trial.suggest_float("combiner.taint", 0.1, 0.5),
+        "context": trial.suggest_float("combiner.context", 0.1, 0.5),
+    }
+    payload["context_breakdown"] = {
+        "depth": trial.suggest_float("context_breakdown.depth", 0.2, 0.8),
+        "structure": trial.suggest_float("context_breakdown.structure", 0.05, 0.5),
+        "file_prior": trial.suggest_float("context_breakdown.file_prior", 0.05, 0.5),
+    }
+    payload["finding_evidence_breakdown"] = {
+        "severity": trial.suggest_float("finding_evidence_breakdown.severity", 0.2, 0.7),
+        "confidence": trial.suggest_float("finding_evidence_breakdown.confidence", 0.1, 0.6),
+        "agreement": trial.suggest_float("finding_evidence_breakdown.agreement", 0.05, 0.5),
+    }
+    payload["security_path_breakdown"] = {
+        "sink": trial.suggest_float("security_path_breakdown.sink", 0.1, 0.5),
+        "source": trial.suggest_float("security_path_breakdown.source", 0.1, 0.4),
+        "guard": trial.suggest_float("security_path_breakdown.guard", 0.05, 0.3),
+        "path_evidence": trial.suggest_float("security_path_breakdown.path_evidence", 0.15, 0.6),
+        "high_risk_cwe_evidence_base": trial.suggest_float(
+            "security_path_breakdown.high_risk_cwe_evidence_base", 0.3, 0.9
+        ),
+    }
+    payload["structure_breakdown"] = {
+        "render_kind": trial.suggest_float("structure_breakdown.render_kind", 0.05, 0.5),
+        "repeat_bonus": trial.suggest_float("structure_breakdown.repeat_bonus", 0.5, 1.0),
+    }
+    payload["file_prior_breakdown"] = {
+        "same_file": trial.suggest_float("file_prior_breakdown.same_file", 0.3, 0.9),
+        "same_module": trial.suggest_float("file_prior_breakdown.same_module", 0.1, 0.6),
+        "generated_penalty": trial.suggest_float(
+            "file_prior_breakdown.generated_penalty", 0.0, 0.5
+        ),
+    }
+
+    return RankingCoefficients.model_validate(payload)
+
+
+def suggest_multiplicative_boost_coefficients(
+    trial: optuna.trial.BaseTrial, base: RankingCoefficients
+) -> RankingCoefficients:
+    """Sample a coefficients object focused on ``MultiplicativeBoostNodeRankingStrategy``.
+
+    The multiplicative-boost final score is
+
+        score = context_score * (1 + security_boost_weight * (FE + SP))
+
+    so the tunable surface is: the multiplier itself, the breakdowns that feed
+    ``context_score`` (context / structure / file_prior), and the breakdowns
+    that feed the security signal (finding_evidence / security_path). The
+    CPG-structural-only knobs (``combiner``, ``edge_*``, ``sanitizer_*``) are
+    NOT perturbed because the strategy ignores them.
+    """
+
+    payload: dict[str, Any] = base.model_dump()
+
+    payload["security_boost_weight"] = trial.suggest_float("security_boost_weight", 0.25, 3.0)
+
+    payload["context_breakdown"] = {
+        "depth": trial.suggest_float("context_breakdown.depth", 0.2, 0.8),
+        "structure": trial.suggest_float("context_breakdown.structure", 0.05, 0.5),
+        "file_prior": trial.suggest_float("context_breakdown.file_prior", 0.05, 0.5),
+    }
+    payload["finding_evidence_breakdown"] = {
+        "severity": trial.suggest_float("finding_evidence_breakdown.severity", 0.2, 0.7),
+        "confidence": trial.suggest_float("finding_evidence_breakdown.confidence", 0.1, 0.6),
+        "agreement": trial.suggest_float("finding_evidence_breakdown.agreement", 0.05, 0.5),
+    }
+    payload["security_path_breakdown"] = {
+        "sink": trial.suggest_float("security_path_breakdown.sink", 0.1, 0.5),
+        "source": trial.suggest_float("security_path_breakdown.source", 0.1, 0.4),
+        "guard": trial.suggest_float("security_path_breakdown.guard", 0.05, 0.3),
+        "path_evidence": trial.suggest_float("security_path_breakdown.path_evidence", 0.15, 0.6),
+        "high_risk_cwe_evidence_base": trial.suggest_float(
+            "security_path_breakdown.high_risk_cwe_evidence_base", 0.3, 0.9
+        ),
+    }
+    payload["structure_breakdown"] = {
+        "render_kind": trial.suggest_float("structure_breakdown.render_kind", 0.05, 0.5),
+        "repeat_bonus": trial.suggest_float("structure_breakdown.repeat_bonus", 0.5, 1.0),
+    }
+    payload["file_prior_breakdown"] = {
+        "same_file": trial.suggest_float("file_prior_breakdown.same_file", 0.3, 0.9),
+        "same_module": trial.suggest_float("file_prior_breakdown.same_module", 0.1, 0.6),
+        "generated_penalty": trial.suggest_float(
+            "file_prior_breakdown.generated_penalty", 0.0, 0.5
+        ),
+    }
+
+    return RankingCoefficients.model_validate(payload)
+
+
+def coefficients_from_best_params(
+    best_params: Mapping[str, Any],
+    base: RankingCoefficients,
+) -> RankingCoefficients:
+    """Apply Optuna's flat dotted-key best_params on top of base coefficients.
+
+    Tuning emits keys like ``combiner.finding_evidence`` and
+    ``sanitizer_bypass_bonus``. This rebuilds the nested ``RankingCoefficients``
+    payload by writing each value into the corresponding section of ``base``.
+    Sections not touched by ``best_params`` keep their ``base`` values, so the
+    output is always a fully-populated coefficients object.
+
+    Args:
+        best_params: Flat mapping of tuned parameter names to values (from
+            ``study.best_params``).
+        base: Coefficients used as the starting payload — anything not in
+            ``best_params`` is preserved from here.
+
+    Returns:
+        A validated ``RankingCoefficients`` instance.
+    """
+
+    payload: dict[str, Any] = base.model_dump()
+    for key, value in best_params.items():
+        head, sep, tail = key.partition(".")
+        if not sep:
+            payload[head] = value
+            continue
+        section = payload.get(head)
+        if not isinstance(section, dict):
+            section = {}
+        section[tail] = value
+        payload[head] = section
+    return RankingCoefficients.model_validate(payload)
+
+
+def budgeted_config_from_best_params(
+    best_params: Mapping[str, Any],
+) -> BudgetedRankingConfig:
+    """Build a ``BudgetedRankingConfig`` from Optuna ``best_params``.
+
+    All ``BudgetedRankingConfig`` fields are flat, so the params dict maps
+    directly to constructor arguments. Any field absent from ``best_params``
+    falls back to its model default.
+
+    Args:
+        best_params: Flat mapping of tuned parameter names to values.
+
+    Returns:
+        A validated ``BudgetedRankingConfig`` instance.
+    """
+
+    return BudgetedRankingConfig.model_validate(dict(best_params))

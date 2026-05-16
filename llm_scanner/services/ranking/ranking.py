@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import random
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -15,7 +13,7 @@ from models.edges.analysis import StaticAnalysisReports
 from models.nodes import Node
 from models.nodes.base import BaseCodeNode
 from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
-from services.context_assembler.ranking_config import (
+from services.ranking.ranking_config import (
     CombinerWeights,
     ContextBreakdown,
     EdgeDecayRates,
@@ -27,7 +25,7 @@ from services.context_assembler.ranking_config import (
     SeverityScoreMap,
     StructureBreakdown,
 )
-from services.context_assembler.snippet_reader import SnippetReaderService
+from services.snippet_reader import SnippetReaderService
 
 FINDING_EVIDENCE_WEIGHT: Final[float] = 0.25
 SECURITY_PATH_WEIGHT: Final[float] = 0.20
@@ -251,6 +249,9 @@ class ContextNodeRankingStrategy(ABC):
     requires_edge_paths: ClassVar[bool] = False
     """When True, the assembler fetches per-edge-type depths for each node."""
 
+    requires_taint_scores: ClassVar[bool] = False
+    """When True, the assembler fetches backward-taint scores for each root."""
+
     @abstractmethod
     def rank_nodes(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:
         """Return context nodes in ready-to-use ranked order.
@@ -267,6 +268,8 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     """Calculate security, context, and final ranking scores for one context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    requires_taint_scores: ClassVar[bool] = True
 
     project_root: Path
     snippet_cache_max_entries: int = 10000

@@ -1,7 +1,5 @@
 """Unit tests for the Anthropic Message Batches client."""
 
-from __future__ import annotations
-
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 

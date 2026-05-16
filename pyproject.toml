@@ -93,6 +93,7 @@ omit = [
   "llm_scanner/services/context_assembler/ranking.py",
 ]
 
-[tool.deadcode]
-exclude = ["venv", "tests"]
-ignore-names = ["model_config"]
+[tool.pyright]
+exclude = [".venv", "data/repo_cache/**", ".claude/**","**/node_modules", "**/__pycache__"]
+
+ignore = ["data/repo_cache"]

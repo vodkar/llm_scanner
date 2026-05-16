@@ -1,14 +1,12 @@
 """Tests for ranking coefficient model and YAML persistence."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Final
 
 import pytest
 from pydantic import ValidationError
 
-from services.context_assembler.ranking_config import RankingCoefficients
+from services.ranking.ranking_config import RankingCoefficients
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 CURRENT_YAML: Final[Path] = PROJECT_ROOT / "config" / "ranking_coefficients_current.yaml"

@@ -1,8 +1,4 @@
-from __future__ import annotations
-
 from pydantic import BaseModel, ConfigDict, Field
-
-from models.context import Context
 
 
 class BenchmarkMetadata(BaseModel):
@@ -54,13 +50,3 @@ class BenchmarkDataset(BaseModel):
 
     metadata: BenchmarkMetadata
     samples: list[BenchmarkSample]
-
-
-class UnassociatedSample(BaseModel):
-    """Context samples that could not be associated with a CVE entry."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    entry: BenchmarkSampleMetadata | CleanVulSampleMetadata
-    reason: str = Field(..., description="Reason for missing association")
-    contexts: list[Context] = []

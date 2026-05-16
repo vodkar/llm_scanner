@@ -1,7 +1,5 @@
 """Tests for CleanVul benchmark dataset generation."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -9,7 +7,7 @@ import pytest
 
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import Context, FileSpans
-from services.analyzer.cleanvul_benchmark import (
+from services.benchmark.cleanvul_benchmark import (
     CleanVulBenchmarkService,
     _CleanVulEntryPair,
 )
@@ -75,94 +73,13 @@ def _make_service(tmp_path: Path, **overrides: object) -> CleanVulBenchmarkServi
         max_call_depth=2,
         token_budget=100,
         delete_checkouts=False,
+        # The tests monkeypatch `_scan_repository_for_entry`, so the factory
+        # callable is never actually invoked; we just need any one-entry
+        # mapping so the new `strategy_factories` requirement is satisfied.
+        strategy_factories={"current": lambda _repo_path: None},
     )
     defaults.update(overrides)
-    return CleanVulBenchmarkService(**defaults)
-
-
-# ---------------------------------------------------------------------------
-# _find_function_line_span
-# ---------------------------------------------------------------------------
-
-
-def test_find_function_line_span_exact_match(tmp_path: Path) -> None:
-    """Exact function text should be found and return correct 1-based span."""
-    source = "import os\n\ndef foo():\n    pass\n\ndef bar():\n    return 1\n"
-    f = tmp_path / "src.py"
-    f.write_text(source, encoding="utf-8")
-
-    span = CleanVulBenchmarkService._find_function_line_span(f, "def foo():\n    pass")
-
-    assert span == (3, 4)
-
-
-def test_find_function_line_span_trailing_whitespace_in_file(tmp_path: Path) -> None:
-    """Trailing whitespace in the file should not prevent matching."""
-    source = "def foo():   \n    pass   \n"
-    f = tmp_path / "src.py"
-    f.write_text(source, encoding="utf-8")
-
-    span = CleanVulBenchmarkService._find_function_line_span(f, "def foo():\n    pass")
-
-    assert span == (1, 2)
-
-
-def test_find_function_line_span_extra_blank_lines_in_file(tmp_path: Path) -> None:
-    """Blank file lines between matched needle lines should be skipped."""
-    source = "def foo():\n\n    pass\n"
-    f = tmp_path / "src.py"
-    f.write_text(source, encoding="utf-8")
-
-    span = CleanVulBenchmarkService._find_function_line_span(f, "def foo():\n    pass")
-
-    assert span == (1, 3)
-
-
-def test_find_function_line_span_whitespace_normalised(tmp_path: Path) -> None:
-    """Lines with different spacing should match via whitespace-normalised tier."""
-    # File has double spaces; dataset has single spaces
-    source = "def  foo( ):\n    pass\n"
-    f = tmp_path / "src.py"
-    f.write_text(source, encoding="utf-8")
-
-    span = CleanVulBenchmarkService._find_function_line_span(f, "def foo( ):\n    pass")
-
-    assert span is not None
-
-
-def test_find_function_line_span_dedented_needle(tmp_path: Path) -> None:
-    """Function stored at deeper indentation should match after dedent (Tier 3)."""
-    # Simulate a method inside a class: 8-space indentation in file
-    source = "class Foo:\n    def bar(self):\n        return 42\n"
-    f = tmp_path / "src.py"
-    f.write_text(source, encoding="utf-8")
-
-    # Dataset stores the function with only 4-space indentation (dedented)
-    needle = "    def bar(self):\n        return 42"
-
-    span = CleanVulBenchmarkService._find_function_line_span(f, needle)
-
-    # Should find via Tier 1 (exact after rstrip) since indentation matches
-    assert span is not None
-    assert span[0] == 2
-
-
-def test_find_function_line_span_returns_none_when_not_found(tmp_path: Path) -> None:
-    """Returns None when function text cannot be located in the file."""
-    f = tmp_path / "src.py"
-    f.write_text("def completely_different():\n    pass\n", encoding="utf-8")
-
-    span = CleanVulBenchmarkService._find_function_line_span(f, "def foo():\n    bad()")
-
-    assert span is None
-
-
-def test_find_function_line_span_missing_file(tmp_path: Path) -> None:
-    """Returns None for a file that does not exist."""
-    span = CleanVulBenchmarkService._find_function_line_span(
-        tmp_path / "nonexistent.py", "def foo():\n    pass"
-    )
-    assert span is None
+    return CleanVulBenchmarkService.model_validate(defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -170,11 +87,11 @@ def test_find_function_line_span_missing_file(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_writes_dataset_and_unassociated(
+def test_build_writes_dataset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Happy path: dataset with label pair (1,0) and empty unassociated list."""
+    """Happy path: dataset with label pair (1,0)."""
     row = _make_row()
     pair = _make_pair()
 
@@ -230,7 +147,7 @@ def test_build_writes_dataset_and_unassociated(
     )
 
     service = _make_service(tmp_path)
-    main_path, unassociated_path, _ = service.build()
+    main_path, _ = service.build()
 
     payload = json.loads(main_path.read_text(encoding="utf-8"))
     assert [s["label"] for s in payload["samples"]] == [1, 0]
@@ -239,57 +156,6 @@ def test_build_writes_dataset_and_unassociated(
     # Verify CleanVul-specific metadata alias
     for sample in payload["samples"]:
         assert sample["metadata"]["commit_url"] == _COMMIT_URL
-
-    assert json.loads(unassociated_path.read_text(encoding="utf-8")) == []
-
-
-# ---------------------------------------------------------------------------
-# build — span_not_found
-# ---------------------------------------------------------------------------
-
-
-def test_build_records_span_not_found_as_unassociated(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When _build_entry_pair returns None, the row should be unassociated."""
-    row = _make_row()
-
-    vulnerable_repo = tmp_path / "repos" / "vulnerable"
-    fixed_repo = tmp_path / "repos" / "fixed"
-    vulnerable_repo.mkdir(parents=True)
-    fixed_repo.mkdir(parents=True)
-
-    def _fetch_entries(
-        self: CleanVulLoaderService,
-    ) -> list[tuple[list[CleanVulRow], str, str]]:
-        del self
-        return [([row], "https://github.com/owner/repo", "abcdef123456")]
-
-    def _checkout_repo(
-        self: RepoCheckoutService, repo_url: str, fix_hash: str, is_vulnerable: bool
-    ) -> Path:
-        del self, repo_url, fix_hash
-        return vulnerable_repo if is_vulnerable else fixed_repo
-
-    def _build_entry_pair(self: CleanVulBenchmarkService, **kwargs: object) -> None:
-        del self, kwargs
-        return None
-
-    monkeypatch.setattr(CleanVulLoaderService, "fetch_entries", _fetch_entries)
-    monkeypatch.setattr(RepoCheckoutService, "checkout_repo", _checkout_repo)
-    monkeypatch.setattr(CleanVulBenchmarkService, "_build_entry_pair", _build_entry_pair)
-
-    service = _make_service(tmp_path)
-    main_path, unassociated_path, _ = service.build()
-
-    payload = json.loads(main_path.read_text(encoding="utf-8"))
-    assert payload["samples"] == []
-
-    unassociated = json.loads(unassociated_path.read_text(encoding="utf-8"))
-    assert len(unassociated) == 1
-    assert unassociated[0]["reason"] == "span_not_found"
-    assert "commit_url" in unassociated[0]["entry"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,15 +210,12 @@ def test_build_skips_pairs_over_token_budget(
     )
 
     service = _make_service(tmp_path, token_budget=10)
-    main_path, unassociated_path, _ = service.build()
+    main_path, _ = service.build()
 
     assert scan_calls["count"] == 0
 
     payload = json.loads(main_path.read_text(encoding="utf-8"))
     assert payload["samples"] == []
-
-    unassociated = json.loads(unassociated_path.read_text(encoding="utf-8"))
-    assert all(u["reason"] == "source_sample_exceeds_token_budget" for u in unassociated)
 
 
 # ---------------------------------------------------------------------------
@@ -434,17 +297,12 @@ def test_build_writes_partial_datasets_on_keyboard_interrupt(
         service.build()
 
     dataset_path = tmp_path / "output" / "cleanvul_context_benchmark.json"
-    unassociated_path = tmp_path / "output" / "cleanvul_unassociated.json"
 
     dataset_payload = json.loads(dataset_path.read_text(encoding="utf-8"))
-    unassociated_payload = json.loads(unassociated_path.read_text(encoding="utf-8"))
 
     # First pair's samples were written before the interrupt
     assert len(dataset_payload["samples"]) == 2
     assert [s["label"] for s in dataset_payload["samples"]] == [1, 0]
-
-    # Interrupted pair ends up in unassociated
-    assert any(u["reason"] == "interrupted" for u in unassociated_payload)
 
 
 # ---------------------------------------------------------------------------
@@ -509,3 +367,60 @@ def test_build_uses_separate_checkout_roots(
     # Both cache dirs are subdirectories of repo_cache_dir
     for d in seen_cache_dirs:
         assert d.parent == tmp_path / "repos"
+
+
+def test_build_skips_repositories_over_size_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Checked-out repositories larger than the configured limit should be skipped."""
+
+    row = _make_row()
+    pair = _make_pair()
+
+    vulnerable_repo = tmp_path / "repos" / "vulnerable"
+    fixed_repo = tmp_path / "repos" / "fixed"
+    vulnerable_repo.mkdir(parents=True)
+    fixed_repo.mkdir(parents=True)
+    (vulnerable_repo / "big.py").write_text("x" * 128, encoding="utf-8")
+    (fixed_repo / "big.py").write_text("x" * 128, encoding="utf-8")
+
+    def _fetch_entries(
+        self: CleanVulLoaderService,
+    ) -> list[tuple[list[CleanVulRow], str, str]]:
+        del self
+        return [([row], "https://github.com/owner/repo", "abcdef123456")]
+
+    def _checkout_repo(
+        self: RepoCheckoutService, repo_url: str, fix_hash: str, is_vulnerable: bool
+    ) -> Path:
+        del self, repo_url, fix_hash
+        return vulnerable_repo if is_vulnerable else fixed_repo
+
+    def _build_entry_pair(self: CleanVulBenchmarkService, **kwargs: object) -> _CleanVulEntryPair:
+        del self, kwargs
+        return pair
+
+    scan_calls = {"count": 0}
+
+    def _scan_repository_for_entry(
+        self: CleanVulBenchmarkService, **kwargs: object
+    ) -> dict[str, Context]:
+        del self, kwargs
+        scan_calls["count"] += 1
+        return {}
+
+    monkeypatch.setattr(CleanVulLoaderService, "fetch_entries", _fetch_entries)
+    monkeypatch.setattr(RepoCheckoutService, "checkout_repo", _checkout_repo)
+    monkeypatch.setattr(CleanVulBenchmarkService, "_build_entry_pair", _build_entry_pair)
+    monkeypatch.setattr(
+        CleanVulBenchmarkService, "_scan_repository_for_entry", _scan_repository_for_entry
+    )
+
+    service = _make_service(tmp_path, max_repo_size_bytes=64)
+    main_path, _ = service.build()
+
+    assert scan_calls["count"] == 0
+
+    payload = json.loads(main_path.read_text(encoding="utf-8"))
+    assert payload["samples"] == []

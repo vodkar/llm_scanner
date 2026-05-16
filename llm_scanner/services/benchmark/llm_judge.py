@@ -1,7 +1,5 @@
 """LLM-as-judge scoring service for context benchmark samples."""
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging

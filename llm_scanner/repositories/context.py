@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Any, LiteralString
 
@@ -11,14 +12,17 @@ from repositories.queries import (
     backward_dataflow_taint_query,
     code_bfs_nodes_batch_query,
     code_bfs_nodes_query,
-    code_nodes_by_file_line_query,
+    code_nodes_by_file_span_query,
     code_traversal_relationship_types,
+    neighborhood_edges_query,
+    path_fill_relationship_types,
     taint_score_from_hop,
 )
 
 RELATIONSHIP_TYPES_QUERY: LiteralString = (
     "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
 )
+_LOGGER = logging.getLogger(__name__)
 
 
 class ContextRepository(BaseModel):
@@ -26,6 +30,7 @@ class ContextRepository(BaseModel):
 
     client: Neo4jClient
     traversal_relationship_types: tuple[str, ...] = ()
+    path_fill_edge_types: tuple[str, ...] = ()
     # neighborhood_cache_max_entries: int = 1000
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -48,6 +53,9 @@ class ContextRepository(BaseModel):
         self.traversal_relationship_types = tuple(
             rel_type for rel_type in configured_types if rel_type in available_types
         )
+        self.path_fill_edge_types = tuple(
+            rel_type for rel_type in path_fill_relationship_types() if rel_type in available_types
+        )
 
     def fetch_code_nodes_by_file_lines(
         self,
@@ -65,8 +73,7 @@ class ContextRepository(BaseModel):
         if not rows:
             return []
 
-        normalized_rows: list[dict[str, object]] = []
-        seen_keys: set[tuple[str, int]] = set()
+        span_rows: list[dict[str, object]] = []
         for row in rows:
             file_path = str(row.get("file_path", ""))
             line_number_raw = row.get("line_number")
@@ -78,22 +85,90 @@ class ContextRepository(BaseModel):
                 continue
             if line_number < 1:
                 continue
-            key = (file_path, line_number)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            normalized_rows.append(
+            span_rows.append(
                 {
                     "file_path": file_path,
-                    "line_number": line_number,
+                    "start_line": line_number,
+                    "end_line": line_number,
                 }
             )
+
+        return self.fetch_code_nodes_by_file_spans(span_rows)
+
+    def fetch_code_nodes_by_file_spans(
+        self,
+        rows: list[dict[str, object]],
+    ) -> list[CodeContextNode]:
+        """Return code nodes overlapping the supplied file spans.
+
+        Args:
+            rows: Items with ``file_path``, ``start_line``, and ``end_line`` keys.
+
+        Returns:
+            Matching code nodes.
+        """
+
+        normalized_rows = self._normalize_file_spans(rows)
 
         if not normalized_rows:
             return []
 
-        query = code_nodes_by_file_line_query()
+        query = code_nodes_by_file_span_query()
         return self._build_context_nodes(self.client.run_read(query, {"rows": normalized_rows}))
+
+    @staticmethod
+    def _normalize_file_spans(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        """Normalize and merge overlapping file spans.
+
+        Args:
+            rows: Candidate file spans.
+
+        Returns:
+            Normalized spans with overlaps coalesced per file path.
+        """
+
+        spans_by_file: dict[str, list[tuple[int, int]]] = {}
+        for row in rows:
+            file_path = str(row.get("file_path", ""))
+            start_line_raw = row.get("start_line")
+            end_line_raw = row.get("end_line")
+            if not file_path or start_line_raw is None or end_line_raw is None:
+                continue
+            try:
+                start_line = int(str(start_line_raw))
+                end_line = int(str(end_line_raw))
+            except (TypeError, ValueError):
+                continue
+            if start_line < 1 or end_line < start_line:
+                continue
+
+            spans_by_file.setdefault(file_path, []).append((start_line, end_line))
+
+        normalized_rows: list[dict[str, object]] = []
+        for file_path, spans in spans_by_file.items():
+            merged_spans: list[tuple[int, int]] = []
+            for start_line, end_line in sorted(spans):
+                if not merged_spans:
+                    merged_spans.append((start_line, end_line))
+                    continue
+
+                previous_start, previous_end = merged_spans[-1]
+                if start_line <= previous_end + 1:
+                    merged_spans[-1] = (previous_start, max(previous_end, end_line))
+                    continue
+
+                merged_spans.append((start_line, end_line))
+
+            normalized_rows.extend(
+                {
+                    "file_path": file_path,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                }
+                for start_line, end_line in merged_spans
+            )
+
+        return normalized_rows
 
     def fetch_code_neighborhood_batch(
         self, start_node_ids: list[str], max_depth: int
@@ -168,16 +243,23 @@ class ContextRepository(BaseModel):
         if not start_node_ids:
             return []
 
-        unique_start_ids = sorted(set(start_node_ids))
+        unique_start_ids: tuple[str, ...] = tuple(sorted(set(start_node_ids)))
         nodes_by_id: dict[NodeID, CodeContextNode] = {}
         ordered_node_ids: list[NodeID] = []
 
         for edge_type in self.traversal_relationship_types:
-            query = code_bfs_nodes_batch_query(max_depth, (edge_type,))
-            rows = self.client.run_read(
-                query,
-                {"start_ids": unique_start_ids, "max_depth": max_depth},
-            )
+            if len(unique_start_ids) == 1:
+                query = code_bfs_nodes_query(max_depth, (edge_type,))
+                rows = self.client.run_read(
+                    query,
+                    {"start_id": unique_start_ids[0], "max_depth": max_depth},
+                )
+            else:
+                query = code_bfs_nodes_batch_query(max_depth, (edge_type,))
+                rows = self.client.run_read(
+                    query,
+                    {"start_ids": list(unique_start_ids), "max_depth": max_depth},
+                )
             for row in rows:
                 node_id = NodeID(str(row["id"]))
                 row_depth = int(row.get("depth", 0))
@@ -208,6 +290,53 @@ class ContextRepository(BaseModel):
 
         return [nodes_by_id[node_id] for node_id in ordered_node_ids]
 
+    def fetch_neighborhood_edges(
+        self,
+        node_ids: list[str],
+        edge_types: tuple[str, ...] | None = None,
+    ) -> list[tuple[NodeID, NodeID, str]]:
+        """Return edges whose endpoints both belong to the supplied node set.
+
+        Args:
+            node_ids: Identifiers of nodes already fetched into the context.
+            edge_types: Relationship types to include. Defaults to the path-fill
+                set discovered in ``model_post_init``.
+
+        Returns:
+            Triples of ``(src_id, dst_id, rel_type)`` for every matching edge.
+        """
+
+        if not node_ids:
+            return []
+
+        rel_types: tuple[str, ...] = self.path_fill_edge_types if edge_types is None else edge_types
+
+        if not rel_types:
+            return []
+
+        unique_ids = sorted(set(node_ids))
+        rows = self.client.run_read(
+            neighborhood_edges_query(),
+            {"node_ids": unique_ids, "edge_types": list(rel_types)},
+        )
+
+        edges: list[tuple[NodeID, NodeID, str]] = []
+        for row in rows:
+            src_raw = row.get("src")
+            dst_raw = row.get("dst")
+            rel_raw = row.get("rel")
+            if src_raw is None or dst_raw is None or rel_raw is None:
+                continue
+            edges.append((NodeID(str(src_raw)), NodeID(str(dst_raw)), str(rel_raw)))
+
+        _LOGGER.info(
+            "Fetched %d neighborhood edges for %d nodes with types %s",
+            len(edges),
+            len(unique_ids),
+            rel_types,
+        )
+        return edges
+
     def fetch_taint_sources(
         self,
         root_node_ids: list[str],
@@ -228,8 +357,10 @@ class ContextRepository(BaseModel):
         if not root_node_ids:
             return {}
 
+        unique_root_ids: list[str] = sorted(set(root_node_ids))
+
         query = backward_dataflow_taint_query(max_taint_depth)
-        rows = self.client.run_read(query, {"root_ids": root_node_ids})
+        rows = self.client.run_read(query, {"root_ids": unique_root_ids})
         return {
             NodeID(str(row["id"])): taint_score_from_hop(int(row["taint_hop"]))
             for row in rows

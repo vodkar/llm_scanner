@@ -1,7 +1,5 @@
 """Tests for the edge-type-aware CPGStructuralRankingStrategy."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Final
 
@@ -9,8 +7,8 @@ import pytest
 
 from models.base import NodeID
 from models.context import CodeContextNode
-from services.context_assembler.cpg_structural_ranking import CPGStructuralRankingStrategy
-from services.context_assembler.ranking_config import RankingCoefficients
+from services.ranking.cpg_structural_ranking import CPGStructuralRankingStrategy
+from services.ranking.ranking_config import RankingCoefficients
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 CPG_STRUCTURAL_YAML: Final[Path] = (

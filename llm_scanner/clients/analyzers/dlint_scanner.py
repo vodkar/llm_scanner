@@ -1,9 +1,9 @@
-from __future__ import annotations
-
 import re
 import subprocess
 import sys
+from os import close
 from pathlib import Path
+from tempfile import mkstemp
 
 from clients.analyzers.base import IStaticAnalyzer
 from models.base import StaticAnalyzerReport
@@ -21,7 +21,11 @@ class DlintStaticAnalyzer(IStaticAnalyzer):
     src: Path
 
     def run(self) -> StaticAnalyzerReport[DlintIssue]:  # type: ignore
-        report_path: Path = Path("dlint_report.txt")
+        report_fd: int
+        raw_report_path: str
+        report_fd, raw_report_path = mkstemp(suffix="_dlint_report.txt")
+        report_path: Path = Path(raw_report_path)
+        close(report_fd)
 
         # Run flake8 with Dlint rules only; We don't fail on non-zero exit as
         # flake8 returns non-zero when issues are found.
@@ -37,27 +41,30 @@ class DlintStaticAnalyzer(IStaticAnalyzer):
             capture_output=True,
             text=True,
         )
-        report_path.write_text(result.stdout)
+        try:
+            report_path.write_text(result.stdout, encoding="utf-8")
 
-        issues: list[DlintIssue] = []
-        pattern = re.compile(r"^(.*?):(\d+):(\d+):\s+([A-Z]+\d+)\s+(.*)$")
-        for line in result.stdout.splitlines():
-            match = pattern.match(line.strip())
-            if not match:
-                # Skip unparsable lines (e.g., empty or configuration notes)
-                continue
-            path_str, line_str, col_str, code, message = match.groups()
-            file_path: Path = Path(path_str)
-            line_no: int = int(line_str)
-            col_no: int = int(col_str)
-            issues.append(
-                DlintIssue(
-                    code=code,
-                    file=file_path,
-                    reason=message.strip(),
-                    line_number=line_no,
-                    column_number=col_no,
+            issues: list[DlintIssue] = []
+            pattern = re.compile(r"^(.*?):(\d+):(\d+):\s+([A-Z]+\d+)\s+(.*)$")
+            for line in report_path.read_text(encoding="utf-8").splitlines():
+                match = pattern.match(line.strip())
+                if not match:
+                    # Skip unparsable lines (e.g., empty or configuration notes)
+                    continue
+                path_str, line_str, col_str, code, message = match.groups()
+                file_path: Path = Path(path_str)
+                line_no: int = int(line_str)
+                col_no: int = int(col_str)
+                issues.append(
+                    DlintIssue(
+                        code=code,
+                        file=file_path,
+                        reason=message.strip(),
+                        line_number=line_no,
+                        column_number=col_no,
+                    )
                 )
-            )
 
-        return StaticAnalyzerReport(issues=issues)
+            return StaticAnalyzerReport(issues=issues)
+        finally:
+            report_path.unlink(missing_ok=True)

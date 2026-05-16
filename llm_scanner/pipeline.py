@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -8,8 +9,8 @@ from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.graph import GraphRepository
 from services.analyzer.bandit import BanditAnalyzerService
 from services.analyzer.dlint import DlintAnalyzerService
-from services.context_assembler.ranking import NodeRelevanceRankingService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
+from services.ranking.ranking import NodeRelevanceRankingService
 
 
 class GeneralPipeline(BaseModel):
@@ -38,10 +39,14 @@ class GeneralPipeline(BaseModel):
         )
 
         nodes, edges = CPGDirectoryBuilder(root=project_root).build()
-        dlint_findings, dlint_edges = dlint_service.get_findings_with_edges(list(nodes.values()))
-        bandit_findings, bandit_edges = bandit_service.get_findings_with_edges(list(nodes.values()))
+        code_nodes = list(nodes.values())
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            dlint_future = executor.submit(dlint_service.get_findings_with_edges, code_nodes)
+            bandit_future = executor.submit(bandit_service.get_findings_with_edges, code_nodes)
+            dlint_findings, dlint_edges = dlint_future.result()
+            bandit_findings, bandit_edges = bandit_future.result()
         _nodes = ranking_service.calculate_security_score(
-            list(nodes.values()), dlint_findings + bandit_findings, dlint_edges + bandit_edges
+            code_nodes, dlint_findings + bandit_findings, dlint_edges + bandit_edges
         )
         nodes = {node.identifier: node for node in _nodes}
 

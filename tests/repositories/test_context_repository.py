@@ -1,7 +1,5 @@
 """Unit tests for ContextRepository."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -99,8 +97,8 @@ def test_context_repository_preserves_security_scores_from_span_lookup() -> None
 
     repository = ContextRepository(client=client)
 
-    rows = repository.fetch_code_nodes_by_file_lines(
-        [{"file_path": "src/app.py", "line_number": 12}]
+    rows = repository.fetch_code_nodes_by_file_spans(
+        [{"file_path": "src/app.py", "start_line": 12, "end_line": 12}]
     )
 
     assert rows == [
@@ -116,6 +114,36 @@ def test_context_repository_preserves_security_scores_from_span_lookup() -> None
             security_path_score=0.8,
         )
     ]
+
+
+def test_context_repository_merges_overlapping_spans_before_query() -> None:
+    """Overlapping and adjacent spans should be coalesced before Neo4j lookup."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "CALLS"}],
+        [],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    repository.fetch_code_nodes_by_file_spans(
+        [
+            {"file_path": "src/app.py", "start_line": 10, "end_line": 12},
+            {"file_path": "src/app.py", "start_line": 11, "end_line": 15},
+            {"file_path": "src/app.py", "start_line": 16, "end_line": 18},
+            {"file_path": "src/other.py", "start_line": 5, "end_line": 5},
+        ]
+    )
+
+    _, params = client.run_read.call_args_list[1].args
+    assert params == {
+        "rows": [
+            {"file_path": "src/app.py", "start_line": 10, "end_line": 18},
+            {"file_path": "src/other.py", "start_line": 5, "end_line": 5},
+        ]
+    }
 
 
 def test_fetch_with_edge_paths_merges_per_edge_type_depths() -> None:
@@ -185,3 +213,83 @@ def test_fetch_with_edge_paths_returns_empty_for_empty_start_ids() -> None:
     repository = ContextRepository(client=client)
 
     assert repository.fetch_code_neighborhood_with_edge_paths([], 3) == []
+
+
+def test_fetch_with_edge_paths_uses_single_start_query_for_one_root() -> None:
+    """Single-root edge-path traversal should avoid the batch UNWIND query shape."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CONTAINS"}],
+        [],
+        [],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    repository.fetch_code_neighborhood_with_edge_paths(["node-1"], 2)
+
+    first_query, first_params = client.run_read.call_args_list[1].args
+    second_query, second_params = client.run_read.call_args_list[2].args
+    assert "$start_id" in first_query
+    assert "$start_id" in second_query
+    assert first_params == {"start_id": "node-1", "max_depth": 2}
+    assert second_params == {"start_id": "node-1", "max_depth": 2}
+
+
+def test_fetch_neighborhood_edges_filters_by_available_relationship_types() -> None:
+    """``fetch_neighborhood_edges`` only queries types Neo4j actually exposes."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "CALLS"}, {"relationshipType": "FLOWS_TO"}],
+        [
+            {"src": "node-1", "dst": "node-2", "rel": "CALLS"},
+            {"src": "node-2", "dst": "node-3", "rel": "FLOWS_TO"},
+        ],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    edges = repository.fetch_neighborhood_edges(["node-1", "node-2", "node-3"])
+
+    _, params = client.run_read.call_args_list[1].args
+    assert params["node_ids"] == ["node-1", "node-2", "node-3"]
+    assert set(params["edge_types"]) == {"CALLS", "FLOWS_TO"}
+    assert edges == [
+        (NodeID("node-1"), NodeID("node-2"), "CALLS"),
+        (NodeID("node-2"), NodeID("node-3"), "FLOWS_TO"),
+    ]
+
+
+def test_fetch_neighborhood_edges_skips_query_when_no_node_ids() -> None:
+    """Empty input must short-circuit before Neo4j read."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.return_value = [{"relationshipType": "CALLS"}]
+
+    repository = ContextRepository(client=client)
+
+    assert repository.fetch_neighborhood_edges([]) == []
+    assert client.run_read.call_count == 1  # only the startup relationship-types lookup
+
+
+def test_fetch_taint_sources_deduplicates_root_ids_before_query() -> None:
+    """Backward taint traversal should not receive duplicate root IDs."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "FLOWS_TO"}],
+        [],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    repository.fetch_taint_sources(["node-2", "node-1", "node-2"])
+
+    _, params = client.run_read.call_args_list[1].args
+    assert params == {"root_ids": ["node-1", "node-2"]}
