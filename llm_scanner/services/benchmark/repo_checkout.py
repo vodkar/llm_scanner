@@ -48,6 +48,26 @@ class RepoCheckoutService(BaseModel):
         self._checkout_commit(repo_path, target_hash)
         return repo_path
 
+    def repo_path_for_url(self, repo_url: str) -> Path:
+        """Return the deterministic local path used by ``checkout_repo``."""
+
+        return self._repo_path_for_url(repo_url)
+
+    def resolve_head_hash(self, repo_path: Path) -> str:
+        """Return the current ``HEAD`` commit SHA at ``repo_path``."""
+
+        return self._run_git(["-C", str(repo_path), "rev-parse", "HEAD"]).strip()
+
+    def checkout_commit(self, repo_path: Path, commit_hash: str) -> None:
+        """Re-align an already-cloned repository to ``commit_hash``.
+
+        Skips clone/fetch — assumes the commit is already in the local object
+        database (it is, when called after ``checkout_repo`` ran for the same
+        SHA earlier in the same study).
+        """
+
+        self._checkout_commit(repo_path, commit_hash)
+
     def _repo_path_for_url(self, repo_url: str) -> Path:
         parsed = urlparse(repo_url)
         path = parsed.path.strip("/")

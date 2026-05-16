@@ -22,12 +22,13 @@ class ContextAssemblerService(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     project_root: Path
-    context_repository: ContextRepository
+    context_repository: ContextRepository | None = None
     max_call_depth: int
     token_budget: int
     snippet_cache_max_entries: int = 10000
     token_estimator: TokenEstimator | None = None
     ranking_strategy: ContextNodeRankingStrategy
+    cached_neighborhood_edges: list[tuple[NodeID, NodeID, str]] | None = None
 
     def model_post_init(self, __context: object) -> None:
         """Initialize default ranking strategy when one is not injected."""
@@ -44,12 +45,25 @@ class ContextAssemblerService(BaseModel):
             if any(end < start for start, end in file_span.line_spans):
                 raise ValueError("end_line must be >= start_line")
 
+    def _require_repo(self) -> ContextRepository:
+        """Return the Neo4j-backed repository, asserting that it is configured.
+
+        Phase 2 (cached) flows must never reach methods that hit Neo4j.
+        """
+
+        if self.context_repository is None:
+            raise RuntimeError(
+                "ContextAssemblerService.context_repository is not configured; "
+                "this method requires a live Neo4j connection."
+            )
+        return self.context_repository
+
     def fetch_root_ids_for_spans(self, files_spans: list[FileSpans]) -> list[str]:
         """Return unique root node IDs overlapping the supplied file spans."""
 
         self._validate_file_spans(files_spans)
 
-        spans_nodes = self.context_repository.fetch_code_nodes_by_file_spans(
+        spans_nodes = self._require_repo().fetch_code_nodes_by_file_spans(
             [
                 {
                     "file_path": str(file_span.file_path),
@@ -78,13 +92,14 @@ class ContextAssemblerService(BaseModel):
         if requires_edge_paths is None:
             requires_edge_paths = getattr(self.ranking_strategy, "requires_edge_paths", False)
 
+        repo = self._require_repo()
         if requires_edge_paths:
-            context_nodes = self.context_repository.fetch_code_neighborhood_with_edge_paths(
+            context_nodes = repo.fetch_code_neighborhood_with_edge_paths(
                 root_ids,
                 self.max_call_depth,
             )
         else:
-            context_nodes = self.context_repository.fetch_code_neighborhood_batch(
+            context_nodes = repo.fetch_code_neighborhood_batch(
                 root_ids,
                 self.max_call_depth,
             )
@@ -100,7 +115,7 @@ class ContextAssemblerService(BaseModel):
 
         if not root_ids:
             return {}
-        result = self.context_repository.fetch_taint_sources(root_ids)
+        result = self._require_repo().fetch_taint_sources(root_ids)
         _LOGGER.info("Fetched taint scores for %d root IDs", len(result))
         return result
 
@@ -153,12 +168,6 @@ class ContextAssemblerService(BaseModel):
 
     def _render_context(self, repo_path: Path, nodes: list[CodeContextNode]) -> tuple[str, int]:
         """Render text context for a finding and enforce token budget.
-
-        Ranked nodes are augmented with the shortest CPG path back to a root
-        (``depth==0``) node so that intermediate calls or data-flow nodes are
-        not silently dropped between two prioritized snippets. When the budget
-        forces a choice, the lowest-scored leaf nodes are evicted before any
-        path-fill companion is discarded.
 
         Args:
             repo_path: Path to the repository root.
@@ -246,10 +255,26 @@ class ContextAssemblerService(BaseModel):
     def _build_path_fill_adjacency(
         self, ranked_nodes: list[CodeContextNode]
     ) -> dict[NodeID, set[NodeID]]:
-        """Fetch edges among the fetched neighborhood and build an undirected map."""
+        """Build an undirected adjacency map among the fetched neighborhood.
+
+        When ``cached_neighborhood_edges`` is set (Phase 2 of the tuner cache
+        flow), the edges are taken directly from the cache and no Neo4j call
+        is made. Otherwise, ``context_repository`` must be set and is queried.
+        """
 
         fetched_ids: set[NodeID] = {n.identifier for n in ranked_nodes}
-        edges = self.context_repository.fetch_neighborhood_edges([str(nid) for nid in fetched_ids])
+        if self.cached_neighborhood_edges is not None:
+            edges: list[tuple[NodeID, NodeID, str]] = self.cached_neighborhood_edges
+        elif self.context_repository is not None:
+            edges = self.context_repository.fetch_neighborhood_edges(
+                [str(nid) for nid in fetched_ids]
+            )
+        else:
+            raise RuntimeError(
+                "ContextAssemblerService requires either context_repository or "
+                "cached_neighborhood_edges to build the path-fill adjacency."
+            )
+
         adjacency: dict[NodeID, set[NodeID]] = defaultdict(set)
         for src, dst, _ in edges:
             if src == dst or src not in fetched_ids or dst not in fetched_ids:

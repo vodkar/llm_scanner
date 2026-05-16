@@ -1,6 +1,6 @@
 import logging
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Final, NamedTuple
 
@@ -21,6 +21,12 @@ from services.benchmark.dataset_builder import (
     DatasetBuilderService,
     DatasetPathFactory,
     MetadataNameFactory,
+)
+from services.benchmark.prepared_sample import (
+    PreparedSample,
+    compute_sample_cache_key,
+    load_prepared_sample,
+    save_prepared_sample,
 )
 from services.benchmark.repo_checkout import RepoCheckoutService
 from services.context_assembler.context_assembler import ContextAssemblerService
@@ -103,6 +109,268 @@ class CleanVulBenchmarkService(BaseModel):
             Mapping of strategy names to dataset file paths and the entries file path.
         """
         return self._build_datasets(self.strategy_factories)
+
+    def prepare_samples(
+        self,
+        cache_dir: Path,
+        *,
+        sample_id_prefix: str = "CleanVulContextAssembler",
+    ) -> list[PreparedSample]:
+        """Phase 1: prepare and cache one ``PreparedSample`` per accepted entry.
+
+        For each accepted ``(vulnerable, fixed)`` CleanVul commit, this walks the
+        same candidate-row loop as ``_build_datasets`` (so accept/skip decisions
+        are identical) and produces two ``PreparedSample`` records — one per
+        side. Records are persisted to ``cache_dir`` keyed by repo/commit/spans
+        so reruns are free on cache hit.
+
+        The method ignores ``self.delete_checkouts`` and always keeps the
+        repos on disk: Phase 2 needs them for file reads during rendering.
+        Callers are responsible for cleaning up the cache directory and any
+        leftover checkouts at study teardown.
+        """
+
+        self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        loader_options = {"min_score": self.min_score}
+        loader = CleanVulLoaderService(
+            dataset_path=self.dataset_path,
+            min_score=self.min_score,
+        )
+        candidate_rows = loader.fetch_entries()
+
+        vulnerable_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "vulnerable")
+        fixed_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "fixed")
+
+        prepared: list[PreparedSample] = []
+        for rows, repo_url, fix_hash in candidate_rows:
+            if len(prepared) + 2 > self.sample_count:
+                break
+
+            commit_url = rows[0].commit_url
+            try:
+                vulnerable_repo_path = vulnerable_repo_service.checkout_repo(
+                    repo_url=repo_url,
+                    fix_hash=fix_hash,
+                    is_vulnerable=True,
+                )
+                fixed_repo_path = fixed_repo_service.checkout_repo(
+                    repo_url=repo_url,
+                    fix_hash=fix_hash,
+                    is_vulnerable=False,
+                )
+            except Exception:
+                logger.exception("Failed to checkout %s at %s", repo_url, fix_hash)
+                continue
+
+            repo_size_reason = self._repo_size_reason(vulnerable_repo_path, fixed_repo_path)
+            if repo_size_reason is not None:
+                logger.warning("Skipping %s because %s", commit_url, repo_size_reason)
+                continue
+
+            if len(prepared) % LOGGING_INTERVAL == 0:
+                logger.info(
+                    "Preparing sample %d/%d",
+                    len(prepared) + 1,
+                    self.sample_count,
+                )
+
+            pair = self._build_entry_pair(
+                rows=rows,
+                repo_url=repo_url,
+                fix_hash=fix_hash,
+                vulnerable_repo_path=vulnerable_repo_path,
+                fixed_repo_path=fixed_repo_path,
+            )
+            if pair is None:
+                logger.warning(
+                    "Could not build entry pair for %s; skipping this commit",
+                    commit_url,
+                )
+                continue
+
+            budget_reason = self._entry_pair_budget_reason(pair)
+            if budget_reason is not None:
+                logger.warning(
+                    "Skipping %s because source samples exceed budget or are unavailable",
+                    commit_url,
+                )
+                continue
+
+            vulnerable_sample_id = f"{sample_id_prefix}-{len(prepared) + 1}"
+            fixed_sample_id = f"{sample_id_prefix}-{len(prepared) + 2}"
+
+            try:
+                vulnerable_prepared = self._prepare_one_side(
+                    repo_path=vulnerable_repo_path,
+                    entry=pair.vulnerable_entry,
+                    sample_id=vulnerable_sample_id,
+                    cache_dir=cache_dir,
+                    loader_options=loader_options,
+                )
+                fixed_prepared = self._prepare_one_side(
+                    repo_path=fixed_repo_path,
+                    entry=pair.fixed_entry,
+                    sample_id=fixed_sample_id,
+                    cache_dir=cache_dir,
+                    loader_options=loader_options,
+                )
+            except Exception:
+                logger.exception("Failed to prepare sample for %s", commit_url)
+                continue
+
+            prepared.append(vulnerable_prepared)
+            prepared.append(fixed_prepared)
+
+        logger.info("Phase 1 produced %d prepared samples in %s", len(prepared), cache_dir)
+        return prepared
+
+    def _prepare_one_side(
+        self,
+        *,
+        repo_path: Path,
+        entry: CleanVulEntry,
+        sample_id: str,
+        cache_dir: Path,
+        loader_options: Mapping[str, object],
+    ) -> PreparedSample:
+        """Build (or load from cache) a ``PreparedSample`` for one side."""
+
+        cache_key = compute_sample_cache_key(
+            repo_url=entry.repo_url,
+            fix_hash=entry.fix_hash,
+            is_vulnerable=entry.is_vulnerable,
+            max_call_depth=self.max_call_depth,
+            files_spans=entry.files_spans,
+            loader_options=loader_options,
+        )
+        cached = load_prepared_sample(cache_dir, cache_key)
+        if cached is not None:
+            cached.repo_path = repo_path
+            cached.sample_id = sample_id
+            return cached
+
+        head_resolver = RepoCheckoutService(cache_dir=repo_path.parent)
+        target_hash = head_resolver.resolve_head_hash(repo_path)
+
+        with build_client(
+            self.neo4j_config.uri,
+            self.neo4j_config.user,
+            self.neo4j_config.password,
+        ) as neo4j_client:
+            neo4j_client.run_write(CLEAR_DATABASE_QUERY)
+            GeneralPipeline(src=repo_path, neo4j_client=neo4j_client).run()
+
+            context_repository = ContextRepository(client=neo4j_client)
+            strategies: dict[str, ContextNodeRankingStrategy] = {
+                strategy_name: factory(repo_path)
+                for strategy_name, factory in self.strategy_factories.items()
+            }
+            shared_inputs = self._prepare_shared_context_inputs(
+                repo_path=repo_path,
+                entry=entry,
+                context_repository=context_repository,
+                strategies=strategies,
+                force_full_superset=True,
+            )
+            edge_node_ids = sorted(
+                {n.identifier for n in shared_inputs.plain_context_nodes}
+                | {n.identifier for n in shared_inputs.edge_path_context_nodes}
+            )
+            neighborhood_edges = context_repository.fetch_neighborhood_edges(
+                [str(nid) for nid in edge_node_ids]
+            )
+            path_fill_edge_types = context_repository.path_fill_edge_types
+            traversal_relationship_types = context_repository.traversal_relationship_types
+
+        sample = PreparedSample(
+            entry=entry,
+            repo_path=repo_path,
+            target_hash=target_hash,
+            sample_id=sample_id,
+            root_ids=shared_inputs.root_ids,
+            plain_context_nodes=shared_inputs.plain_context_nodes,
+            edge_path_context_nodes=shared_inputs.edge_path_context_nodes,
+            taint_scores=shared_inputs.taint_scores,
+            neighborhood_edges=neighborhood_edges,
+            path_fill_edge_types=path_fill_edge_types,
+            traversal_relationship_types=traversal_relationship_types,
+            cache_key=cache_key,
+        )
+        save_prepared_sample(cache_dir, sample)
+        return sample
+
+    def build_all_from_prepared(
+        self,
+        prepared_samples: Sequence[PreparedSample],
+        *,
+        dataset_path_factory: DatasetPathFactory | None = None,
+        metadata_name_factory: MetadataNameFactory | None = None,
+    ) -> tuple[dict[str, Path], Path]:
+        """Phase 2: render datasets from ``PreparedSample`` cache (no Neo4j).
+
+        Uses ``self.strategy_factories`` exactly like ``_build_datasets`` and
+        produces the same dataset files. Skips repo checkout, CPG parsing,
+        Neo4j ingest, and DB clearing — only ranking + render runs here.
+        """
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        strategy_factories = self.strategy_factories
+        samples_by_strategy: dict[str, list[BenchmarkSample]] = {
+            strategy_name: [] for strategy_name in strategy_factories
+        }
+        entries_by_sample_id: dict[str, CleanVulEntry] = {}
+        entries_path = self.output_dir / "cleanvul_entries.json"
+
+        # Phase 1 may have checked out many commits into the same shared cache
+        # directory; by Phase 2 each repo holds whatever was last checked out.
+        # Re-align the working tree per sample (skipping when already aligned)
+        # so file reads in `_render_context` match the spans cached at Phase 1.
+        checkout_helper = RepoCheckoutService(cache_dir=self.repo_cache_dir)
+        currently_checked_out: dict[Path, str] = {}
+
+        for prepared in prepared_samples:
+            current_hash = currently_checked_out.get(prepared.repo_path)
+            if current_hash != prepared.target_hash:
+                checkout_helper.checkout_commit(prepared.repo_path, prepared.target_hash)
+                currently_checked_out[prepared.repo_path] = prepared.target_hash
+
+            strategies: dict[str, ContextNodeRankingStrategy] = {
+                strategy_name: factory(prepared.repo_path)
+                for strategy_name, factory in strategy_factories.items()
+            }
+            shared_inputs = _SharedContextInputs(
+                root_ids=prepared.root_ids,
+                plain_context_nodes=prepared.plain_context_nodes,
+                edge_path_context_nodes=prepared.edge_path_context_nodes,
+                taint_scores=prepared.taint_scores,
+            )
+            contexts = self._render_contexts_from_shared_inputs(
+                repo_path=prepared.repo_path,
+                context_repository=None,
+                strategies=strategies,
+                shared_inputs=shared_inputs,
+                cached_neighborhood_edges=prepared.neighborhood_edges,
+            )
+            entries_by_sample_id[prepared.sample_id] = prepared.entry
+            for strategy_name in strategy_factories:
+                samples_by_strategy[strategy_name].append(
+                    self._to_sample(
+                        prepared.entry,
+                        contexts[strategy_name],
+                        prepared.sample_id,
+                    )
+                )
+
+        dataset_builder = DatasetBuilderService(output_dir=self.output_dir)
+        dataset_paths = dataset_builder.write_datasets(
+            samples_by_strategy=samples_by_strategy,
+            metadata_name_factory=metadata_name_factory,
+            dataset_path_factory=dataset_path_factory,
+        )
+        self._write_entries(entries_by_sample_id, entries_path)
+        return dataset_paths, entries_path
 
     def _build_datasets(
         self,
@@ -403,8 +671,16 @@ class CleanVulBenchmarkService(BaseModel):
         entry: CleanVulEntry,
         context_repository: ContextRepository,
         strategies: Mapping[str, ContextNodeRankingStrategy],
+        *,
+        force_full_superset: bool = False,
     ) -> _SharedContextInputs:
-        """Fetch shared context inputs needed by the supplied strategies."""
+        """Fetch shared context inputs needed by the supplied strategies.
+
+        When ``force_full_superset`` is True the method ignores the strategies'
+        ``requires_edge_paths`` / ``requires_taint_scores`` flags and fetches
+        every variant unconditionally. This is what Phase 1 of the tuner cache
+        flow requires so a single ``PreparedSample`` can serve any strategy.
+        """
 
         fetch_service = self._build_context_service(
             repo_path=repo_path,
@@ -413,13 +689,20 @@ class CleanVulBenchmarkService(BaseModel):
         )
 
         root_ids = fetch_service.fetch_root_ids_for_spans(entry.files_spans)
-        needs_plain_context_nodes = any(
-            not strategy.requires_edge_paths for strategy in strategies.values()
-        )
-        needs_edge_path_context_nodes = any(
-            strategy.requires_edge_paths for strategy in strategies.values()
-        )
-        needs_taint_scores = any(strategy.requires_taint_scores for strategy in strategies.values())
+        if force_full_superset:
+            needs_plain_context_nodes = True
+            needs_edge_path_context_nodes = True
+            needs_taint_scores = True
+        else:
+            needs_plain_context_nodes = any(
+                not strategy.requires_edge_paths for strategy in strategies.values()
+            )
+            needs_edge_path_context_nodes = any(
+                strategy.requires_edge_paths for strategy in strategies.values()
+            )
+            needs_taint_scores = any(
+                strategy.requires_taint_scores for strategy in strategies.values()
+            )
 
         plain_context_nodes: list[CodeContextNode] = []
         if needs_plain_context_nodes:
@@ -449,11 +732,17 @@ class CleanVulBenchmarkService(BaseModel):
     def _render_contexts_from_shared_inputs(
         self,
         repo_path: Path,
-        context_repository: ContextRepository,
+        context_repository: ContextRepository | None,
         strategies: Mapping[str, ContextNodeRankingStrategy],
         shared_inputs: _SharedContextInputs,
+        *,
+        cached_neighborhood_edges: list[tuple[NodeID, NodeID, str]] | None = None,
     ) -> dict[str, Context]:
-        """Render one context per strategy using shared fetched inputs."""
+        """Render one context per strategy using shared fetched inputs.
+
+        Pass ``cached_neighborhood_edges`` (and ``context_repository=None``) to
+        render from a ``PreparedSample`` cache without any Neo4j connection.
+        """
 
         contexts: dict[str, Context] = {}
         for strategy_name, strategy in strategies.items():
@@ -472,6 +761,7 @@ class CleanVulBenchmarkService(BaseModel):
                 repo_path=repo_path,
                 context_repository=context_repository,
                 ranking_strategy=strategy,
+                cached_neighborhood_edges=cached_neighborhood_edges,
             )
             contexts[strategy_name] = context_service.assemble_from_nodes(repo_path, context_nodes)
 
@@ -480,8 +770,10 @@ class CleanVulBenchmarkService(BaseModel):
     def _build_context_service(
         self,
         repo_path: Path,
-        context_repository: ContextRepository,
+        context_repository: ContextRepository | None,
         ranking_strategy: ContextNodeRankingStrategy,
+        *,
+        cached_neighborhood_edges: list[tuple[NodeID, NodeID, str]] | None = None,
     ) -> ContextAssemblerService:
         """Build a context assembler with the current benchmark settings."""
 
@@ -491,6 +783,7 @@ class CleanVulBenchmarkService(BaseModel):
             max_call_depth=self.max_call_depth,
             token_budget=self.token_budget,
             ranking_strategy=ranking_strategy,
+            cached_neighborhood_edges=cached_neighborhood_edges,
         )
 
     def _to_sample(

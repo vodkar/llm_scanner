@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
@@ -163,8 +163,16 @@ def build_strategy_factories(
     budgeted_ranking_config_path: Path | None = None,
     multiplicative_boost_coefficients: Path | None = None,
     current_coefficients: Path | None = None,
+    only_strategies: Iterable[str] | None = None,
 ) -> dict[str, RankingStrategyFactory]:
-    return {
+    """Build factories for every ranking strategy.
+
+    Pass ``only_strategies`` (an iterable of ``RankingStrategies`` values) to
+    restrict the returned dict to just those keys. The tuner uses this to
+    avoid rendering eight strategies whose output it then discards.
+    """
+
+    factories: dict[str, RankingStrategyFactory] = {
         RankingStrategies.CURRENT: partial(
             _build_current_ranking_strategy,
             current_coefficients=current_coefficients,
@@ -193,3 +201,10 @@ def build_strategy_factories(
         ),
         RankingStrategies.DUMMY: _build_dummy_ranking_strategy,
     }
+    if only_strategies is None:
+        return factories
+    requested = set(only_strategies)
+    missing = requested - factories.keys()
+    if missing:
+        raise ValueError(f"Unknown ranking strategy keys: {sorted(missing)}")
+    return {name: factory for name, factory in factories.items() if name in requested}

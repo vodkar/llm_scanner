@@ -171,7 +171,7 @@ After `rank_nodes` produces an ordered list, the assembler executes a four-pass 
 
 1. Collect the set of file lines covered by all ranked nodes.
 2. Read each file once and cache the line content (deduplicates I/O).
-3. Iterate nodes **in rank order**, accumulating snippets while estimating tokens; the first node whose addition would exceed `token_budget` *and all nodes after it* are dropped.
+3. Iterate nodes **in rank order**, accumulating snippets while estimating tokens; if token_budget is exceeded, stop and picking up the nodes.
 4. Emit the kept lines in file/line order to produce the final prompt.
 
 Two consequences of this pipeline are worth emphasizing:

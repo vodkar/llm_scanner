@@ -79,8 +79,6 @@ Key options:
 | `--token-budget` | 2048 | Token budget per assembled context |
 | `--seed` | none | Random seed for reproducible sampling |
 | `--min-score` | 3 | *(CleanVul only)* Minimum `vulnerability_score` (0–4) |
-| `--python-only / --all-languages` | python-only | *(CleanVul only)* Restrict to Python files |
-| `--exclude-tests / --include-tests` | exclude-tests | *(CleanVul only)* Exclude test files |
 
 ## Ranking strategies
 

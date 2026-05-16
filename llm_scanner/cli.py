@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal, LiteralString
 
 import optuna
 import typer
@@ -37,7 +37,7 @@ from services.cpg_parser.ts_parser.cpg_builder import (
 )
 from services.ranking.evidence_ranking.utils import (
     budgeted_config_from_best_params,
-    build_benchmark_and_score,
+    build_benchmark_and_score_from_prepared,
     coefficients_from_best_params,
     suggest_budgeted_config,
     suggest_coefficients,
@@ -75,7 +75,7 @@ DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
 @app.callback()
 def main(
     log_level: Annotated[
-        str,
+        Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         typer.Option(
             "--log-level",
             help="Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
@@ -634,13 +634,6 @@ def tune_ranking_coefficients(
         ),
     ] = True,
     seed: Annotated[int, typer.Option("--seed", help="Optuna sampler seed.")] = 42,
-    delete_checkouts: Annotated[
-        bool,
-        typer.Option(
-            "--delete-checkouts/--keep-checkouts",
-            help="Whether to delete cloned repositories after each trial.",
-        ),
-    ] = True,
 ) -> None:
     """Tune ranking coefficients with Optuna against an LLM judge."""
 
@@ -684,6 +677,38 @@ def tune_ranking_coefficients(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger(__name__)
+
+    prepared_cache_dir = repo_cache_dir / "prepared_samples"
+    logger.info(
+        "Phase 1: preparing up to %d samples into %s (this is a one-time cost; "
+        "subsequent trials will reuse the cache)",
+        sample_count,
+        prepared_cache_dir,
+    )
+    prep_factories = build_strategy_factories(
+        token_budget=16384,
+        seed=seed,
+        only_strategies=[RankingStrategies.DUMMY],
+    )
+    prep_service = CleanVulBenchmarkService(
+        dataset_path=dataset,
+        output_dir=output_dir / "prep",
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=Neo4jConfig(),
+        max_call_depth=max_call_depth,
+        token_budget=16384,
+        strategy_factories=prep_factories,
+        delete_checkouts=False,
+    )
+    prepared_samples = prep_service.prepare_samples(prepared_cache_dir)
+    logger.info(
+        "Phase 1 produced %d prepared samples; entering Optuna study with %d trials",
+        len(prepared_samples),
+        trials,
+    )
+
     with tempfile.TemporaryDirectory(prefix="ranking_tune_") as tmp:
         tmp_root = Path(tmp)
 
@@ -705,17 +730,16 @@ def tune_ranking_coefficients(
                 coefficients = suggest_coefficients(trial, base_coeff_obj)
             trial_dir = tmp_root / f"trial_{trial.number:04d}"
             trial_dir.mkdir()
-            return build_benchmark_and_score(
+            return build_benchmark_and_score_from_prepared(
                 coefficients,
                 strategy=strategy,
+                prepared_samples=prepared_samples,
                 dataset=dataset,
                 repo_cache_dir=repo_cache_dir,
-                sample_count=sample_count,
                 seed=seed,
                 max_call_depth=max_call_depth,
                 judge=judge,
                 work_dir=trial_dir,
-                delete_checkouts=delete_checkouts,
             )
 
         study.optimize(objective, n_trials=trials, show_progress_bar=False)

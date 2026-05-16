@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,7 @@ from models.context_ranking import BudgetedRankingConfig
 from models.ranking_strategy import RankingStrategy
 from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeService
+from services.benchmark.prepared_sample import PreparedSample
 from services.ranking.ranking_config import RankingCoefficients
 from services.ranking.strategy_factory import build_strategy_factories
 
@@ -60,6 +61,76 @@ def build_benchmark_and_score(
         delete_checkouts=delete_checkouts,
     )
     dataset_paths, _entries = service.build_all_ranking_strategies()
+
+    dataset_path = dataset_paths.get(strategy.value)
+    if dataset_path is None or not dataset_path.exists():
+        raise RuntimeError(f"strategy {strategy.value!r} produced no dataset file")
+
+    benchmark_dataset = BenchmarkDataset.model_validate_json(
+        dataset_path.read_text(encoding="utf-8")
+    )
+    result = judge.score_dataset(benchmark_dataset)
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "judge accuracy=%.4f invalid=%d samples=%d",
+        result.accuracy,
+        result.invalid_responses,
+        len(benchmark_dataset.samples),
+    )
+    return result.accuracy
+
+
+def build_benchmark_and_score_from_prepared(
+    coefficients: RankingCoefficients | BudgetedRankingConfig,
+    *,
+    strategy: RankingStrategy,
+    prepared_samples: Sequence[PreparedSample],
+    dataset: Path,
+    repo_cache_dir: Path,
+    seed: int,
+    max_call_depth: int,
+    judge: LLMJudgeService,
+    work_dir: Path,
+) -> float:
+    """Phase-2 equivalent of ``build_benchmark_and_score`` using prepared samples.
+
+    Skips repo checkout, CPG parsing, Neo4j ingest and DB clearing — only
+    renders + ranks using the cached ``PreparedSample`` set. The dataset and
+    repo_cache_dir arguments are accepted only so the underlying service can
+    construct itself; they are not read when prepared samples are provided.
+    """
+
+    coeff_path = work_dir / "coefficients.yaml"
+    coefficients.to_yaml(coeff_path)
+
+    strategy_factories = build_strategy_factories(
+        token_budget=16384,
+        seed=seed,
+        cpg_structural_coefficients=(
+            coeff_path if strategy == RankingStrategy.CPG_STRUCTURAL else None
+        ),
+        budgeted_ranking_config_path=(
+            coeff_path if strategy == RankingStrategy.EVIDENCE_BUDGETED else None
+        ),
+        multiplicative_boost_coefficients=(
+            coeff_path if strategy == RankingStrategy.MULTIPLICATIVE_BOOST else None
+        ),
+        current_coefficients=(coeff_path if strategy == RankingStrategy.CURRENT else None),
+        only_strategies=[strategy.value],
+    )
+    service = CleanVulBenchmarkService(
+        dataset_path=dataset,
+        output_dir=work_dir / "benchmarks",
+        repo_cache_dir=repo_cache_dir,
+        sample_count=len(prepared_samples),
+        seed=seed,
+        neo4j_config=Neo4jConfig(),
+        max_call_depth=max_call_depth,
+        token_budget=16384,
+        strategy_factories=strategy_factories,
+        delete_checkouts=False,
+    )
+    dataset_paths, _entries = service.build_all_from_prepared(prepared_samples)
 
     dataset_path = dataset_paths.get(strategy.value)
     if dataset_path is None or not dataset_path.exists():

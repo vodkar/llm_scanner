@@ -1,7 +1,8 @@
 import logging
+from typing import Literal
 
 
-def configure_logging(log_level: str) -> None:
+def configure_logging(log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]) -> None:
     """Configure application logging.
 
     Args:
