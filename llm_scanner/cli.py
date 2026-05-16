@@ -5,6 +5,7 @@ import logging
 import sys
 import tempfile
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from tempfile import gettempdir
 from typing import Annotated, Any, Final
@@ -44,6 +45,11 @@ from services.ranking.evidence_ranking.utils import (
     suggest_multiplicative_boost_coefficients,
 )
 from services.ranking.ranking_config import RankingCoefficients
+from services.ranking.strategy_factory import (
+    RankingStrategies,
+    _build_current_ranking_strategy,
+    build_strategy_factories,
+)
 
 app = typer.Typer(
     name="llm-scanner",
@@ -310,6 +316,11 @@ def build_cleanvul_benchmark(
         neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
         max_call_depth=max_call_depth,
         token_budget=token_budget,
+        strategy_factories={
+            RankingStrategies.CURRENT: partial(
+                _build_current_ranking_strategy, current_coefficients=None
+            )
+        },
     )
     main_path, entries_path = service.build()
 
@@ -464,6 +475,14 @@ def build_cleanvul_benchmark_compare_rankings(
 ) -> None:
     """Build aligned CleanVul-with-context datasets for all ranking strategies."""
 
+    strategy_factories = build_strategy_factories(
+        token_budget=token_budget,
+        seed=seed,
+        cpg_structural_coefficients=cpg_structural_coefficients,
+        budgeted_ranking_config_path=budgeted_ranking_config,
+        multiplicative_boost_coefficients=multiplicative_boost_coefficients,
+        current_coefficients=current_coefficients,
+    )
     service = CleanVulBenchmarkService(
         dataset_path=dataset_path,
         output_dir=output_dir,
@@ -473,10 +492,7 @@ def build_cleanvul_benchmark_compare_rankings(
         neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
         max_call_depth=max_call_depth,
         token_budget=token_budget,
-        cpg_structural_coefficients_path=cpg_structural_coefficients,
-        budgeted_ranking_config_path=budgeted_ranking_config,
-        multiplicative_boost_coefficients_path=multiplicative_boost_coefficients,
-        current_coefficients_path=current_coefficients,
+        strategy_factories=strategy_factories,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
 

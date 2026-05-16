@@ -73,6 +73,10 @@ def _make_service(tmp_path: Path, **overrides: object) -> CleanVulBenchmarkServi
         max_call_depth=2,
         token_budget=100,
         delete_checkouts=False,
+        # The tests monkeypatch `_scan_repository_for_entry`, so the factory
+        # callable is never actually invoked; we just need any one-entry
+        # mapping so the new `strategy_factories` requirement is satisfied.
+        strategy_factories={"current": lambda _repo_path: None},
     )
     defaults.update(overrides)
     return CleanVulBenchmarkService.model_validate(defaults)

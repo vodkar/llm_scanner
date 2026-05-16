@@ -24,17 +24,12 @@ from services.benchmark.dataset_builder import (
 )
 from services.benchmark.repo_checkout import RepoCheckoutService
 from services.context_assembler.context_assembler import ContextAssemblerService
-from services.ranking.ranking import (
-    ContextNodeRankingStrategy,
-    NodeRelevanceRankingService,
-)
-from services.ranking.strategy_factory import build_strategy_factories
+from services.ranking.ranking import ContextNodeRankingStrategy
 from services.source_code import SourceCodeService
 
 logger = logging.getLogger(__name__)
 LOGGING_INTERVAL = 10
 CLEAR_DATABASE_QUERY: Final[str] = "MATCH (n) DETACH DELETE n"
-CURRENT_STRATEGY_NAME: Final[str] = "current"
 
 RankingStrategyFactory = Callable[[Path], ContextNodeRankingStrategy]
 
@@ -78,68 +73,36 @@ class CleanVulBenchmarkService(BaseModel):
             "Repositories larger than this are skipped before scanning."
         ),
     )
-    cpg_structural_coefficients_path: Path | None = Field(
-        default=None,
+    strategy_factories: Mapping[str, RankingStrategyFactory] = Field(
+        ...,
         description=(
-            "Optional YAML path with coefficients for CPGStructuralRankingStrategy; "
-            "when omitted, the strategy uses its own default coefficients."
-        ),
-    )
-    budgeted_ranking_config_path: Path | None = Field(
-        default=None,
-        description=(
-            "Optional YAML path with a BudgetedRankingConfig for "
-            "EvidenceAwareBudgetedNodeRankingStrategy; when omitted, defaults are used."
-        ),
-    )
-    multiplicative_boost_coefficients_path: Path | None = Field(
-        default=None,
-        description=(
-            "Optional YAML path with coefficients for MultiplicativeBoostNodeRankingStrategy; "
-            "when omitted, the strategy uses its own default coefficients."
-        ),
-    )
-    current_coefficients_path: Path | None = Field(
-        default=None,
-        description=(
-            "Optional YAML path with coefficients for the 'current' "
-            "NodeRelevanceRankingService; when omitted, the strategy uses its "
-            "own default coefficients."
+            "Mapping of strategy name to factory callable. The caller "
+            "(typically the CLI) assembles this dict; the service stays "
+            "agnostic of per-strategy configuration."
         ),
     )
 
     def build(self) -> tuple[Path, Path]:
         """Generate the benchmark JSON files.
 
-        Returns:
-            Tuple of paths to the main dataset and entries files.
+        Requires ``strategy_factories`` to contain exactly one entry. Returns
+        the single dataset path plus the entries path.
         """
-        dataset_paths, entries_path = self._build_datasets(
-            strategy_factories={
-                CURRENT_STRATEGY_NAME: lambda repo_path: NodeRelevanceRankingService(
-                    project_root=repo_path,
-                    snippet_cache_max_entries=10000,
-                )
-            }
-        )
-        return dataset_paths[CURRENT_STRATEGY_NAME], entries_path
+        if len(self.strategy_factories) != 1:
+            raise ValueError(
+                "build() requires exactly one strategy_factories entry; "
+                f"got {len(self.strategy_factories)}."
+            )
+        dataset_paths, entries_path = self._build_datasets(self.strategy_factories)
+        return next(iter(dataset_paths.values())), entries_path
 
     def build_all_ranking_strategies(self) -> tuple[dict[str, Path], Path]:
-        """Generate aligned benchmark datasets for all available ranking strategies.
+        """Generate aligned benchmark datasets for all configured ranking strategies.
 
         Returns:
             Mapping of strategy names to dataset file paths and the entries file path.
         """
-        return self._build_datasets(
-            build_strategy_factories(
-                self.token_budget,
-                self.seed,
-                self.cpg_structural_coefficients_path,
-                self.budgeted_ranking_config_path,
-                self.multiplicative_boost_coefficients_path,
-                self.current_coefficients_path,
-            )
-        )
+        return self._build_datasets(self.strategy_factories)
 
     def _build_datasets(
         self,

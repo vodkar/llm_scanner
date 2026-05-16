@@ -12,6 +12,7 @@ from models.ranking_strategy import RankingStrategy
 from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeService
 from services.ranking.ranking_config import RankingCoefficients
+from services.ranking.strategy_factory import build_strategy_factories
 
 
 def build_benchmark_and_score(
@@ -32,6 +33,20 @@ def build_benchmark_and_score(
     coeff_path = work_dir / "coefficients.yaml"
     coefficients.to_yaml(coeff_path)
 
+    strategy_factories = build_strategy_factories(
+        token_budget=16384,
+        seed=seed,
+        cpg_structural_coefficients=(
+            coeff_path if strategy == RankingStrategy.CPG_STRUCTURAL else None
+        ),
+        budgeted_ranking_config_path=(
+            coeff_path if strategy == RankingStrategy.EVIDENCE_BUDGETED else None
+        ),
+        multiplicative_boost_coefficients=(
+            coeff_path if strategy == RankingStrategy.MULTIPLICATIVE_BOOST else None
+        ),
+        current_coefficients=(coeff_path if strategy == RankingStrategy.CURRENT else None),
+    )
     service = CleanVulBenchmarkService(
         dataset_path=dataset,
         output_dir=work_dir / "benchmarks",
@@ -41,16 +56,7 @@ def build_benchmark_and_score(
         neo4j_config=Neo4jConfig(),
         max_call_depth=max_call_depth,
         token_budget=16384,
-        cpg_structural_coefficients_path=(
-            coeff_path if strategy == RankingStrategy.CPG_STRUCTURAL else None
-        ),
-        budgeted_ranking_config_path=(
-            coeff_path if strategy == RankingStrategy.EVIDENCE_BUDGETED else None
-        ),
-        multiplicative_boost_coefficients_path=(
-            coeff_path if strategy == RankingStrategy.MULTIPLICATIVE_BOOST else None
-        ),
-        current_coefficients_path=(coeff_path if strategy == RankingStrategy.CURRENT else None),
+        strategy_factories=strategy_factories,
         delete_checkouts=delete_checkouts,
     )
     dataset_paths, _entries = service.build_all_ranking_strategies()
