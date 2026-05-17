@@ -10,6 +10,8 @@ Commands
 - `build-cvefixes-benchmark DB_PATH` – build the CVEFixes-with-context benchmark dataset from a local CVEFixes SQLite database.
 - `build-cleanvul-benchmark DATASET_PATH` – build the CleanVul-with-context benchmark dataset (single ranking strategy: `current`) from a local CleanVul CSV or Parquet file.
 - `build-cleanvul-benchmark-compare-rankings DATASET_PATH` – build aligned CleanVul datasets across **all** ranking strategies (one JSON file per strategy) for head-to-head benchmarking.
+- `tune-ranking-coefficients` – tune a strategy's coefficients with Optuna against an LLM judge; see [Tuning ranking coefficients with an LLM judge](#tuning-ranking-coefficients-with-an-llm-judge).
+- `export-best-coefficients` – read an Optuna study and write its best params as a runtime-ready YAML; see [Exporting tuned coefficients](#4-export-the-best-coefficients).
 
 Examples
 
@@ -193,3 +195,34 @@ Key options:
 | `--base-coefficients` | `config/ranking_coefficients_cpg_structural.yaml` | Starting point for `current`/`cpg_structural`; ignored for `evidence_budgeted` (uses module defaults). |
 | `--max-call-depth` | 2 | Call graph traversal depth |
 | `--seed` | 42 | Sampler / benchmark seed |
+
+### 4. Export the best coefficients
+
+Once a study has trials, materialize its best params as a runtime YAML:
+
+```bash
+uv run llm-scanner export-best-coefficients \
+    --strategy cpg_structural \
+    --study-name coefficients \
+    --output config/best_cpg_structural.yaml
+```
+
+The command loads `data/tuning_runs/<study-name>.db`, merges `study.best_params`
+onto `--base-coefficients` (for `cpg_structural`, `current`, and
+`multiplicative_boost`) or builds a `BudgetedRankingConfig` directly (for
+`evidence_budgeted`), and writes the result to `--output`. The YAML has the
+same shape consumed by `--cpg-structural-coefficients` /
+`--current-coefficients` / `--multiplicative-boost-coefficients` /
+`--budgeted-ranking-config` on `build-cleanvul-benchmark-compare-rankings`.
+
+To dump the four canonical studies into `config/` in one shot:
+
+```bash
+./scripts/export_best_coefficients.sh
+```
+
+The script writes `config/best_cpg_structural.yaml`,
+`config/best_current.yaml`, `config/best_evidence_budgeted.yaml`, and
+`config/best_multiplicative_boost.yaml` from
+`data/tuning_runs/{coefficients,current,evidence_budgeted_v2,multiplicative_boost}.db`
+respectively. Edit the `JOBS` array in the script if your study names differ.

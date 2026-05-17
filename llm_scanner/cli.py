@@ -22,19 +22,25 @@ if str(_PACKAGE_DIR) not in sys.path:
 
 from clients.neo4j import Neo4jConfig, build_client
 from clients.openai_compatible import DEFAULT_REPETITION_PENALTY, OpenAICompatibleClient
+from diff_parser import parse_unified_diff
 from logging_utils import configure_logging
+from models.bandit_report import IssueSeverity
 from models.base import NodeID
 from models.context_ranking import BudgetedRankingConfig
 from models.edges import RelationshipBase
 from models.nodes import Node
 from models.ranking_strategy import RankingStrategy
+from models.scan import ScanReport
+from pipeline import GeneralScannerPipeline
 from repositories.graph import GraphRepository
+from sarif_exporter import SARIFExporter
 from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeService
 from services.cpg_parser.ts_parser.cpg_builder import (
     CPGDirectoryBuilder,
     CPGFileBuilder,
 )
+from services.llm_review import LLMCodeReviewService
 from services.ranking.evidence_ranking.utils import (
     budgeted_config_from_best_params,
     build_benchmark_and_score_from_prepared,
@@ -74,6 +80,7 @@ DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     log_level: Annotated[
         Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         typer.Option(
@@ -83,14 +90,44 @@ def main(
             show_default=True,
         ),
     ] = "INFO",
+    neo4j_uri: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-uri",
+            help="Neo4j bolt URI.",
+            envvar="NEO4J_URI",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().uri,
+    neo4j_user: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-user",
+            help="Neo4j username.",
+            envvar="NEO4J_USER",
+            show_default=True,
+        ),
+    ] = Neo4jConfig().user,
+    neo4j_password: Annotated[
+        str,
+        typer.Option(
+            "--neo4j-password",
+            help="Neo4j password.",
+            envvar="NEO4J_PASSWORD",
+            show_default=False,
+        ),
+    ] = Neo4jConfig().password,
 ) -> None:
     """Initialize CLI-wide settings before executing a command."""
 
     configure_logging(log_level)
+    ctx.ensure_object(dict)
+    ctx.obj["neo4j"] = Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
 
 
 @app.command("load-sample")
 def load_sample(
+    ctx: typer.Context,
     sample_path: Annotated[
         Path,
         typer.Argument(
@@ -102,48 +139,18 @@ def load_sample(
             resolve_path=True,
         ),
     ] = DEFAULT_SAMPLE_FILE,
-    neo4j_uri: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-uri",
-            help="Neo4j bolt URI.",
-            envvar="NEO4J_URI",
-            show_default=True,
-        ),
-    ] = Neo4jConfig().uri,
-    neo4j_user: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-user",
-            help="Neo4j username.",
-            envvar="NEO4J_USER",
-            show_default=True,
-        ),
-    ] = Neo4jConfig().user,
-    neo4j_password: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-password",
-            help="Neo4j password.",
-            envvar="NEO4J_PASSWORD",
-            show_default=False,
-        ),
-    ] = Neo4jConfig().password,
 ) -> None:
     """Parse a single file and load its CPG into Neo4j.
 
     Args:
         sample_path: Path to the Python file to parse.
-        neo4j_uri: Bolt URI of the target Neo4j instance.
-        neo4j_user: Username for the Neo4j instance.
-        neo4j_password: Password for the Neo4j instance.
     """
     nodes: dict[NodeID, Node]
     edges: list[RelationshipBase]
     resolved_path = sample_path.resolve()
     nodes, edges = CPGFileBuilder(path=resolved_path).build()
-
-    with build_client(neo4j_uri, neo4j_user, neo4j_password) as client:
+    neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
+    with build_client(neo4j_config.uri, neo4j_config.user, neo4j_config.password) as client:
         loader = GraphRepository(client)
         loader.load(nodes, edges)
 
@@ -155,6 +162,7 @@ def load_sample(
 
 @app.command()
 def load(
+    ctx: typer.Context,
     dir_path: Annotated[
         Path,
         typer.Argument(
@@ -165,69 +173,214 @@ def load(
             resolve_path=True,
         ),
     ] = DEFAULT_SAMPLE_FILE,
-    neo4j_uri: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-uri",
-            help="Neo4j bolt URI.",
-            envvar="NEO4J_URI",
-            show_default=True,
-        ),
-    ] = Neo4jConfig().uri,
-    neo4j_user: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-user",
-            help="Neo4j username.",
-            envvar="NEO4J_USER",
-            show_default=True,
-        ),
-    ] = Neo4jConfig().user,
-    neo4j_password: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-password",
-            help="Neo4j password.",
-            envvar="NEO4J_PASSWORD",
-            show_default=False,
-        ),
-    ] = Neo4jConfig().password,
-):
+) -> None:
     """Parse a project directory and load its CPG into Neo4j."""
     resolved_path = dir_path.resolve()
     result = CPGDirectoryBuilder(root=resolved_path).build()
-
-    with build_client(neo4j_uri, neo4j_user, neo4j_password) as client:
+    neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
+    with build_client(neo4j_config.uri, neo4j_config.user, neo4j_config.password) as client:
         loader = GraphRepository(client)
         loader.load(*result)
 
 
-# @app.command("run-pipeline")
-# def run_pipeline(
-#     src: Annotated[
-#         Path,
-#         typer.Argument(
-#             help="Path to the project root to scan.",
-#             exists=True,
-#             file_okay=False,
-#             dir_okay=True,
-#             readable=True,
-#             resolve_path=True,
-#         ),
-#     ],
-# ) -> None:
-#     """Run the full analysis pipeline against a project directory.
+@app.command("scan")
+def scan(  # noqa: C901
+    ctx: typer.Context,
+    src: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to the project root to scan.",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            resolve_path=True,
+        ),
+    ],
+    mode: Annotated[
+        str,
+        typer.Option(
+            "--mode",
+            help="Scan mode: 'full' (all static findings) or 'diff' (changed lines only).",
+            show_default=True,
+        ),
+    ] = "full",
+    diff_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--diff-file",
+            help="Path to a git unified diff file (diff mode only; omit to read from stdin).",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+        ),
+    ] = None,
+    strategy: Annotated[
+        RankingStrategy,
+        typer.Option(
+            "--strategy",
+            help="Context ranking strategy.",
+            case_sensitive=False,
+        ),
+    ] = RankingStrategy.CPG_STRUCTURAL,
+    min_severity: Annotated[
+        IssueSeverity,
+        typer.Option(
+            "--min-severity",
+            help="Minimum Bandit severity to include (Dlint always included).",
+            case_sensitive=False,
+        ),
+    ] = IssueSeverity.HIGH,
+    llm_base_url: Annotated[
+        str,
+        typer.Option("--llm-base-url", help="OpenAI-compatible LLM endpoint base URL."),
+    ] = "http://localhost:8000/v1",
+    llm_model: Annotated[
+        str,
+        typer.Option("--llm-model", help="Model name to use for code review."),
+    ] = "Qwen/Qwen2.5-7B-Instruct",
+    llm_api_key: Annotated[
+        str,
+        typer.Option("--llm-api-key", help="API key for the LLM endpoint."),
+    ] = "not-needed",
+    llm_max_tokens: Annotated[
+        int,
+        typer.Option("--llm-max-tokens", help="Max response tokens per review request."),
+    ] = 2048,
+    llm_concurrency: Annotated[
+        int,
+        typer.Option("--llm-concurrency", help="Concurrent LLM review requests."),
+    ] = 8,
+    max_call_depth: Annotated[
+        int,
+        typer.Option("--max-call-depth", help="Max BFS depth for context neighborhood."),
+    ] = 3,
+    token_budget: Annotated[
+        int,
+        typer.Option("--token-budget", help="Token budget per assembled context."),
+    ] = 2048,
+    output_json: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-json",
+            help="Write the JSON report to this path.",
+            file_okay=True,
+            dir_okay=False,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = None,
+    output_sarif: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-sarif",
+            help="Write a SARIF 2.1.0 report to this path.",
+            file_okay=True,
+            dir_okay=False,
+            writable=True,
+            resolve_path=True,
+        ),
+    ] = None,
+    no_fail: Annotated[
+        bool,
+        typer.Option(
+            "--no-fail",
+            help="Exit 0 even when vulnerabilities are found (useful for reporting-only CI steps).",
+        ),
+    ] = False,
+) -> None:
+    """Run the LLM-assisted security scanner against a project directory.
 
-#     Args:
-#         src: Project root to scan and load into Neo4j.
-#     """
-#     pipeline = GeneralPipeline(src=src)
-#     pipeline.run()
-#     typer.secho(f"Pipeline completed for {src}", fg=typer.colors.GREEN)
+    In **full** mode every static-analyzer finding that meets ``--min-severity``
+    is assembled into a code context and sent to the LLM for review.
+
+    In **diff** mode the diff supplied via ``--diff-file`` (or stdin) is parsed
+    and only code nodes overlapping changed lines are reviewed.
+
+    The command exits with a non-zero status code when vulnerabilities are found
+    unless ``--no-fail`` is given.
+    """
+    if mode not in ("full", "diff"):
+        raise typer.BadParameter(
+            f"mode must be 'full' or 'diff', got {mode!r}", param_hint="--mode"
+        )
+
+    neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
+    strategy_factories = build_strategy_factories(
+        token_budget=token_budget,
+        only_strategies=[strategy.value],
+    )
+    strategy_factory = strategy_factories[strategy.value]
+
+    llm_client = OpenAICompatibleClient(
+        base_url=llm_base_url,
+        api_key=llm_api_key,
+        model=llm_model,
+    )
+    llm_review_service = LLMCodeReviewService(
+        client=llm_client,
+        concurrency=llm_concurrency,
+        max_response_tokens=llm_max_tokens,
+    )
+
+    with build_client(neo4j_config.uri, neo4j_config.user, neo4j_config.password) as neo4j_client:
+        pipeline = GeneralScannerPipeline(src=src, neo4j_client=neo4j_client)
+
+        report: ScanReport
+        if mode == "full":
+            report = pipeline.run(
+                strategy_factory=strategy_factory,
+                strategy_name=strategy.value,
+                llm_review_service=llm_review_service,
+                max_call_depth=max_call_depth,
+                token_budget=token_budget,
+                min_severity=min_severity,
+            )
+        else:
+            if diff_file is not None:
+                diff_text = diff_file.read_text(encoding="utf-8")
+            else:
+                diff_text = sys.stdin.read()
+            file_spans = parse_unified_diff(diff_text, repo_root=src)
+            report = pipeline.run_diff(
+                file_spans=file_spans,
+                strategy_factory=strategy_factory,
+                strategy_name=strategy.value,
+                llm_review_service=llm_review_service,
+                max_call_depth=max_call_depth,
+                token_budget=token_budget,
+            )
+
+    typer.echo(
+        f"Scanned {report.total_contexts_scanned} contexts; "
+        f"{report.vulnerabilities_found} vulnerabilit{'y' if report.vulnerabilities_found == 1 else 'ies'} found."
+    )
+    for finding in report.findings:
+        if finding.vulnerable:
+            typer.secho(
+                f"  VULN {finding.file_path}:{finding.line_start}-{finding.line_end}"
+                f" [{finding.severity}] {finding.description or ''}",
+                fg=typer.colors.RED,
+            )
+
+    if output_json is not None:
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        output_json.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        typer.secho(f"JSON report written to {output_json}", fg=typer.colors.GREEN)
+
+    if output_sarif is not None:
+        SARIFExporter().to_file(report, output_sarif)
+        typer.secho(f"SARIF report written to {output_sarif}", fg=typer.colors.GREEN)
+
+    if report.vulnerabilities_found > 0 and not no_fail:
+        raise typer.Exit(code=1)
 
 
 @app.command("build-cleanvul-benchmark")
 def build_cleanvul_benchmark(
+    ctx: typer.Context,
     dataset_path: Annotated[
         Path,
         typer.Argument(
@@ -277,43 +430,17 @@ def build_cleanvul_benchmark(
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
     ] = 2048,
-    neo4j_uri: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-uri",
-            help="Neo4j bolt URI.",
-            envvar="NEO4J_URI",
-            show_default=True,
-        ),
-    ] = Neo4jConfig().uri,
-    neo4j_user: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-user",
-            help="Neo4j username.",
-            envvar="NEO4J_USER",
-            show_default=True,
-        ),
-    ] = Neo4jConfig().user,
-    neo4j_password: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-password",
-            help="Neo4j password.",
-            envvar="NEO4J_PASSWORD",
-            show_default=False,
-        ),
-    ] = Neo4jConfig().password,
 ) -> None:
     """Build the CleanVul-with-context benchmark dataset."""
 
+    neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
     service = CleanVulBenchmarkService(
         dataset_path=dataset_path,
         output_dir=output_dir,
         repo_cache_dir=repo_cache_dir,
         sample_count=sample_count,
         seed=seed,
-        neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
+        neo4j_config=neo4j_config,
         max_call_depth=max_call_depth,
         token_budget=token_budget,
         strategy_factories={
@@ -332,6 +459,7 @@ def build_cleanvul_benchmark(
 
 @app.command("build-cleanvul-benchmark-compare-rankings")
 def build_cleanvul_benchmark_compare_rankings(
+    ctx: typer.Context,
     dataset_path: Annotated[
         Path,
         typer.Argument(
@@ -381,33 +509,6 @@ def build_cleanvul_benchmark_compare_rankings(
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
     ] = 2048,
-    neo4j_uri: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-uri",
-            help="Neo4j bolt URI.",
-            envvar="NEO4J_URI",
-            show_default=True,
-        ),
-    ] = Neo4jConfig().uri,
-    neo4j_user: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-user",
-            help="Neo4j username.",
-            envvar="NEO4J_USER",
-            show_default=True,
-        ),
-    ] = Neo4jConfig().user,
-    neo4j_password: Annotated[
-        str,
-        typer.Option(
-            "--neo4j-password",
-            help="Neo4j password.",
-            envvar="NEO4J_PASSWORD",
-            show_default=False,
-        ),
-    ] = Neo4jConfig().password,
     cpg_structural_coefficients: Annotated[
         Path | None,
         typer.Option(
@@ -475,6 +576,7 @@ def build_cleanvul_benchmark_compare_rankings(
 ) -> None:
     """Build aligned CleanVul-with-context datasets for all ranking strategies."""
 
+    neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
     strategy_factories = build_strategy_factories(
         token_budget=token_budget,
         seed=seed,
@@ -489,7 +591,7 @@ def build_cleanvul_benchmark_compare_rankings(
         repo_cache_dir=repo_cache_dir,
         sample_count=sample_count,
         seed=seed,
-        neo4j_config=Neo4jConfig(uri=neo4j_uri, user=neo4j_user, password=neo4j_password),
+        neo4j_config=neo4j_config,
         max_call_depth=max_call_depth,
         token_budget=token_budget,
         strategy_factories=strategy_factories,
@@ -504,6 +606,7 @@ def build_cleanvul_benchmark_compare_rankings(
 
 @app.command("tune-ranking-coefficients")
 def tune_ranking_coefficients(
+    ctx: typer.Context,
     strategy: Annotated[
         RankingStrategy,
         typer.Option(
@@ -696,7 +799,7 @@ def tune_ranking_coefficients(
         repo_cache_dir=repo_cache_dir,
         sample_count=sample_count,
         seed=seed,
-        neo4j_config=Neo4jConfig(),
+        neo4j_config=ctx.obj["neo4j"],
         max_call_depth=max_call_depth,
         token_budget=16384,
         strategy_factories=prep_factories,

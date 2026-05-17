@@ -1,0 +1,67 @@
+combiner:
+  finding_evidence: 0.25
+  security_path: 0.2
+  taint: 0.2
+  context: 0.35
+context_breakdown:
+  depth: 0.39284269335101113
+  structure: 0.26570892982560923
+  file_prior: 0.13824534598451238
+finding_evidence_breakdown:
+  severity: 0.3302766751811291
+  confidence: 0.4132587457626829
+  agreement: 0.22295159471787362
+security_path_breakdown:
+  sink: 0.49849015376209815
+  source: 0.22504279312069997
+  guard: 0.18054179296092843
+  path_evidence: 0.3340504819816456
+  high_risk_cwe_evidence_base: 0.339682880580112
+structure_breakdown:
+  render_kind: 0.12097587380782139
+  repeat_bonus: 0.5792559602927814
+file_prior_breakdown:
+  same_file: 0.703705796758605
+  same_module: 0.32733075851886895
+  generated_penalty: 0.08927476551912072
+hop_decay_by_depth:
+  0: 1.0
+  1: 0.85
+  2: 0.7
+  3: 0.55
+  4: 0.45
+hop_decay_default: 0.35
+severity_scores:
+  low: 0.33
+  medium: 0.66
+  high: 1.0
+confidence_by_severity:
+  low: 0.3
+  medium: 0.6
+  high: 0.9
+render_kind_scores:
+  FunctionNode: 1.0
+  ClassNode: 0.8
+  CodeBlockNode: 0.7
+  VariableNode: 0.4
+security_boost_weight: 2.054156931758835
+security_tier_threshold: 0.5
+edge_type_weights:
+  flows_to: 1.0
+  sanitized_by: 0.85
+  calls: 0.7
+  called_by: 0.7
+  defined_by: 0.6
+  used_by: 0.55
+  contains: 0.35
+edge_decay_rates:
+  flows_to: 0.85
+  sanitized_by: 0.8
+  calls: 0.75
+  called_by: 0.75
+  defined_by: 0.7
+  used_by: 0.7
+  contains: 0.55
+sanitizer_bypass_bonus: 0.25
+sanitizer_presence_damp: 0.5
+source_sink_path_max_depth: 4

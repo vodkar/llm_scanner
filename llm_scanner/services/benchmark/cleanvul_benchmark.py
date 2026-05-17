@@ -14,7 +14,7 @@ from models.benchmark.benchmark import (
 )
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import CodeContextNode, Context, FileSpans
-from pipeline import GeneralPipeline
+from pipeline import GeneralScannerPipeline
 from repositories.context import ContextRepository
 from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
 from services.benchmark.dataset_builder import (
@@ -260,7 +260,7 @@ class CleanVulBenchmarkService(BaseModel):
             self.neo4j_config.password,
         ) as neo4j_client:
             neo4j_client.run_write(CLEAR_DATABASE_QUERY)
-            GeneralPipeline(src=repo_path, neo4j_client=neo4j_client).run()
+            GeneralScannerPipeline(src=repo_path, neo4j_client=neo4j_client).build_cpg()
 
             context_repository = ContextRepository(client=neo4j_client)
             strategies: dict[str, ContextNodeRankingStrategy] = {
@@ -644,7 +644,7 @@ class CleanVulBenchmarkService(BaseModel):
             self.neo4j_config.password,
         ) as neo4j_client:
             neo4j_client.run_write(CLEAR_DATABASE_QUERY)
-            GeneralPipeline(src=repo_path, neo4j_client=neo4j_client).run()
+            GeneralScannerPipeline(src=repo_path, neo4j_client=neo4j_client).build_cpg()
 
             context_repository = ContextRepository(client=neo4j_client)
             strategies: dict[str, ContextNodeRankingStrategy] = {
