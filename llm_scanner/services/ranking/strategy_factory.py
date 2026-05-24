@@ -12,7 +12,7 @@ from services.ranking.ranking import (
     ContextNodeRankingStrategy,
     DepthRepeatsContextNodeRankingStrategy,
     DummyNodeRankingStrategy,
-    MultiplicativeBoostNodeRankingStrategy,
+    MultiplicativeAmplificationNodeRankingStrategy,
     NodeRelevanceRankingService,
     RandomNodeRankingStrategy,
 )
@@ -34,8 +34,8 @@ class RankingStrategies(StrEnum):
     CURRENT_DEFAULT = "current_default"
     DEPTH_REPEATS_CONTEXT = "depth_repeats_context"
     RANDOM_PICKING = "random_picking"
-    MULTIPLICATIVE_BOOST = "multiplicative_boost"
-    MULTIPLICATIVE_BOOST_DEFAULT = "multiplicative_boost_default"
+    MULTIPLICATIVE_AMPLIFICATION = "multiplicative_amplification"
+    MULTIPLICATIVE_AMPLIFICATION_DEFAULT = "multiplicative_amplification_default"
     CPG_STRUCTURAL = "cpg_structural"
     EVIDENCE_BUDGETED = "evidence_budgeted"
     DUMMY = "dummy"
@@ -73,18 +73,18 @@ def _build_evidence_budgeted_strategy(
     )
 
 
-def _build_multiplicative_boost_ranking_strategy(
+def _build_multiplicative_amplification_ranking_strategy(
     repo_path: Path,
-    multiplicative_boost_coefficients: Path | None = None,
+    multiplicative_amplification_coefficients: Path | None = None,
 ) -> ContextNodeRankingStrategy:
-    if multiplicative_boost_coefficients is not None:
-        coefficients = RankingCoefficients.from_yaml(multiplicative_boost_coefficients)
-        return MultiplicativeBoostNodeRankingStrategy(
+    if multiplicative_amplification_coefficients is not None:
+        coefficients = RankingCoefficients.from_yaml(multiplicative_amplification_coefficients)
+        return MultiplicativeAmplificationNodeRankingStrategy(
             project_root=repo_path,
             snippet_cache_max_entries=10000,
             coefficients=coefficients,
         )
-    return MultiplicativeBoostNodeRankingStrategy(
+    return MultiplicativeAmplificationNodeRankingStrategy(
         project_root=repo_path,
         snippet_cache_max_entries=10000,
     )
@@ -127,16 +127,16 @@ def _build_current_default_ranking_strategy(repo_path: Path) -> ContextNodeRanki
     )
 
 
-def _build_multiplicative_boost_default_ranking_strategy(
+def _build_multiplicative_amplification_default_ranking_strategy(
     repo_path: Path,
 ) -> ContextNodeRankingStrategy:
-    """Build ``multiplicative_boost`` with its built-in default coefficients.
+    """Build ``multiplicative_amplification`` with its built-in default coefficients.
 
-    Ignores any ``--multiplicative-boost-coefficients`` YAML so a single
+    Ignores any ``--multiplicative-amplification-coefficients`` YAML so a single
     ``compare-rankings`` run produces a side-by-side default-vs-tuned dataset.
     """
 
-    return MultiplicativeBoostNodeRankingStrategy(
+    return MultiplicativeAmplificationNodeRankingStrategy(
         project_root=repo_path,
         snippet_cache_max_entries=10000,
     )
@@ -161,7 +161,7 @@ def build_strategy_factories(
     seed: int | None = None,
     cpg_structural_coefficients: Path | None = None,
     budgeted_ranking_config_path: Path | None = None,
-    multiplicative_boost_coefficients: Path | None = None,
+    multiplicative_amplification_coefficients: Path | None = None,
     current_coefficients: Path | None = None,
     only_strategies: Iterable[str] | None = None,
 ) -> dict[str, RankingStrategyFactory]:
@@ -183,12 +183,12 @@ def build_strategy_factories(
             _build_random_picking_ranking_strategy,
             seed=seed,
         ),
-        RankingStrategies.MULTIPLICATIVE_BOOST: partial(
-            _build_multiplicative_boost_ranking_strategy,
-            multiplicative_boost_coefficients=multiplicative_boost_coefficients,
+        RankingStrategies.MULTIPLICATIVE_AMPLIFICATION: partial(
+            _build_multiplicative_amplification_ranking_strategy,
+            multiplicative_amplification_coefficients=multiplicative_amplification_coefficients,
         ),
-        RankingStrategies.MULTIPLICATIVE_BOOST_DEFAULT: (
-            _build_multiplicative_boost_default_ranking_strategy
+        RankingStrategies.MULTIPLICATIVE_AMPLIFICATION_DEFAULT: (
+            _build_multiplicative_amplification_default_ranking_strategy
         ),
         RankingStrategies.CPG_STRUCTURAL: partial(
             _build_cpg_structural_ranking_strategy,

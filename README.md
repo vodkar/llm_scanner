@@ -66,7 +66,7 @@ uv run llm-scanner build-cleanvul-benchmark-compare-rankings /path/to/cleanvul.c
 ```
 
 Output: one `cleanvul_context_benchmark_<strategy>.json` per ranking strategy (`current`,
-`depth_repeats_context`, `random_picking`, `multiplicative_boost`, `cpg_structural`,
+`depth_repeats_context`, `random_picking`, `multiplicative_amplification`, `cpg_structural`,
 `evidence_budgeted`, `dummy`) and
 `cleanvul_entries.json` files.
 
@@ -91,7 +91,7 @@ and the tuner where applicable):
 | Strategy | Combiner | Tunable from YAML | Notes |
 |---|---|---|---|
 | `current` | weighted sum (additive) | `config/ranking_coefficients_current.yaml` | Hand-tuned baseline; root pinned, security tier above context. |
-| `multiplicative_boost` | $S_c \cdot (1 + \beta_{\text{sec}} \cdot S_{\text{sec}})$ | shared YAML | Context as base, security as boost. |
+| `multiplicative_amplification` | $S_c \cdot (1 + \beta_{\text{sec}} \cdot S_{\text{sec}})$ | shared YAML | Context as base, security as amplifier. |
 | `depth_repeats_context` | non-security baseline | none | Sorts by depth then repeats; ablation control. |
 | `cpg_structural` | additive + per-edge depth | `config/ranking_coefficients_cpg_structural.yaml` | Edge-aware decay over `FLOWS_TO`/`SANITIZED_BY`/`CALLS`/…. |
 | `evidence_budgeted` | **noisy-OR + greedy budgeted selection** | `config/budgeted_ranking_config_default.yaml` | New; 14-parameter operating point, role coverage + redundancy shaping. See `docs/evidence_aware_budgeted_ranking.md`. |
@@ -100,7 +100,7 @@ and the tuner where applicable):
 
 Theory and formulas:
 
-- `docs/ranking_system.md` — the additive system used by `current`, `multiplicative_boost`, `cpg_structural`.
+- `docs/ranking_system.md` — the additive system used by `current`, `multiplicative_amplification`, `cpg_structural`.
 - `docs/evidence_aware_budgeted_ranking.md` — the evidence-aware budgeted system used by `evidence_budgeted` (thesis-style).
 
 ## Tuning ranking coefficients with an LLM judge
@@ -209,10 +209,10 @@ uv run llm-scanner export-best-coefficients \
 
 The command loads `data/tuning_runs/<study-name>.db`, merges `study.best_params`
 onto `--base-coefficients` (for `cpg_structural`, `current`, and
-`multiplicative_boost`) or builds a `BudgetedRankingConfig` directly (for
+`multiplicative_amplification`) or builds a `BudgetedRankingConfig` directly (for
 `evidence_budgeted`), and writes the result to `--output`. The YAML has the
 same shape consumed by `--cpg-structural-coefficients` /
-`--current-coefficients` / `--multiplicative-boost-coefficients` /
+`--current-coefficients` / `--multiplicative-amplification-coefficients` /
 `--budgeted-ranking-config` on `build-cleanvul-benchmark-compare-rankings`.
 
 To dump the four canonical studies into `config/` in one shot:
@@ -223,6 +223,6 @@ To dump the four canonical studies into `config/` in one shot:
 
 The script writes `config/best_cpg_structural.yaml`,
 `config/best_current.yaml`, `config/best_evidence_budgeted.yaml`, and
-`config/best_multiplicative_boost.yaml` from
-`data/tuning_runs/{coefficients,current,evidence_budgeted_v2,multiplicative_boost}.db`
+`config/best_multiplicative_amplification.yaml` from
+`data/tuning_runs/{coefficients,current,evidence_budgeted_v2,multiplicative_amplification}.db`
 respectively. Edit the `JOBS` array in the script if your study names differ.

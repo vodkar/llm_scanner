@@ -9,7 +9,7 @@ from services.ranking.evidence_ranking.utils import (
     budgeted_config_from_best_params,
     coefficients_from_best_params,
     suggest_current_coefficients,
-    suggest_multiplicative_boost_coefficients,
+    suggest_multiplicative_amplification_coefficients,
 )
 from services.ranking.ranking_config import RankingCoefficients
 
@@ -110,8 +110,8 @@ def test_budgeted_config_from_best_params_falls_back_to_defaults_for_missing_key
     assert config.role_coverage_bonus == BudgetedRankingConfig().role_coverage_bonus
 
 
-def test_suggest_multiplicative_boost_coefficients_perturbs_relevant_fields_only() -> None:
-    """multiplicative_boost sampler must touch the boost lever + breakdown weights.
+def test_suggest_multiplicative_amplification_coefficients_perturbs_relevant_fields_only() -> None:
+    """multiplicative_amplification sampler must touch the amplification lever + breakdown weights.
 
     It must NOT touch the cpg_structural-only knobs (combiner, edge_*,
     sanitizer_*) — those are inherited from the base coefficients unchanged.
@@ -140,7 +140,7 @@ def test_suggest_multiplicative_boost_coefficients_perturbs_relevant_fields_only
         }
     )
 
-    sampled = suggest_multiplicative_boost_coefficients(trial, base)
+    sampled = suggest_multiplicative_amplification_coefficients(trial, base)
 
     # Tuned levers.
     assert sampled.security_boost_weight == 1.75
@@ -160,7 +160,7 @@ def test_suggest_current_coefficients_perturbs_combiner_and_breakdowns_only() ->
     """current sampler must touch combiner + breakdown weights.
 
     It must NOT touch the cpg_structural-only knobs (edge_*, sanitizer_*) or
-    the multiplicative_boost-only ``security_boost_weight`` — those are
+    the multiplicative_amplification-only ``security_boost_weight`` — those are
     inherited from the base coefficients unchanged.
     """
 
@@ -209,10 +209,10 @@ def test_suggest_current_coefficients_perturbs_combiner_and_breakdowns_only() ->
     assert sampled.sanitizer_presence_damp == base.sanitizer_presence_damp
 
 
-def test_coefficients_from_best_params_round_trips_multiplicative_boost_keys(
+def test_coefficients_from_best_params_round_trips_multiplicative_amplification_keys(
     tmp_path: Path,
 ) -> None:
-    """The export helper must also handle a study tuned for multiplicative_boost."""
+    """The export helper must also handle a study tuned for multiplicative_amplification."""
 
     base = RankingCoefficients.from_yaml(_BASE_COEFFICIENTS_PATH)
     best_params = {

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from services.ranking.ranking import (
-    MultiplicativeBoostNodeRankingStrategy,
+    MultiplicativeAmplificationNodeRankingStrategy,
     NodeRelevanceRankingService,
 )
 from services.ranking.ranking_config import RankingCoefficients
@@ -31,8 +31,8 @@ def test_factory_exposes_both_current_and_current_default_keys() -> None:
 
     assert RankingStrategies.CURRENT in factories
     assert RankingStrategies.CURRENT_DEFAULT in factories
-    assert RankingStrategies.MULTIPLICATIVE_BOOST in factories
-    assert RankingStrategies.MULTIPLICATIVE_BOOST_DEFAULT in factories
+    assert RankingStrategies.MULTIPLICATIVE_AMPLIFICATION in factories
+    assert RankingStrategies.MULTIPLICATIVE_AMPLIFICATION_DEFAULT in factories
 
 
 def test_default_variants_ignore_tuned_yaml(tmp_path: Path) -> None:
@@ -42,18 +42,18 @@ def test_default_variants_ignore_tuned_yaml(tmp_path: Path) -> None:
     factories = build_strategy_factories(
         token_budget=2048,
         current_coefficients=coeff_path,
-        multiplicative_boost_coefficients=coeff_path,
+        multiplicative_amplification_coefficients=coeff_path,
     )
 
     current_tuned = factories[RankingStrategies.CURRENT](tmp_path)
     current_default = factories[RankingStrategies.CURRENT_DEFAULT](tmp_path)
-    mboost_tuned = factories[RankingStrategies.MULTIPLICATIVE_BOOST](tmp_path)
-    mboost_default = factories[RankingStrategies.MULTIPLICATIVE_BOOST_DEFAULT](tmp_path)
+    mboost_tuned = factories[RankingStrategies.MULTIPLICATIVE_AMPLIFICATION](tmp_path)
+    mboost_default = factories[RankingStrategies.MULTIPLICATIVE_AMPLIFICATION_DEFAULT](tmp_path)
 
     assert isinstance(current_tuned, NodeRelevanceRankingService)
     assert isinstance(current_default, NodeRelevanceRankingService)
-    assert isinstance(mboost_tuned, MultiplicativeBoostNodeRankingStrategy)
-    assert isinstance(mboost_default, MultiplicativeBoostNodeRankingStrategy)
+    assert isinstance(mboost_tuned, MultiplicativeAmplificationNodeRankingStrategy)
+    assert isinstance(mboost_default, MultiplicativeAmplificationNodeRankingStrategy)
 
     # Tuned variants pick up the YAML value.
     assert current_tuned.coefficients.security_boost_weight == 2.75

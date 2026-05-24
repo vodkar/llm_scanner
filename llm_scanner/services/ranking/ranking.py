@@ -703,7 +703,7 @@ class RandomNodeRankingStrategy(NodeRelevanceRankingService):
         return [*root_nodes, *other_nodes]
 
 
-class MultiplicativeBoostNodeRankingStrategy(NodeRelevanceRankingService):
+class MultiplicativeAmplificationNodeRankingStrategy(NodeRelevanceRankingService):
     """Rank nodes using context as base score with multiplicative security boost."""
 
     def calculate_final_score(self, nodes: list[CodeContextNode]) -> list[CodeContextNode]:

@@ -113,9 +113,9 @@ $$
 
 The lexicographic first key keeps **root nodes** (the actual finding location, depth 0) at the top of the prompt regardless of their score — they are the anchor of the question.
 
-### 3.2 Multiplicative-boost (`MultiplicativeBoostNodeRankingStrategy`)
+### 3.2 Multiplicative-amplification (`MultiplicativeAmplificationNodeRankingStrategy`)
 
-Replaces the additive combiner with a multiplicative one in which the context score is the *base* and security signals act as a *boost*:
+Replaces the additive combiner with a multiplicative one in which the context score is the *base* and security signals act as an *amplifier*:
 
 $$
 S_{\text{final}}(n) = S_c(n)\,\bigl(1 + \beta_{\text{sec}}\,(S_{fe}(n) + S_{sp}(n))\bigr)

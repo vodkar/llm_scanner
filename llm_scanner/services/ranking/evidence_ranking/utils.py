@@ -49,8 +49,8 @@ def build_benchmark_and_score_from_prepared(
         budgeted_ranking_config_path=(
             coeff_path if strategy == RankingStrategy.EVIDENCE_BUDGETED else None
         ),
-        multiplicative_boost_coefficients=(
-            coeff_path if strategy == RankingStrategy.MULTIPLICATIVE_BOOST else None
+        multiplicative_amplification_coefficients=(
+            coeff_path if strategy == RankingStrategy.MULTIPLICATIVE_AMPLIFICATION else None
         ),
         current_coefficients=(coeff_path if strategy == RankingStrategy.CURRENT else None),
         only_strategies=[strategy.value],
@@ -205,12 +205,12 @@ def suggest_current_coefficients(
     return RankingCoefficients.model_validate(payload)
 
 
-def suggest_multiplicative_boost_coefficients(
+def suggest_multiplicative_amplification_coefficients(
     trial: optuna.trial.BaseTrial, base: RankingCoefficients
 ) -> RankingCoefficients:
-    """Sample a coefficients object focused on ``MultiplicativeBoostNodeRankingStrategy``.
+    """Sample a coefficients object focused on ``MultiplicativeAmplificationNodeRankingStrategy``.
 
-    The multiplicative-boost final score is
+    The multiplicative-amplification final score is
 
         score = context_score * (1 + security_boost_weight * (FE + SP))
 

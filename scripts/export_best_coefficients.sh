@@ -6,7 +6,7 @@
 #   config/best_cpg_structural.yaml
 #   config/best_current.yaml
 #   config/best_evidence_budgeted.yaml
-#   config/best_multiplicative_boost.yaml
+#   config/best_multiplicative_amplification.yaml
 
 set -euo pipefail
 

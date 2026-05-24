@@ -13,7 +13,7 @@ from models.nodes.finding import BanditFindingNode
 from services.ranking.ranking import (
     DepthRepeatsContextNodeRankingStrategy,
     DummyNodeRankingStrategy,
-    MultiplicativeBoostNodeRankingStrategy,
+    MultiplicativeAmplificationNodeRankingStrategy,
     NodeRelevanceRankingService,
     RandomNodeRankingStrategy,
 )
@@ -433,8 +433,8 @@ def test_current_strategy_score_only_sort_no_tier_promotion() -> None:
     ]
 
 
-def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) -> None:
-    """Multiplicative boost should give higher final score to security-relevant nodes."""
+def test_multiplicative_amplification_amplifies_security_relevant_nodes(tmp_path: Path) -> None:
+    """Multiplicative amplification should give higher final score to security-relevant nodes."""
 
     source_file = tmp_path / "pkg" / "sample.py"
     source_file.parent.mkdir(parents=True)
@@ -468,7 +468,7 @@ def test_multiplicative_boost_amplifies_security_relevant_nodes(tmp_path: Path) 
         context_score=0.6,
     )
 
-    strategy = MultiplicativeBoostNodeRankingStrategy(project_root=tmp_path)
+    strategy = MultiplicativeAmplificationNodeRankingStrategy(project_root=tmp_path)
     scored_nodes = strategy.calculate_final_score([plain_node, boosted_node])
 
     scored_by_id = {node.identifier: node for node in scored_nodes}

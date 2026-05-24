@@ -12,7 +12,7 @@ $$
 
 with $14+$ continuous coefficients. Empirically this scheme suffered from two failure modes:
 
-1. **Unstable importance estimates.** Small coefficient changes in one shared helper (e.g. the structure score) propagated into strategies that did not even nominally use that signal — because helpers were shared across `NodeRelevanceRankingService`, `MultiplicativeBoostNodeRankingStrategy`, and `DepthRepeatsContextNodeRankingStrategy`.
+1. **Unstable importance estimates.** Small coefficient changes in one shared helper (e.g. the structure score) propagated into strategies that did not even nominally use that signal — because helpers were shared across `NodeRelevanceRankingService`, `MultiplicativeAmplificationNodeRankingStrategy`, and `DepthRepeatsContextNodeRankingStrategy`.
 2. **Over-saturation under aggregation.** Linear addition with bounded inputs produced a long tail of mid-relevance nodes; under tight budgets, structurally important context (root, source, sink) was displaced by mid-tail BoilerPlate.
 
 The evidence-aware budgeted scheme described here addresses both. The methodology is **fixed**; only a compact operating-point configuration $\theta$ is tuned. Component scores are combined via the **noisy-OR** rule rather than weighted sums, and node selection is performed under an explicit **token-budget** constraint with a gain function that trades relevance against token cost.

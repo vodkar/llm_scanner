@@ -48,7 +48,7 @@ from services.ranking.evidence_ranking.utils import (
     suggest_budgeted_config,
     suggest_coefficients,
     suggest_current_coefficients,
-    suggest_multiplicative_boost_coefficients,
+    suggest_multiplicative_amplification_coefficients,
 )
 from services.ranking.ranking_config import RankingCoefficients
 from services.ranking.strategy_factory import (
@@ -542,13 +542,13 @@ def build_cleanvul_benchmark_compare_rankings(
             resolve_path=True,
         ),
     ] = None,
-    multiplicative_boost_coefficients: Annotated[
+    multiplicative_amplification_coefficients: Annotated[
         Path | None,
         typer.Option(
-            "--multiplicative-boost-coefficients",
+            "--multiplicative-amplification-coefficients",
             help=(
                 "Optional YAML with tuned RankingCoefficients for the "
-                "multiplicative_boost strategy. Defaults to the strategy's "
+                "multiplicative_amplification strategy. Defaults to the strategy's "
                 "built-in coefficients when omitted."
             ),
             exists=True,
@@ -583,7 +583,7 @@ def build_cleanvul_benchmark_compare_rankings(
         seed=seed,
         cpg_structural_coefficients=cpg_structural_coefficients,
         budgeted_ranking_config_path=budgeted_ranking_config,
-        multiplicative_boost_coefficients=multiplicative_boost_coefficients,
+        multiplicative_amplification_coefficients=multiplicative_amplification_coefficients,
         current_coefficients=current_coefficients,
     )
     service = CleanVulBenchmarkService(
@@ -820,10 +820,12 @@ def tune_ranking_coefficients(
             coefficients: RankingCoefficients | BudgetedRankingConfig
             if strategy == RankingStrategy.EVIDENCE_BUDGETED:
                 coefficients = suggest_budgeted_config(trial)
-            elif strategy == RankingStrategy.MULTIPLICATIVE_BOOST:
+            elif strategy == RankingStrategy.MULTIPLICATIVE_AMPLIFICATION:
                 if base_coeff_obj is None:
                     raise RuntimeError("base_coefficients must be provided for non-budgeted tuning")
-                coefficients = suggest_multiplicative_boost_coefficients(trial, base_coeff_obj)
+                coefficients = suggest_multiplicative_amplification_coefficients(
+                    trial, base_coeff_obj
+                )
             elif strategy == RankingStrategy.CURRENT:
                 if base_coeff_obj is None:
                     raise RuntimeError("base_coefficients must be provided for non-budgeted tuning")
@@ -917,11 +919,11 @@ def export_best_coefficients(
 
     Loads ``<study-dir>/<study-name>.db``, reads ``study.best_params``, merges
     onto the base coefficients (for ``cpg_structural`` and
-    ``multiplicative_boost``) or builds a ``BudgetedRankingConfig`` directly
+    ``multiplicative_amplification``) or builds a ``BudgetedRankingConfig`` directly
     (for ``evidence_budgeted``), and writes the result as YAML at
     ``--output``. The output is the same shape consumed by
     ``--cpg-structural-coefficients`` / ``--budgeted-ranking-config`` /
-    ``--multiplicative-boost-coefficients`` on
+    ``--multiplicative-amplification-coefficients`` on
     ``build-cleanvul-benchmark-compare-rankings``.
     """
 
@@ -941,7 +943,7 @@ def export_best_coefficients(
         config.to_yaml(output)
     elif strategy in (
         RankingStrategy.CPG_STRUCTURAL,
-        RankingStrategy.MULTIPLICATIVE_BOOST,
+        RankingStrategy.MULTIPLICATIVE_AMPLIFICATION,
         RankingStrategy.CURRENT,
     ):
         base = RankingCoefficients.from_yaml(base_coefficients)

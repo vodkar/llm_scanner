@@ -2,7 +2,7 @@ from ..ranking.ranking import (
     ContextNodeRankingStrategy,
     DepthRepeatsContextNodeRankingStrategy,
     DummyNodeRankingStrategy,
-    MultiplicativeBoostNodeRankingStrategy,
+    MultiplicativeAmplificationNodeRankingStrategy,
     RandomNodeRankingStrategy,
 )
 from .context_assembler import ContextAssemblerService
@@ -12,6 +12,6 @@ __all__ = [
     "ContextNodeRankingStrategy",
     "DepthRepeatsContextNodeRankingStrategy",
     "DummyNodeRankingStrategy",
-    "MultiplicativeBoostNodeRankingStrategy",
+    "MultiplicativeAmplificationNodeRankingStrategy",
     "RandomNodeRankingStrategy",
 ]
