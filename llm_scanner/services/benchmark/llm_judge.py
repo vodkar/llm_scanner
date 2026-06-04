@@ -37,6 +37,7 @@ class LLMJudgeResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     accuracy: float = Field(..., ge=0.0, le=1.0)
+    fnr: float = Field(default=0.0, ge=0.0, le=1.0)
     predictions: dict[str, int] = Field(default_factory=dict)
     invalid_responses: int = Field(default=0, ge=0)
 
@@ -68,6 +69,8 @@ class LLMJudgeService(BaseModel):
         predictions: dict[str, int] = {}
         correct = 0
         invalid = 0
+        false_negatives = 0
+        actual_positives = sum(1 for s in dataset.samples if s.label == 1)
         for sample, response in zip(dataset.samples, responses, strict=True):
             prediction = self._parse_prediction(response)
             if prediction is None:
@@ -76,10 +79,14 @@ class LLMJudgeService(BaseModel):
             predictions[sample.id] = prediction
             if prediction == sample.label:
                 correct += 1
+            if sample.label == 1 and prediction == 0:
+                false_negatives += 1
 
         accuracy = correct / len(dataset.samples)
+        fnr = false_negatives / actual_positives if actual_positives > 0 else 0.0
         return LLMJudgeResult(
             accuracy=accuracy,
+            fnr=fnr,
             predictions=predictions,
             invalid_responses=invalid,
         )

@@ -76,6 +76,7 @@ DEFAULT_STUDY_DIR: Final[Path] = ROOT_DIR / "data" / "tuning_runs"
 DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
     ROOT_DIR / "config" / "ranking_coefficients_cpg_structural.yaml"
 )
+DEFAULT_TOKEN_BUDGET: Final = 10000
 
 
 @app.callback()
@@ -771,7 +772,7 @@ def tune_ranking_coefficients(
     storage_url = f"sqlite:///{DEFAULT_STUDY_DIR / f'{resolved_study_name}.db'}"
 
     study = optuna.create_study(
-        direction="maximize",
+        direction="minimize",
         study_name=resolved_study_name,
         storage=storage_url,
         load_if_exists=True,
@@ -789,7 +790,7 @@ def tune_ranking_coefficients(
         prepared_cache_dir,
     )
     prep_factories = build_strategy_factories(
-        token_budget=16384,
+        token_budget=DEFAULT_TOKEN_BUDGET,
         seed=seed,
         only_strategies=[RankingStrategies.DUMMY],
     )
@@ -801,7 +802,7 @@ def tune_ranking_coefficients(
         seed=seed,
         neo4j_config=ctx.obj["neo4j"],
         max_call_depth=max_call_depth,
-        token_budget=16384,
+        token_budget=DEFAULT_TOKEN_BUDGET,
         strategy_factories=prep_factories,
         delete_checkouts=False,
     )
@@ -833,7 +834,7 @@ def tune_ranking_coefficients(
                 coefficients = suggest_coefficients(trial, base_coeff_obj)
             trial_dir = tmp_root / f"trial_{trial.number:04d}"
             trial_dir.mkdir()
-            return build_benchmark_and_score_from_prepared(
+            result = build_benchmark_and_score_from_prepared(
                 coefficients,
                 strategy=strategy,
                 prepared_samples=prepared_samples,
@@ -843,15 +844,17 @@ def tune_ranking_coefficients(
                 max_call_depth=max_call_depth,
                 judge=judge,
                 work_dir=trial_dir,
+                token_budget=DEFAULT_TOKEN_BUDGET
             )
+            return result.fnr
 
         study.optimize(objective, n_trials=trials, show_progress_bar=False)
 
-    logger.info("best accuracy=%.4f", study.best_value)
+    logger.info("best FNR=%.4f", study.best_value)
     logger.info("best params=%s", json.dumps(study.best_params, indent=2))
     logger.info("study persisted to %s", storage_url)
     typer.secho(
-        f"Best accuracy {study.best_value:.4f}; study persisted to {storage_url}",
+        f"Best FNR {study.best_value:.4f}; study persisted to {storage_url}",
         fg=typer.colors.GREEN,
     )
 
@@ -927,7 +930,7 @@ def export_best_coefficients(
     best_params = study.best_params
     logger = logging.getLogger(__name__)
     logger.info(
-        "loaded study %s (best accuracy=%.4f, %d params)",
+        "loaded study %s (best FNR=%.4f, %d params)",
         study_name,
         study.best_value,
         len(best_params),

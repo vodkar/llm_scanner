@@ -4,26 +4,26 @@ combiner:
   taint: 0.2
   context: 0.35
 context_breakdown:
-  depth: 0.5986965702495053
-  structure: 0.4220189948940753
-  file_prior: 0.4010055896730625
+  depth: 0.5802218351242094
+  structure: 0.3062468345356839
+  file_prior: 0.44889932245922337
 finding_evidence_breakdown:
-  severity: 0.3919074361510829
-  confidence: 0.11933172868944579
-  agreement: 0.1186128920016912
+  severity: 0.6145942595193252
+  confidence: 0.26984849831939683
+  agreement: 0.38652249576866415
 security_path_breakdown:
-  sink: 0.12075702834012804
-  source: 0.13284035980463177
-  guard: 0.07649235905090664
-  path_evidence: 0.15162024149842224
-  high_risk_cwe_evidence_base: 0.6845513291330906
+  sink: 0.41177693132809057
+  source: 0.2276597803928279
+  guard: 0.11225341821547313
+  path_evidence: 0.4269227980201128
+  high_risk_cwe_evidence_base: 0.7138135460106054
 structure_breakdown:
-  render_kind: 0.4390239668031306
-  repeat_bonus: 0.527510690419083
+  render_kind: 0.18003450379914301
+  repeat_bonus: 0.8812829080304144
 file_prior_breakdown:
-  same_file: 0.509024714606006
-  same_module: 0.1814265327507865
-  generated_penalty: 0.11691198235286486
+  same_file: 0.8138560205732048
+  same_module: 0.24380903098660853
+  generated_penalty: 0.07967947022335367
 hop_decay_by_depth:
   0: 1.0
   1: 0.85
@@ -44,7 +44,7 @@ render_kind_scores:
   ClassNode: 0.8
   CodeBlockNode: 0.7
   VariableNode: 0.4
-security_boost_weight: 0.775717583862123
+security_boost_weight: 1.480388897249535
 security_tier_threshold: 0.5
 edge_type_weights:
   flows_to: 1.0

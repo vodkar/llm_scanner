@@ -13,10 +13,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 declare -a JOBS=(
-  "cpg_structural        coefficients          config/best_cpg_structural.yaml"
-  "current               current               config/best_current.yaml"
-  "evidence_budgeted     evidence_budgeted_v2  config/best_evidence_budgeted.yaml"
-  "multiplicative_boost  multiplicative_boost  config/best_multiplicative_boost.yaml"
+  "cpg_structural        coefficients_fnr_depth_12          config/best_cpg_structural.yaml"
+  "current               current_fnr_depth_12               config/best_current.yaml"
+  "evidence_budgeted     evidence_budgeted_fnr_depth_12  config/best_evidence_budgeted.yaml"
+  "multiplicative_boost  multiplicative_boost_fnr_depth_12  config/best_multiplicative_boost.yaml"
 )
 
 for job in "${JOBS[@]}"; do

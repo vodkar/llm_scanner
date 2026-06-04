@@ -355,7 +355,8 @@ class ContextAssemblerService(BaseModel):
         parts: list[str] = []
         for file_path, lines in lines_to_keep.items():
             for line_number in sorted(lines):
-                parts.append(read_lines[file_path][line_number])
+                if line := read_lines[file_path][line_number].rstrip():
+                    parts.append(line)
         return "\n".join(parts)
 
     @staticmethod
