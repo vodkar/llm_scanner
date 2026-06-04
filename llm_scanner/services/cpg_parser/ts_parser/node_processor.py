@@ -205,6 +205,7 @@ class NodeProcessor(BaseModel):
                         name=target_name,
                         node=target_node,
                         type_hint=type_hint,
+                        end_node=actual,
                     )
                     self.__bind_symbol(var.name, var.identifier)
                     nodes[var.identifier] = var
@@ -569,17 +570,32 @@ class NodeProcessor(BaseModel):
         name: str,
         node: TSNode,
         type_hint: str = "",
+        end_node: TSNode | None = None,
     ) -> VariableNode:
-        """Create a VariableNode for a definition or reference."""
+        """Create a VariableNode for a definition or reference.
+
+        Args:
+            kind: Node kind used in the NodeID (e.g. ``"variable"``).
+            name: Variable name extracted from source.
+            node: Tree-sitter node bounding the variable's start position.
+            type_hint: Optional declared type annotation.
+            end_node: Optional node whose end position bounds ``line_end``. Used
+                for multiline assignments where the value spans more lines than
+                the target identifier itself.
+
+        Returns:
+            The created VariableNode.
+        """
 
         normalized_name = self.__compact_node_name(name)
         node_id = NodeID.create(kind, normalized_name, str(self.path), node.start_byte)
+        line_end_node = end_node if end_node is not None else node
         variable_node = VariableNode(
             identifier=node_id,
             name=normalized_name,
             type_hint=type_hint,
             line_start=node.start_point[0] + 1,
-            line_end=node.end_point[0] + 1,
+            line_end=line_end_node.end_point[0] + 1,
             file_path=self.path,
         )
         return variable_node
@@ -590,6 +606,7 @@ class NodeProcessor(BaseModel):
         name: str,
         node: TSNode,
         type_hint: str = "",
+        end_node: TSNode | None = None,
     ) -> tuple[NodeID, VariableNode | None]:
         """Get an existing variable symbol or create it in the current scope.
 
@@ -607,6 +624,7 @@ class NodeProcessor(BaseModel):
             name=normalized,
             node=node,
             type_hint=type_hint,
+            end_node=end_node,
         )
         self.__bind_symbol(normalized, var.identifier)
         return var.identifier, var
@@ -983,6 +1001,7 @@ class NodeProcessor(BaseModel):
                 name=target_name,
                 node=target_node,
                 type_hint=type_hint,
+                end_node=node,
             )
             if created:
                 nodes[created.identifier] = created
