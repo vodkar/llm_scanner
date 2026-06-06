@@ -833,6 +833,10 @@ class NodeProcessor(BaseModel):
         callee_id: NodeID | None = self.__resolve_call_target(node)
         if callee_id is None:
             self.__warn_unresolved_call(node)
+            for child in node.children:
+                child_nodes, child_edges = self.process(child, block_level=1)
+                nodes.update(child_nodes)
+                edges.extend(child_edges)
             return (nodes, edges)
 
         call_node: CallNode = self.__create_call_node(

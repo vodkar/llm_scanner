@@ -26,7 +26,7 @@ def test_tree_sitter_parse__on_multiline_variables__returns_correct_nodes() -> N
     b_def_sb = idx(b"b = {")
     b_def_id = NodeID.create("variable", "b", str(TEST_MULTILINE_VARIABLES_FILE), b_def_sb)
 
-    c_def_sb = idx(b"c = \"\"\"")
+    c_def_sb = idx(b'c = """')
     c_def_id = NodeID.create("variable", "c", str(TEST_MULTILINE_VARIABLES_FILE), c_def_sb)
 
     assert a_def_id in nodes

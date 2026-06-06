@@ -13,3 +13,6 @@ TEST_FUNCTION_CALLS_WITH_ARGS_FILE: Final[Path] = (
 TEST_CLASS_PASSED_AS_ARG_FILE: Final[Path] = TEST_CALLS_DATA_DIR / "class_passed_as_arg.py"
 TEST_METHOD_CALLS_FILE: Final[Path] = TEST_CALLS_DATA_DIR / "method_calls.py"
 TEST_TAINT_CHAIN_FILE: Final[Path] = TEST_CALLS_DATA_DIR / "taint_chain.py"
+TEST_NESTED_RESOLVED_IN_UNRESOLVED_CALL_FILE: Final[Path] = (
+    TEST_CALLS_DATA_DIR / "nested_resolved_in_unresolved_call.py"
+)

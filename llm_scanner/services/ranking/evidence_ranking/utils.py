@@ -16,9 +16,6 @@ from services.ranking.ranking_config import RankingCoefficients
 from services.ranking.strategy_factory import build_strategy_factories
 
 
-
-
-
 def build_benchmark_and_score_from_prepared(
     coefficients: RankingCoefficients | BudgetedRankingConfig,
     *,

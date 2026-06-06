@@ -844,7 +844,7 @@ def tune_ranking_coefficients(
                 max_call_depth=max_call_depth,
                 judge=judge,
                 work_dir=trial_dir,
-                token_budget=DEFAULT_TOKEN_BUDGET
+                token_budget=DEFAULT_TOKEN_BUDGET,
             )
             return result.fnr
 
