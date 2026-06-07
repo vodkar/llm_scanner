@@ -35,3 +35,28 @@ def test_cache_key_defaults_to_excluding_test_nodes() -> None:
     assert compute_sample_cache_key(**_BASE_KWARGS) == compute_sample_cache_key(
         **_BASE_KWARGS, exclude_test_nodes=True
     )
+
+
+def test_cache_key_changes_with_damp_call_graph_hubs() -> None:
+    """Toggling damp_call_graph_hubs yields a different cache key."""
+
+    on = compute_sample_cache_key(**_BASE_KWARGS, damp_call_graph_hubs=True)
+    off = compute_sample_cache_key(**_BASE_KWARGS, damp_call_graph_hubs=False)
+
+    assert on != off
+
+
+def test_cache_key_changes_with_hub_fanin_threshold() -> None:
+    """Different hub fan-in thresholds yield different cache keys."""
+
+    assert compute_sample_cache_key(
+        **_BASE_KWARGS, hub_fanin_threshold=12
+    ) != compute_sample_cache_key(**_BASE_KWARGS, hub_fanin_threshold=20)
+
+
+def test_cache_key_defaults_match_explicit_hub_defaults() -> None:
+    """Omitting the hub flags matches the explicit defaults."""
+
+    assert compute_sample_cache_key(**_BASE_KWARGS) == compute_sample_cache_key(
+        **_BASE_KWARGS, damp_call_graph_hubs=True, hub_fanin_threshold=12
+    )

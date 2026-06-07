@@ -34,6 +34,14 @@ class _NeighborhoodRepo(ContextRepository):
         del root_ids
         return []
 
+    def fetch_neighborhood_edges(
+        self,
+        node_ids: list[str],
+        edge_types: tuple[str, ...] | None = None,
+    ) -> list[tuple[NodeID, NodeID, str]]:
+        del node_ids, edge_types
+        return []
+
 
 def _node(
     name: str,

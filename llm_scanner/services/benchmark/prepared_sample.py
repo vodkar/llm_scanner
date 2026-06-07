@@ -69,6 +69,8 @@ def compute_sample_cache_key(
     files_spans: list[Any],
     loader_options: Mapping[str, Any] | None = None,
     exclude_test_nodes: bool = True,
+    damp_call_graph_hubs: bool = True,
+    hub_fanin_threshold: int = 12,
 ) -> str:
     """Compute a stable SHA1 cache key for the prepared-sample artefact.
 
@@ -78,7 +80,9 @@ def compute_sample_cache_key(
     ``loader_options`` covers per-run filters such as ``min_score`` so caches
     do not collide across runs with different filtering.
     ``exclude_test_nodes`` is included because it changes the cached neighborhood
-    superset, so toggling it must not reuse a stale cache.
+    superset, so toggling it must not reuse a stale cache. ``damp_call_graph_hubs``
+    and ``hub_fanin_threshold`` are included for the same reason: they prune the
+    cached neighborhood, so different values must not collide.
     """
 
     spans_repr: list[tuple[str, tuple[tuple[int, int], ...]]] = []
@@ -97,6 +101,8 @@ def compute_sample_cache_key(
         repr(spans_repr),
         repr(sorted((loader_options or {}).items())),
         f"exclude_test_nodes={exclude_test_nodes}",
+        f"damp_call_graph_hubs={damp_call_graph_hubs}",
+        f"hub_fanin_threshold={hub_fanin_threshold}",
     )
     digest = hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
     return digest

@@ -1,13 +1,16 @@
 import logging
+import re
 from collections import defaultdict, deque
 from collections.abc import Callable
 from pathlib import Path
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from models.base import NodeID
 from models.context import CodeContextNode, Context, FileSpans
 from repositories.context import ContextRepository
+from repositories.queries import code_traversal_relationship_types
 from services.context_assembler.node_filters import is_test_path, text_uses_test_framework
 from services.ranking.ranking import (
     ContextNodeRankingStrategy,
@@ -15,6 +18,12 @@ from services.ranking.ranking import (
 
 TokenEstimator = Callable[[str], int]
 _LOGGER = logging.getLogger(__name__)
+
+# Module-level boilerplate whose identical lines recur across files and carry no
+# security signal; only exact-duplicate matches are collapsed during rendering.
+_BOILERPLATE_LINE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"^\s*_?[A-Za-z][\w.]*\s*=\s*logging\.getLogger"),
+)
 
 
 class ContextAssemblerService(BaseModel):
@@ -31,6 +40,8 @@ class ContextAssemblerService(BaseModel):
     ranking_strategy: ContextNodeRankingStrategy
     cached_neighborhood_edges: list[tuple[NodeID, NodeID, str]] | None = None
     exclude_test_nodes: bool = True
+    damp_call_graph_hubs: bool = True
+    hub_fanin_threshold: int = 12
 
     _test_file_cache: dict[Path, bool] = PrivateAttr(default_factory=dict)
 
@@ -111,6 +122,9 @@ class ContextAssemblerService(BaseModel):
         if self.exclude_test_nodes:
             context_nodes = self._filter_test_nodes(root_ids, context_nodes)
 
+        if self.damp_call_graph_hubs:
+            context_nodes = self._prune_hub_mediated_nodes(repo, root_ids, context_nodes)
+
         context_nodes = self._merge_enclosing_class_nodes(repo, root_ids, context_nodes)
         _LOGGER.info(
             "Fetched %d context nodes neighborhood for %d root IDs",
@@ -170,6 +184,94 @@ class ContextAssemblerService(BaseModel):
         result = text_uses_test_framework(text)
         self._test_file_cache[file_path] = result
         return result
+
+    def _prune_hub_mediated_nodes(
+        self,
+        repo: ContextRepository,
+        root_ids: list[str],
+        context_nodes: list[CodeContextNode],
+    ) -> list[CodeContextNode]:
+        """Drop non-root nodes reachable from a root only through a fan-in hub.
+
+        High-fan-in utilities (loggers, i18n ``_``, ``flash``-style helpers) are
+        called from many unrelated functions; undirected BFS then pulls every
+        caller into the neighborhood even though it shares only that utility with
+        the root. We identify hubs by degree over the call/data-flow edges,
+        recompute root reachability with hubs removed as transit, and keep only
+        roots, the still-reachable component, and the hub nodes themselves.
+        """
+
+        if len(context_nodes) <= 1:
+            return context_nodes
+
+        root_set = set(root_ids)
+        node_ids = {node.identifier for node in context_nodes}
+        edges = repo.fetch_neighborhood_edges(
+            [str(nid) for nid in node_ids],
+            edge_types=code_traversal_relationship_types(),
+        )
+
+        adjacency: dict[NodeID, set[NodeID]] = defaultdict(set)
+        for src, dst, _ in edges:
+            if src == dst or src not in node_ids or dst not in node_ids:
+                continue
+            adjacency[src].add(dst)
+            adjacency[dst].add(src)
+
+        hubs: set[NodeID] = {
+            node.identifier
+            for node in context_nodes
+            if str(node.identifier) not in root_set
+            and len(adjacency.get(node.identifier, ())) >= self.hub_fanin_threshold
+        }
+        if not hubs:
+            return context_nodes
+
+        root_node_ids: set[NodeID] = {
+            node.identifier for node in context_nodes if str(node.identifier) in root_set
+        }
+        reachable = self._reachable_excluding(root_node_ids, adjacency, blocked=hubs)
+
+        kept = [
+            node
+            for node in context_nodes
+            if node.identifier in root_node_ids
+            or node.identifier in reachable
+            or node.identifier in hubs
+        ]
+        dropped = len(context_nodes) - len(kept)
+        if dropped:
+            _LOGGER.info(
+                "Pruned %d hub-mediated nodes (%d hubs, fan-in >= %d)",
+                dropped,
+                len(hubs),
+                self.hub_fanin_threshold,
+            )
+        return kept
+
+    @staticmethod
+    def _reachable_excluding(
+        seeds: set[NodeID],
+        adjacency: dict[NodeID, set[NodeID]],
+        *,
+        blocked: set[NodeID],
+    ) -> set[NodeID]:
+        """Return nodes reachable from ``seeds`` without traversing ``blocked``.
+
+        Seeds are always included; blocked nodes are never expanded through (a
+        seed is assumed not to be blocked).
+        """
+
+        reachable: set[NodeID] = set(seeds)
+        queue: deque[NodeID] = deque(seeds)
+        while queue:
+            current = queue.popleft()
+            for neighbor in adjacency.get(current, ()):
+                if neighbor in reachable or neighbor in blocked:
+                    continue
+                reachable.add(neighbor)
+                queue.append(neighbor)
+        return reachable
 
     @staticmethod
     def _merge_enclosing_class_nodes(
@@ -438,13 +540,25 @@ class ContextAssemblerService(BaseModel):
         read_lines: dict[Path, dict[int, str]],
         lines_to_keep: dict[Path, set[int]],
     ) -> str:
-        """Render the final text from the chosen line set per file."""
+        """Render the final text from the chosen line set per file.
+
+        Exact-duplicate module-level boilerplate lines (e.g. repeated
+        ``logger = logging.getLogger(__name__)`` from different files) are
+        collapsed to their first occurrence; all other lines are kept verbatim.
+        """
 
         parts: list[str] = []
+        seen_boilerplate: set[str] = set()
         for file_path, lines in lines_to_keep.items():
             for line_number in sorted(lines):
-                if line := read_lines[file_path][line_number].rstrip():
-                    parts.append(line)
+                line = read_lines[file_path][line_number].rstrip()
+                if not line:
+                    continue
+                if any(pattern.match(line) for pattern in _BOILERPLATE_LINE_PATTERNS):
+                    if line in seen_boilerplate:
+                        continue
+                    seen_boilerplate.add(line)
+                parts.append(line)
         return "\n".join(parts)
 
     @staticmethod

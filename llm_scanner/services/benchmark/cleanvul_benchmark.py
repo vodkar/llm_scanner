@@ -77,6 +77,18 @@ class CleanVulBenchmarkService(BaseModel):
             "Part of the prepared-sample cache key so toggling re-prepares."
         ),
     )
+    damp_call_graph_hubs: bool = Field(
+        default=True,
+        description=(
+            "Prune non-root nodes reachable only through high-fan-in hubs. "
+            "Part of the prepared-sample cache key so toggling re-prepares."
+        ),
+    )
+    hub_fanin_threshold: int = Field(
+        default=12,
+        ge=1,
+        description="Fan-in degree at/above which a node is treated as a hub.",
+    )
     min_score: int = Field(default=4, ge=0, le=4)
     max_repo_size_bytes: int | None = Field(
         default=1024 * 1024 * 100,  # 100 MB
@@ -252,6 +264,8 @@ class CleanVulBenchmarkService(BaseModel):
             files_spans=entry.files_spans,
             loader_options=loader_options,
             exclude_test_nodes=self.exclude_test_nodes,
+            damp_call_graph_hubs=self.damp_call_graph_hubs,
+            hub_fanin_threshold=self.hub_fanin_threshold,
         )
         cached = load_prepared_sample(cache_dir, cache_key)
         if cached is not None:
@@ -793,6 +807,8 @@ class CleanVulBenchmarkService(BaseModel):
             ranking_strategy=ranking_strategy,
             cached_neighborhood_edges=cached_neighborhood_edges,
             exclude_test_nodes=self.exclude_test_nodes,
+            damp_call_graph_hubs=self.damp_call_graph_hubs,
+            hub_fanin_threshold=self.hub_fanin_threshold,
         )
 
     def _to_sample(
