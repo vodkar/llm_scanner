@@ -16,3 +16,4 @@ TEST_TAINT_CHAIN_FILE: Final[Path] = TEST_CALLS_DATA_DIR / "taint_chain.py"
 TEST_NESTED_RESOLVED_IN_UNRESOLVED_CALL_FILE: Final[Path] = (
     TEST_CALLS_DATA_DIR / "nested_resolved_in_unresolved_call.py"
 )
+TEST_CLASS_MEMBERSHIP_FILE: Final[Path] = TEST_CALLS_DATA_DIR / "class_membership.py"

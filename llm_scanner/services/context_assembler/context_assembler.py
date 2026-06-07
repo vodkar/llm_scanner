@@ -3,11 +3,12 @@ from collections import defaultdict, deque
 from collections.abc import Callable
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from models.base import NodeID
 from models.context import CodeContextNode, Context, FileSpans
 from repositories.context import ContextRepository
+from services.context_assembler.node_filters import is_test_path, text_uses_test_framework
 from services.ranking.ranking import (
     ContextNodeRankingStrategy,
 )
@@ -29,6 +30,9 @@ class ContextAssemblerService(BaseModel):
     token_estimator: TokenEstimator | None = None
     ranking_strategy: ContextNodeRankingStrategy
     cached_neighborhood_edges: list[tuple[NodeID, NodeID, str]] | None = None
+    exclude_test_nodes: bool = True
+
+    _test_file_cache: dict[Path, bool] = PrivateAttr(default_factory=dict)
 
     def model_post_init(self, __context: object) -> None:
         """Initialize default ranking strategy when one is not injected."""
@@ -103,12 +107,96 @@ class ContextAssemblerService(BaseModel):
                 root_ids,
                 self.max_call_depth,
             )
+
+        if self.exclude_test_nodes:
+            context_nodes = self._filter_test_nodes(root_ids, context_nodes)
+
+        context_nodes = self._merge_enclosing_class_nodes(repo, root_ids, context_nodes)
         _LOGGER.info(
             "Fetched %d context nodes neighborhood for %d root IDs",
             len(context_nodes),
             len(root_ids),
         )
         return context_nodes
+
+    def _filter_test_nodes(
+        self,
+        root_ids: list[str],
+        context_nodes: list[CodeContextNode],
+    ) -> list[CodeContextNode]:
+        """Drop non-root nodes that belong to test code.
+
+        Root nodes (those whose identifier is in ``root_ids``) are always kept,
+        even when they live in a test file. A non-root node is dropped when its
+        path/name looks like a test (:func:`is_test_path`) or its source file
+        uses a known test framework (:meth:`_file_uses_test_framework`).
+        """
+
+        root_set = set(root_ids)
+        kept = [
+            node
+            for node in context_nodes
+            if str(node.identifier) in root_set or not self._is_test_node(node)
+        ]
+        dropped = len(context_nodes) - len(kept)
+        if dropped:
+            _LOGGER.info("Excluded %d test-code nodes from the neighborhood", dropped)
+        return kept
+
+    def _is_test_node(self, node: CodeContextNode) -> bool:
+        """Return whether a node is test code by path/name or file content."""
+
+        if is_test_path(node.file_path, node.name):
+            return True
+        return self._file_uses_test_framework(node.file_path)
+
+    def _file_uses_test_framework(self, file_path: Path) -> bool:
+        """Return whether the node's source file imports/uses a test framework.
+
+        The result is memoized per file path. Unreadable files are treated as
+        non-test (and cached as such).
+        """
+
+        cached = self._test_file_cache.get(file_path)
+        if cached is not None:
+            return cached
+
+        try:
+            text = (self.project_root / file_path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            self._test_file_cache[file_path] = False
+            return False
+
+        result = text_uses_test_framework(text)
+        self._test_file_cache[file_path] = result
+        return result
+
+    @staticmethod
+    def _merge_enclosing_class_nodes(
+        repo: ContextRepository,
+        root_ids: list[str],
+        context_nodes: list[CodeContextNode],
+    ) -> list[CodeContextNode]:
+        """Append enclosing-class header nodes not already present.
+
+        CONTAINS edges are excluded from neighborhood BFS, so the enclosing
+        ``class X(...):`` header is fetched separately and merged in, keeping the
+        shallowest depth when a class node is already part of the neighborhood.
+        """
+
+        class_nodes = repo.fetch_enclosing_class_nodes(root_ids)
+        if not class_nodes:
+            return context_nodes
+
+        existing: dict[NodeID, CodeContextNode] = {node.identifier: node for node in context_nodes}
+        additions: list[CodeContextNode] = []
+        for class_node in class_nodes:
+            current = existing.get(class_node.identifier)
+            if current is None:
+                additions.append(class_node)
+                continue
+            current.depth = min(current.depth, class_node.depth)
+        return [*context_nodes, *additions]
 
     def fetch_taint_scores(self, root_ids: list[str]) -> dict[NodeID, float]:
         """Fetch backward-taint scores for the supplied root node IDs."""

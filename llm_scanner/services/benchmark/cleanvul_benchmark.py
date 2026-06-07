@@ -70,6 +70,13 @@ class CleanVulBenchmarkService(BaseModel):
     max_call_depth: int = Field(ge=0, description="Maximum call graph depth for context assembly")
     token_budget: int = 8192
     delete_checkouts: bool = True
+    exclude_test_nodes: bool = Field(
+        default=True,
+        description=(
+            "Exclude non-root test-code nodes from the assembled neighborhood. "
+            "Part of the prepared-sample cache key so toggling re-prepares."
+        ),
+    )
     min_score: int = Field(default=4, ge=0, le=4)
     max_repo_size_bytes: int | None = Field(
         default=1024 * 1024 * 100,  # 100 MB
@@ -244,6 +251,7 @@ class CleanVulBenchmarkService(BaseModel):
             max_call_depth=self.max_call_depth,
             files_spans=entry.files_spans,
             loader_options=loader_options,
+            exclude_test_nodes=self.exclude_test_nodes,
         )
         cached = load_prepared_sample(cache_dir, cache_key)
         if cached is not None:
@@ -784,6 +792,7 @@ class CleanVulBenchmarkService(BaseModel):
             token_budget=self.token_budget,
             ranking_strategy=ranking_strategy,
             cached_neighborhood_edges=cached_neighborhood_edges,
+            exclude_test_nodes=self.exclude_test_nodes,
         )
 
     def _to_sample(

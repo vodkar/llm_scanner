@@ -61,6 +61,12 @@ class FakeContextRepository(ContextRepository):
         del node_ids, edge_types
         return []
 
+    def fetch_enclosing_class_nodes(self, root_ids: list[str]) -> list[CodeContextNode]:
+        """No enclosing class for these unit-test fixtures."""
+
+        del root_ids
+        return []
+
 
 class ReverseRankingStrategy(ContextNodeRankingStrategy):
     """Return nodes in reverse order for injection tests."""

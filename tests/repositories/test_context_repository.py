@@ -152,7 +152,7 @@ def test_fetch_with_edge_paths_merges_per_edge_type_depths() -> None:
     client = Mock(spec=Neo4jClient)
     client.run_write.return_value = None
     client.run_read.side_effect = [
-        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CONTAINS"}],
+        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CALLS"}],
         [
             {
                 "id": "node-1",
@@ -198,9 +198,9 @@ def test_fetch_with_edge_paths_merges_per_edge_type_depths() -> None:
 
     nodes_by_id = {node.identifier: node for node in nodes}
     assert nodes_by_id[NodeID("node-1")].depth == 1
-    assert nodes_by_id[NodeID("node-1")].edge_depths == {"FLOWS_TO": 1, "CONTAINS": 3}
+    assert nodes_by_id[NodeID("node-1")].edge_depths == {"FLOWS_TO": 1, "CALLS": 3}
     assert nodes_by_id[NodeID("node-2")].depth == 2
-    assert nodes_by_id[NodeID("node-2")].edge_depths == {"CONTAINS": 2}
+    assert nodes_by_id[NodeID("node-2")].edge_depths == {"CALLS": 2}
 
 
 def test_fetch_with_edge_paths_returns_empty_for_empty_start_ids() -> None:
@@ -221,7 +221,7 @@ def test_fetch_with_edge_paths_uses_single_start_query_for_one_root() -> None:
     client = Mock(spec=Neo4jClient)
     client.run_write.return_value = None
     client.run_read.side_effect = [
-        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CONTAINS"}],
+        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CALLS"}],
         [],
         [],
     ]
@@ -293,3 +293,60 @@ def test_fetch_taint_sources_deduplicates_root_ids_before_query() -> None:
 
     _, params = client.run_read.call_args_list[1].args
     assert params == {"root_ids": ["node-1", "node-2"]}
+
+
+def test_fetch_enclosing_class_nodes_returns_class_for_root_ids() -> None:
+    """Enclosing-class lookup returns the containing class node, deduped."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "CONTAINS"}],
+        [
+            {
+                "id": "class-1",
+                "file_path": "src/app.py",
+                "node_file_path": "src/app.py",
+                "line_start": 1,
+                "line_end": 1,
+                "node_kind": "ClassNode",
+                "name": "Service",
+                "depth": 1,
+                "finding_evidence_score": 0.0,
+                "security_path_score": 0.0,
+            }
+        ],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    rows = repository.fetch_enclosing_class_nodes(["method-1", "method-2"])
+
+    _, params = client.run_read.call_args_list[1].args
+    assert params == {"root_ids": ["method-1", "method-2"]}
+    assert rows == [
+        CodeContextNode(
+            identifier=NodeID("class-1"),
+            node_kind="ClassNode",
+            name="Service",
+            file_path=Path("src/app.py"),
+            line_start=1,
+            line_end=1,
+            depth=1,
+            finding_evidence_score=0.0,
+            security_path_score=0.0,
+        )
+    ]
+
+
+def test_fetch_enclosing_class_nodes_skips_query_when_no_root_ids() -> None:
+    """Empty input must short-circuit before Neo4j read."""
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.return_value = [{"relationshipType": "CONTAINS"}]
+
+    repository = ContextRepository(client=client)
+
+    assert repository.fetch_enclosing_class_nodes([]) == []
+    assert client.run_read.call_count == 1  # only the startup relationship-types lookup

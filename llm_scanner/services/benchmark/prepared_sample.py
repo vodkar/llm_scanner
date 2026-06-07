@@ -68,6 +68,7 @@ def compute_sample_cache_key(
     max_call_depth: int,
     files_spans: list[Any],
     loader_options: Mapping[str, Any] | None = None,
+    exclude_test_nodes: bool = True,
 ) -> str:
     """Compute a stable SHA1 cache key for the prepared-sample artefact.
 
@@ -76,6 +77,8 @@ def compute_sample_cache_key(
     row selections at the same commit produce different root IDs.
     ``loader_options`` covers per-run filters such as ``min_score`` so caches
     do not collide across runs with different filtering.
+    ``exclude_test_nodes`` is included because it changes the cached neighborhood
+    superset, so toggling it must not reuse a stale cache.
     """
 
     spans_repr: list[tuple[str, tuple[tuple[int, int], ...]]] = []
@@ -93,6 +96,7 @@ def compute_sample_cache_key(
         f"depth={max_call_depth}",
         repr(spans_repr),
         repr(sorted((loader_options or {}).items())),
+        f"exclude_test_nodes={exclude_test_nodes}",
     )
     digest = hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
     return digest

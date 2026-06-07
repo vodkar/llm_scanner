@@ -11,6 +11,7 @@ from tree_sitter import Node as TSNode
 from models.base import NodeID
 from models.edges.base import RelationshipBase
 from models.edges.call_graph import CallGraphCalledBy, CallGraphCalls
+from models.edges.control_flow import ControlFlowContains
 from models.edges.data_flow import (
     DataFlowDefinedBy,
     DataFlowFlowsTo,
@@ -700,11 +701,9 @@ class NodeProcessor(BaseModel):
 
             for node_id in nodes:
                 edges.append(
-                    DataFlowDefinedBy(
+                    ControlFlowContains(
                         src=class_node.identifier,
                         dst=node_id,
-                        type=DataFlowRelationshipType.DEFINED_BY,
-                        operation=DefinitionOperation.ASSIGNMENT,
                     )
                 )
             nodes[class_node.identifier] = class_node

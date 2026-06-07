@@ -14,6 +14,7 @@ from repositories.queries import (
     code_bfs_nodes_query,
     code_nodes_by_file_span_query,
     code_traversal_relationship_types,
+    enclosing_class_nodes_query,
     neighborhood_edges_query,
     path_fill_relationship_types,
     taint_score_from_hop,
@@ -336,6 +337,30 @@ class ContextRepository(BaseModel):
             rel_types,
         )
         return edges
+
+    def fetch_enclosing_class_nodes(self, root_ids: list[str]) -> list[CodeContextNode]:
+        """Return the class nodes that structurally contain the given root nodes.
+
+        After CONTAINS edges were removed from neighborhood BFS traversal, the
+        enclosing ``class X(...):`` header is no longer reached by expansion.
+        This bounded lookup re-attaches it (one class per containing scope, no
+        sibling methods), so a method's context keeps its class header.
+
+        Args:
+            root_ids: Identifiers of root code nodes.
+
+        Returns:
+            Containing class nodes (deduplicated).
+        """
+
+        if not root_ids:
+            return []
+
+        rows = self.client.run_read(
+            enclosing_class_nodes_query(),
+            {"root_ids": sorted(set(root_ids))},
+        )
+        return self._build_context_nodes(rows)
 
     def fetch_taint_sources(
         self,

@@ -76,10 +76,22 @@ FINDING_RELATIONSHIP_QUERIES: Final[dict[str, LiteralString]] = {
 }
 
 
-CODE_TRAVERSAL_RELATIONSHIP_TYPES: Final[tuple[str, ...]] = (
+# Full set of relationship types the parser may emit. Used to build the
+# per-type ingest queries (RELATIONSHIP_QUERY_BY_TYPE), so every emitted edge —
+# including structural ControlFlow CONTAINS — has a write query.
+CODE_RELATIONSHIP_TYPES: Final[tuple[str, ...]] = (
     *tuple(DataFlowRelationshipType),
     *tuple(CallGraphRelationshipType),
     *tuple(ControlFlowRelationshipType),
+)
+
+# Edge types expanded during neighborhood BFS. Structural ControlFlow CONTAINS
+# (class -> member) is intentionally excluded: traversing it undirected turns
+# the class node into a hub that floods the neighborhood with sibling methods
+# instead of following the data/control-flow call chain.
+CODE_TRAVERSAL_RELATIONSHIP_TYPES: Final[tuple[str, ...]] = (
+    *tuple(DataFlowRelationshipType),
+    *tuple(CallGraphRelationshipType),
 )
 
 CODE_NODES_BY_FILE_LINE_QUERY: Final[LiteralString] = (
@@ -129,7 +141,7 @@ def _relationship_query(rel_type: str) -> LiteralString:
 
 
 RELATIONSHIP_QUERY_BY_TYPE: Final[dict[str, LiteralString]] = {
-    rel_type: _relationship_query(rel_type) for rel_type in CODE_TRAVERSAL_RELATIONSHIP_TYPES
+    rel_type: _relationship_query(rel_type) for rel_type in CODE_RELATIONSHIP_TYPES
 }
 
 
@@ -284,6 +296,9 @@ PATH_FILL_RELATIONSHIP_TYPES: Final[tuple[str, ...]] = (
     DataFlowRelationshipType.DEFINED_BY,
     DataFlowRelationshipType.USED_BY,
     DataFlowRelationshipType.SANITIZED_BY,
+    # Keeps a fetched enclosing-class node connected to its member so path-fill
+    # does not treat the class header as disconnected.
+    ControlFlowRelationshipType.CONTAINS,
 )
 
 
@@ -293,6 +308,27 @@ NEIGHBORHOOD_EDGES_QUERY: Final[LiteralString] = (
     "AND type(r) IN $edge_types "
     "RETURN s.id AS src, d.id AS dst, type(r) AS rel"
 )
+
+
+ENCLOSING_CLASS_NODES_QUERY: Final[LiteralString] = (
+    "MATCH (c:Code:Class)-[:CONTAINS]->(n:Code) "
+    "WHERE n.id IN $root_ids "
+    "RETURN DISTINCT c.id AS id, c.file_path AS node_file_path, "
+    "c.line_start AS line_start, c.line_end AS line_end, c.name AS name, "
+    "c.node_kind AS node_kind, 1 AS depth, "
+    "c.finding_evidence_score AS finding_evidence_score, "
+    "c.security_path_score AS security_path_score"
+)
+
+
+def enclosing_class_nodes_query() -> LiteralString:
+    """Return a query for the class nodes that structurally contain root nodes.
+
+    Used to re-attach the enclosing ``class X(...):`` header to a method's
+    context after CONTAINS edges were removed from neighborhood BFS traversal.
+    """
+
+    return ENCLOSING_CLASS_NODES_QUERY
 
 
 def neighborhood_edges_query() -> LiteralString:

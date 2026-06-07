@@ -50,6 +50,10 @@ class _StubRepo(ContextRepository):
         del node_ids, edge_types
         return list(self.edges)
 
+    def fetch_enclosing_class_nodes(self, root_ids: list[str]) -> list[CodeContextNode]:
+        del root_ids
+        return []
+
 
 class _ScoreSortStrategy(ContextNodeRankingStrategy):
     """Sort by anchor first, then by descending score."""
