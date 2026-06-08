@@ -58,5 +58,5 @@ def test_cache_key_defaults_match_explicit_hub_defaults() -> None:
     """Omitting the hub flags matches the explicit defaults."""
 
     assert compute_sample_cache_key(**_BASE_KWARGS) == compute_sample_cache_key(
-        **_BASE_KWARGS, damp_call_graph_hubs=True, hub_fanin_threshold=12
+        **_BASE_KWARGS, damp_call_graph_hubs=True, hub_fanin_threshold=8
     )

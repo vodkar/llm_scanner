@@ -70,7 +70,7 @@ class CleanVulBenchmarkService(BaseModel):
     neo4j_config: Neo4jConfig = Field(default_factory=Neo4jConfig)
     max_call_depth: int = Field(ge=0, description="Maximum call graph depth for context assembly")
     token_budget: int = 8192
-    delete_checkouts: bool = True
+    delete_checkouts: bool = False
     exclude_test_nodes: bool = Field(
         default=True,
         description=(
@@ -86,7 +86,7 @@ class CleanVulBenchmarkService(BaseModel):
         ),
     )
     hub_fanin_threshold: int = Field(
-        default=12,
+        default=8,
         ge=1,
         description="Fan-in degree at/above which a node is treated as a hub.",
     )

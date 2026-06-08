@@ -70,7 +70,7 @@ def compute_sample_cache_key(
     loader_options: Mapping[str, Any] | None = None,
     exclude_test_nodes: bool = True,
     damp_call_graph_hubs: bool = True,
-    hub_fanin_threshold: int = 12,
+    hub_fanin_threshold: int = 8,
 ) -> str:
     """Compute a stable SHA1 cache key for the prepared-sample artefact.
 

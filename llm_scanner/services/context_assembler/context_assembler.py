@@ -1,3 +1,4 @@
+import ast
 import logging
 import re
 from collections import defaultdict, deque
@@ -41,7 +42,7 @@ class ContextAssemblerService(BaseModel):
     cached_neighborhood_edges: list[tuple[NodeID, NodeID, str]] | None = None
     exclude_test_nodes: bool = True
     damp_call_graph_hubs: bool = True
-    hub_fanin_threshold: int = 12
+    hub_fanin_threshold: int = 8
 
     _test_file_cache: dict[Path, bool] = PrivateAttr(default_factory=dict)
 
@@ -378,6 +379,7 @@ class ContextAssemblerService(BaseModel):
             for line_number in range(node.line_start, node.line_end + 1):
                 file_lines_to_read[node.file_path].add(line_number)
 
+        full_lines: dict[Path, list[str]] = {}
         read_lines: dict[Path, dict[int, str]] = defaultdict(dict)
         for file_path, line_numbers in file_lines_to_read.items():
             try:
@@ -394,6 +396,11 @@ class ContextAssemblerService(BaseModel):
         selected_ids = self._select_nodes_with_path_fill(nodes, read_lines)
 
         lines_to_keep = self._lines_for_selection(nodes, selected_ids)
+        root_lines = self._lines_for_selection(
+            nodes, {node.identifier for node in nodes if node.depth == 0}
+        )
+        lines_to_keep = self._complete_structure(full_lines, lines_to_keep, root_lines)
+        self._ensure_line_text(read_lines, full_lines, lines_to_keep)
         candidate_text = self._render_text(read_lines, lines_to_keep)
 
         if not candidate_text:
@@ -446,6 +453,86 @@ class ContextAssemblerService(BaseModel):
 
         _LOGGER.debug("Selected %d nodes after path-fill", len(selected_ids))
         return selected_ids
+
+    @classmethod
+    def _complete_structure(
+        cls,
+        full_lines: dict[Path, list[str]],
+        lines_to_keep: dict[Path, set[int]],
+        root_lines: dict[Path, set[int]],
+    ) -> dict[Path, set[int]]:
+        """Make each file's kept-line set structurally coherent (issue D).
+
+        For every kept body line, the enclosing ``def``/``class`` header lines are
+        added (so methods/statements never render without their scope); headers of
+        scopes with no kept body line are dropped (so no bare ``class X:`` is
+        emitted), except lines belonging to a root node, which are always kept.
+        Files that do not parse as Python are returned unchanged.
+        """
+
+        completed: dict[Path, set[int]] = {}
+        for file_path, kept in lines_to_keep.items():
+            raw = full_lines.get(file_path)
+            scopes = cls._parse_file_scopes("\n".join(raw)) if raw else None
+            if scopes is None:
+                completed[file_path] = set(kept)
+                continue
+
+            protected = root_lines.get(file_path, set())
+            result = set(kept)
+            for header_lines, body_start, body_end in scopes:
+                if any(body_start <= line <= body_end for line in kept):
+                    result |= header_lines
+                else:
+                    result -= header_lines - protected
+            completed[file_path] = result
+        return completed
+
+    @staticmethod
+    def _parse_file_scopes(
+        source: str,
+    ) -> list[tuple[frozenset[int], int, int]] | None:
+        """Return ``(header_lines, body_start, body_end)`` for each def/class scope.
+
+        ``header_lines`` covers decorators and the signature up to the first body
+        statement; ``body_start``/``body_end`` bound the scope body. Returns
+        ``None`` when the source is not parseable Python.
+        """
+
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            return None
+
+        scopes: list[tuple[frozenset[int], int, int]] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                continue
+            if not node.body:
+                continue
+            start = node.lineno
+            for decorator in node.decorator_list:
+                start = min(start, decorator.lineno)
+            first_body = node.body[0]
+            header_lines = frozenset(range(start, first_body.lineno))
+            body_end = node.end_lineno or first_body.lineno
+            scopes.append((header_lines, first_body.lineno, body_end))
+        return scopes
+
+    @classmethod
+    def _ensure_line_text(
+        cls,
+        read_lines: dict[Path, dict[int, str]],
+        full_lines: dict[Path, list[str]],
+        lines_to_keep: dict[Path, set[int]],
+    ) -> None:
+        """Populate ``read_lines`` with sanitized text for any added header lines."""
+
+        for file_path, line_numbers in lines_to_keep.items():
+            raw = full_lines.get(file_path, [])
+            for line_number in line_numbers:
+                if line_number not in read_lines[file_path] and 1 <= line_number <= len(raw):
+                    read_lines[file_path][line_number] = cls._sanitize_line(raw[line_number - 1])
 
     def _build_path_fill_adjacency(
         self, ranked_nodes: list[CodeContextNode]
