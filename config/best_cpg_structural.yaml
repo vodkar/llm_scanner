@@ -1,12 +1,12 @@
 combiner:
-  finding_evidence: 0.249816047538945
-  security_path: 0.4802857225639665
-  taint: 0.39279757672456206
-  context: 0.3394633936788146
+  finding_evidence: 0.21355247673358246
+  security_path: 0.291985169225854
+  taint: 0.4648789065855552
+  context: 0.4209372119802468
 context_breakdown:
-  depth: 0.29361118426546196
-  structure: 0.1201975341512912
-  file_prior: 0.07613762547568977
+  depth: 0.7836237369509871
+  structure: 0.20515586582063358
+  file_prior: 0.488458445637144
 finding_evidence_breakdown:
   severity: 0.5
   confidence: 0.3
@@ -47,21 +47,21 @@ render_kind_scores:
 security_boost_weight: 1.0
 security_tier_threshold: 0.5
 edge_type_weights:
-  flows_to: 0.9464704583099741
-  sanitized_by: 0.8005575058716043
-  calls: 0.7248435466776273
-  called_by: 0.31235069657748143
-  defined_by: 0.7849549260809972
-  used_by: 0.6994655844802531
-  contains: 0.20616955533913808
+  flows_to: 0.7863025826388782
+  sanitized_by: 0.7785070137878005
+  calls: 0.4637573927428973
+  called_by: 0.7052957111010918
+  defined_by: 0.49437605826237235
+  used_by: 0.6621413043155503
+  contains: 0.28216944005341815
 edge_decay_rates:
-  flows_to: 0.6636387385224852
-  sanitized_by: 0.6641915784487018
-  calls: 0.621696897183815
-  called_by: 0.7099025726528951
-  defined_by: 0.6727780074568463
-  used_by: 0.6164916560792167
-  contains: 0.6059264473611897
-sanitizer_bypass_bonus: 0.06974693032602092
-sanitizer_presence_damp: 0.29214464853521815
+  flows_to: 0.6223550334502155
+  sanitized_by: 0.9281019047794807
+  calls: 0.5329818980021294
+  called_by: 0.8176035647758463
+  defined_by: 0.7371890799169452
+  used_by: 0.6816737181377535
+  contains: 0.4506070527292895
+sanitizer_bypass_bonus: 0.41598413535251544
+sanitizer_presence_damp: 0.5522254300351556
 source_sink_path_max_depth: 4
