@@ -388,6 +388,7 @@ class ContextAssemblerService(BaseModel):
                 _LOGGER.warning("Cannot read source file %s; skipping its lines", file_path)
                 continue
             lines = text.splitlines()
+            full_lines[file_path] = lines
             for line_number in line_numbers:
                 if line_number > len(lines):
                     continue
