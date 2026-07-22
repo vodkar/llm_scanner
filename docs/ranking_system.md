@@ -63,7 +63,32 @@ $$
 
 This term lets the ranker upgrade nodes that look like sinks/sources/guards even in the absence of analyzer findings, while still rewarding the corroboration when both signals coincide.
 
-### 2.3 Context score $S_{c}$
+### 2.3 Taint score $S_{t}$
+
+The taint score measures how directly a node participates in the **backward data-flow** that feeds the root vulnerability. Prior to ranking, the assembler issues a single Cypher query that traverses `FLOWS_TO` and `DEFINED_BY` edges *in reverse* from the root nodes up to a configurable depth $d_{\max}$ (default 6), recording for each reachable node its **minimum hop distance** $h(n)$ from any root. The score is then a discrete hop-decay lookup:
+
+$$
+S_{t}(n) = \tau(h(n))
+$$
+
+where $\tau$ is the fixed table `TAINT_HOP_DECAY` (see Sec. 6):
+
+$$
+\tau(h) = \begin{cases}
+1.00 & h = 1 \\
+0.70 & h = 2 \\
+0.50 & h = 3 \\
+0.35 & h = 4 \\
+0.20 & h > 4 \\
+0.00 & \text{node not reachable within } d_{\max}
+\end{cases}
+$$
+
+Traversal is restricted to `FLOWS_TO` (a value flows into the successor) and `DEFINED_BY` (a variable is bound by an assignment or parameter) — the two edge types that carry taint in the CPG. All other relationship types (`CALLS`, `CONTAINS`, etc.) are intentionally ignored, so $S_t$ responds only to dataflow reachability and is insensitive to structural proximity. When a node is reachable from multiple root locations, the minimum hop is taken, so $S_t$ always reflects the *closest* taint connection.
+
+Root nodes themselves (depth 0) are not matched by the backward query — they are the traversal anchors — and therefore receive $S_t = 0$; their primacy in the prompt is handled by the depth-0 sort-key pinning described in Sec. 3.1. Nodes outside the $d_{\max}$ horizon also receive $S_t = 0$, effectively capping the taint signal to the local neighborhood.
+
+### 2.4 Context score $S_{c}$
 
 The context score is itself a weighted sum of three sub-scores:
 
@@ -95,7 +120,7 @@ $$
 
 with $M(n) \in \{0, 0.5, 1\}$ scoring whether the node lives in the same module as an *anchor* (the file(s) of the shallowest, root-most nodes), and a penalty when the file looks generated (filename suffix, path marker, or "do not edit" header). $P(n)$ is then floored at 0.
 
-### 2.4 Aggregation and de-duplication
+### 2.5 Aggregation and de-duplication
 
 Before scoring, `_aggregate_context_nodes` collapses repeated occurrences of the same `NodeID` into one entry, retaining the **shallowest** depth and **summing the repeat counts**. This step turns the multiset of BFS visits into a unique node set whose $r(n)$ encodes recurrence frequency — a cheap proxy for centrality in the local neighborhood subgraph.
 
@@ -194,6 +219,19 @@ v_{\text{default}} & d > 4
 $$
 
 with $v_0 > v_1 > \cdots > v_4 > v_{\text{default}}$ — strictly monotone. Values past the explicit table fall through to a single default. The same table is used as a fallback inside the CPG-structural strategy when `edge_depths` is empty.
+
+**Taint hop-decay $\tau(h)$.** The taint score in $S_t$ is computed from an analogous but independent fixed table `TAINT_HOP_DECAY`:
+
+$$
+\tau : \mathbb{N} \cup \{0\} \to [0,1], \qquad
+\tau(h) = \begin{cases}
+v_h & h \in \{1, 2, 3, 4\} \\
+\tau_{\text{default}} & h > 4 \\
+0 & \text{node unreachable}
+\end{cases}
+$$
+
+with $\tau(1) > \tau(2) > \tau(3) > \tau(4) > \tau_{\text{default}}$ — also strictly monotone, but calibrated to dataflow proximity rather than BFS hops in the full neighborhood graph. Unlike the combiner weight `taint` (which is exposed to the YAML tuner), the decay values themselves are fixed domain constants: a node 1 hop upstream on the taint path is always scored higher than one 3 hops upstream.
 
 **Severity tiers.** Both $\sigma$ (severity score) and $\kappa$ (confidence proxy) are total functions on a three-element domain:
 
