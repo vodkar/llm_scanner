@@ -203,6 +203,42 @@ def test_fetch_with_edge_paths_merges_per_edge_type_depths() -> None:
     assert nodes_by_id[NodeID("node-2")].edge_depths == {"CALLS": 2}
 
 
+def test_fetch_with_edge_paths_counts_repeats_across_roots() -> None:
+    """A node reached from N distinct roots must carry ``repeats == N - 1``."""
+
+    def _row(start_id: str, node_id: str, depth: int) -> dict[str, object]:
+        return {
+            "start_id": start_id,
+            "id": node_id,
+            "depth": depth,
+            "file_path": "src/app.py",
+            "line_start": 1,
+            "line_end": 5,
+            "node_kind": "FunctionNode",
+            "name": "alpha",
+            "finding_evidence_score": 0.0,
+            "security_path_score": 0.0,
+        }
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CALLS"}],
+        # FLOWS_TO rows: "shared" reached from both roots.
+        [_row("root-1", "shared", 1), _row("root-2", "shared", 2)],
+        # CALLS rows: "shared" again from root-1 (same root, no extra repeat),
+        # "solo" only from root-2.
+        [_row("root-1", "shared", 1), _row("root-2", "solo", 1)],
+    ]
+
+    repository = ContextRepository(client=client)
+
+    nodes = repository.fetch_code_neighborhood_with_edge_paths(["root-1", "root-2"], 3)
+
+    repeats_by_id = {str(node.identifier): node.repeats for node in nodes}
+    assert repeats_by_id == {"shared": 1, "solo": 0}
+
+
 def test_fetch_with_edge_paths_returns_empty_for_empty_start_ids() -> None:
     """No start IDs means no Neo4j read should happen and an empty list returns."""
 

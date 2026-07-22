@@ -380,10 +380,15 @@ class ContextAssemblerService(BaseModel):
 
         read_lines: dict[Path, dict[int, str]] = defaultdict(dict)
         for file_path, line_numbers in file_lines_to_read.items():
-            lines = (
-                (repo_path / file_path).read_text(encoding="utf-8", errors="ignore").splitlines()
-            )
+            try:
+                text = (repo_path / file_path).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                _LOGGER.warning("Cannot read source file %s; skipping its lines", file_path)
+                continue
+            lines = text.splitlines()
             for line_number in line_numbers:
+                if line_number > len(lines):
+                    continue
                 read_lines[file_path][line_number] = self._sanitize_line(lines[line_number - 1])
 
         selected_ids = self._select_nodes_with_path_fill(nodes, read_lines)
@@ -550,8 +555,9 @@ class ContextAssemblerService(BaseModel):
         parts: list[str] = []
         seen_boilerplate: set[str] = set()
         for file_path, lines in lines_to_keep.items():
+            file_lines = read_lines.get(file_path, {})
             for line_number in sorted(lines):
-                line = read_lines[file_path][line_number].rstrip()
+                line = file_lines.get(line_number, "").rstrip()
                 if not line:
                     continue
                 if any(pattern.match(line) for pattern in _BOILERPLATE_LINE_PATTERNS):
@@ -563,11 +569,31 @@ class ContextAssemblerService(BaseModel):
 
     @staticmethod
     def _sanitize_line(line: str) -> str:
-        """Trim a line to remove leading/trailing whitespace and comment markers."""
+        """Trim trailing whitespace and strip a trailing ``#`` comment.
+
+        Only a ``#`` outside single/double quotes starts a comment, so string
+        literals containing ``#`` (URLs, colors, regexes) are kept intact.
+        """
 
         if "#" not in line:
             return line.rstrip()
-        return line[: line.index("#")].rstrip()
+
+        quote_char: str | None = None
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if quote_char is not None:
+                if char == "\\":
+                    index += 2
+                    continue
+                if char == quote_char:
+                    quote_char = None
+            elif char in "'\"":
+                quote_char = char
+            elif char == "#":
+                return line[:index].rstrip()
+            index += 1
+        return line.rstrip()
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token usage for the supplied text.

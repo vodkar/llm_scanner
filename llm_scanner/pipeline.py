@@ -107,6 +107,9 @@ class GeneralScannerPipeline(BaseModel):
             if not context_nodes:
                 _LOGGER.warning("No context nodes found for root_id %s; skipping", root_id)
                 continue
+            if assembler.ranking_strategy.requires_taint_scores:
+                taint_scores = assembler.fetch_taint_scores([root_id])
+                context_nodes = assembler.apply_taint_scores(context_nodes, taint_scores)
             context = assembler.assemble_from_nodes(project_root, context_nodes)
             root_node = next(
                 (n for n in context_nodes if str(n.identifier) == root_id), context_nodes[0]

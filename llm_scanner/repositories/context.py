@@ -1,4 +1,5 @@
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, LiteralString
 
@@ -247,6 +248,7 @@ class ContextRepository(BaseModel):
         unique_start_ids: tuple[str, ...] = tuple(sorted(set(start_node_ids)))
         nodes_by_id: dict[NodeID, CodeContextNode] = {}
         ordered_node_ids: list[NodeID] = []
+        start_ids_by_node: dict[NodeID, set[str]] = defaultdict(set)
 
         for edge_type in self.traversal_relationship_types:
             if len(unique_start_ids) == 1:
@@ -264,6 +266,9 @@ class ContextRepository(BaseModel):
             for row in rows:
                 node_id = NodeID(str(row["id"]))
                 row_depth = int(row.get("depth", 0))
+                start_id_raw = row.get("start_id")
+                if start_id_raw is not None:
+                    start_ids_by_node[node_id].add(str(start_id_raw))
                 existing = nodes_by_id.get(node_id)
                 if existing is None:
                     depths: dict[str, int] = {edge_type: row_depth}
@@ -288,6 +293,11 @@ class ContextRepository(BaseModel):
                 if existing_edge_depth is None or row_depth < existing_edge_depth:
                     current_edge_depths[edge_type] = row_depth
                 existing.edge_depths = current_edge_depths
+
+        # Mirror _build_context_nodes semantics: a node reached from N distinct
+        # roots carries repeats = N - 1, feeding the ranking repeat bonus.
+        for node_id, seen_start_ids in start_ids_by_node.items():
+            nodes_by_id[node_id].repeats = max(0, len(seen_start_ids) - 1)
 
         return [nodes_by_id[node_id] for node_id in ordered_node_ids]
 
