@@ -25,5 +25,6 @@ for job in "${JOBS[@]}"; do
   uv run llm-scanner export-best-coefficients \
     --strategy "$strategy" \
     --study-name "$study" \
-    --output "$output"
+    --output-best "$output" \
+    --output-last "${output%.yaml}_last.yaml"
 done

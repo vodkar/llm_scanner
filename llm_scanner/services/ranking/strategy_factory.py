@@ -208,3 +208,70 @@ def build_strategy_factories(
     if missing:
         raise ValueError(f"Unknown ranking strategy keys: {sorted(missing)}")
     return {name: factory for name, factory in factories.items() if name in requested}
+
+
+def build_combined_strategy_factories(
+    token_budget: int,
+    seed: int | None = None,
+    cpg_structural_best: Path | None = None,
+    cpg_structural_last: Path | None = None,
+    budgeted_ranking_config_best: Path | None = None,
+    budgeted_ranking_config_last: Path | None = None,
+    multiplicative_amplification_best: Path | None = None,
+    multiplicative_amplification_last: Path | None = None,
+    current_best: Path | None = None,
+    current_last: Path | None = None,
+) -> dict[str, RankingStrategyFactory]:
+    """Build factories for all ranking strategies plus ``*_last`` coefficient variants.
+
+    Combines the standard factory set (from ``build_strategy_factories``) with four
+    additional ``<strategy>_last`` entries that use last-trial tuned coefficients.
+    Running ``CleanVulBenchmarkService.build_all_ranking_strategies`` with this dict
+    produces both best- and last-coefficient datasets from a single sample pass,
+    guaranteeing the two sets are drawn from identical samples.
+
+    Args:
+        token_budget: Token budget forwarded to evidence-budgeted strategies.
+        seed: Optional random seed forwarded to the random-picking strategy.
+        cpg_structural_best: Best-tuned coefficients for ``cpg_structural``.
+        cpg_structural_last: Last-trial coefficients for ``cpg_structural``.
+        budgeted_ranking_config_best: Best-tuned ``BudgetedRankingConfig``.
+        budgeted_ranking_config_last: Last-trial ``BudgetedRankingConfig``.
+        multiplicative_amplification_best: Best-tuned coefficients for
+            ``multiplicative_amplification``.
+        multiplicative_amplification_last: Last-trial coefficients for
+            ``multiplicative_amplification``.
+        current_best: Best-tuned coefficients for the ``current`` strategy.
+        current_last: Last-trial coefficients for the ``current`` strategy.
+
+    Returns:
+        Combined dict of strategy name → factory, including ``*_last`` variants.
+    """
+    base = build_strategy_factories(
+        token_budget=token_budget,
+        seed=seed,
+        cpg_structural_coefficients=cpg_structural_best,
+        budgeted_ranking_config_path=budgeted_ranking_config_best,
+        multiplicative_amplification_coefficients=multiplicative_amplification_best,
+        current_coefficients=current_best,
+    )
+    last: dict[str, RankingStrategyFactory] = {
+        f"{RankingStrategies.CPG_STRUCTURAL}_last": partial(
+            _build_cpg_structural_ranking_strategy,
+            cpg_structural_coefficients=cpg_structural_last,
+        ),
+        f"{RankingStrategies.EVIDENCE_BUDGETED}_last": partial(
+            _build_evidence_budgeted_strategy,
+            token_budget=token_budget,
+            budgeted_ranking_config_path=budgeted_ranking_config_last,
+        ),
+        f"{RankingStrategies.MULTIPLICATIVE_AMPLIFICATION}_last": partial(
+            _build_multiplicative_amplification_ranking_strategy,
+            multiplicative_amplification_coefficients=multiplicative_amplification_last,
+        ),
+        f"{RankingStrategies.CURRENT}_last": partial(
+            _build_current_ranking_strategy,
+            current_coefficients=current_last,
+        ),
+    }
+    return {**base, **last}

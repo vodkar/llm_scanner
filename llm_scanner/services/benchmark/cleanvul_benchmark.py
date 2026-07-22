@@ -1,4 +1,5 @@
 import logging
+import random
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -424,8 +425,8 @@ class CleanVulBenchmarkService(BaseModel):
             min_score=self.min_score,
         )
         candidate_rows = loader.fetch_entries()
-        # rng = random.Random(self.seed)
-        # rng.shuffle(candidate_rows)
+        rng = random.Random(self.seed)
+        rng.shuffle(candidate_rows)
 
         samples_by_strategy: dict[str, list[BenchmarkSample]] = {
             strategy_name: [] for strategy_name in strategy_factories

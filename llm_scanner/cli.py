@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Annotated, Any, Final, Literal, LiteralString
+from typing import Annotated, Any, Final, Literal
 
 import optuna
 import typer
@@ -54,6 +54,7 @@ from services.ranking.ranking_config import RankingCoefficients
 from services.ranking.strategy_factory import (
     RankingStrategies,
     _build_current_ranking_strategy,
+    build_combined_strategy_factories,
     build_strategy_factories,
 )
 
@@ -76,7 +77,132 @@ DEFAULT_STUDY_DIR: Final[Path] = ROOT_DIR / "data" / "tuning_runs"
 DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
     ROOT_DIR / "config" / "ranking_coefficients_cpg_structural.yaml"
 )
-DEFAULT_TOKEN_BUDGET: Final = 10000
+DEFAULT_TOKEN_BUDGET: Final = 2048
+DEFAULT_LAST_CPG_STRUCTURAL: Final[Path] = ROOT_DIR / "config" / "best_cpg_structural_last.yaml"
+DEFAULT_LAST_CURRENT: Final[Path] = ROOT_DIR / "config" / "best_current_last.yaml"
+DEFAULT_LAST_EVIDENCE_BUDGETED: Final[Path] = (
+    ROOT_DIR / "config" / "best_evidence_budgeted_last.yaml"
+)
+DEFAULT_LAST_MULTIPLICATIVE_AMPLIFICATION: Final[Path] = (
+    ROOT_DIR / "config" / "best_multiplicative_amplification_last.yaml"
+)
+
+
+# ── Typer annotation helpers ─────────────────────────────────────────────────
+
+
+def _readable_file_opt(cli_name: str, help_text: str) -> Any:
+    return typer.Option(
+        cli_name,
+        help=help_text,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+    )
+
+
+def _writable_file_opt(cli_name: str, help_text: str) -> Any:
+    return typer.Option(
+        cli_name,
+        help=help_text,
+        file_okay=True,
+        dir_okay=False,
+        writable=True,
+        resolve_path=True,
+    )
+
+
+def _writable_dir_opt(cli_name: str, help_text: str) -> Any:
+    return typer.Option(
+        cli_name,
+        help=help_text,
+        file_okay=False,
+        dir_okay=True,
+        writable=True,
+        resolve_path=True,
+    )
+
+
+def _readable_dir_opt(cli_name: str, help_text: str) -> Any:
+    return typer.Option(
+        cli_name,
+        help=help_text,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+    )
+
+
+def _readable_file_arg(help_text: str) -> Any:
+    return typer.Argument(
+        help=help_text,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+    )
+
+
+def _readable_dir_arg(help_text: str) -> Any:
+    return typer.Argument(
+        help=help_text,
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        readable=True,
+        resolve_path=True,
+    )
+
+
+# ── Shared implementation helpers ────────────────────────────────────────────
+
+
+def _run_compare_rankings(
+    ctx: typer.Context,
+    dataset_path: Path,
+    sample_count: int,
+    output_dir: Path,
+    repo_cache_dir: Path,
+    seed: int | None,
+    max_call_depth: int,
+    token_budget: int,
+    cpg_structural_coefficients: Path | None,
+    budgeted_ranking_config: Path | None,
+    multiplicative_amplification_coefficients: Path | None,
+    current_coefficients: Path | None,
+) -> None:
+    neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
+    strategy_factories = build_strategy_factories(
+        token_budget=token_budget,
+        seed=seed,
+        cpg_structural_coefficients=cpg_structural_coefficients,
+        budgeted_ranking_config_path=budgeted_ranking_config,
+        multiplicative_amplification_coefficients=multiplicative_amplification_coefficients,
+        current_coefficients=current_coefficients,
+    )
+    service = CleanVulBenchmarkService(
+        dataset_path=dataset_path,
+        output_dir=output_dir,
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        seed=seed,
+        neo4j_config=neo4j_config,
+        max_call_depth=max_call_depth,
+        token_budget=token_budget,
+        strategy_factories=strategy_factories,
+    )
+    dataset_paths, entries_path = service.build_all_ranking_strategies()
+    typer.secho(
+        f"Wrote benchmark datasets to {dataset_paths}, entries to {entries_path}",
+        fg=typer.colors.GREEN,
+    )
+
+
+# ── CLI commands ─────────────────────────────────────────────────────────────
 
 
 @app.callback()
@@ -130,15 +256,7 @@ def main(
 def load_sample(
     ctx: typer.Context,
     sample_path: Annotated[
-        Path,
-        typer.Argument(
-            help="Path to the Python file to load into Neo4j.",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
-        ),
+        Path, _readable_file_arg("Path to the Python file to load into Neo4j.")
     ] = DEFAULT_SAMPLE_FILE,
 ) -> None:
     """Parse a single file and load its CPG into Neo4j.
@@ -187,17 +305,7 @@ def load(
 @app.command("scan")
 def scan(  # noqa: C901
     ctx: typer.Context,
-    src: Annotated[
-        Path,
-        typer.Argument(
-            help="Path to the project root to scan.",
-            exists=True,
-            file_okay=False,
-            dir_okay=True,
-            readable=True,
-            resolve_path=True,
-        ),
-    ],
+    src: Annotated[Path, _readable_dir_arg("Path to the project root to scan.")],
     mode: Annotated[
         str,
         typer.Option(
@@ -208,14 +316,9 @@ def scan(  # noqa: C901
     ] = "full",
     diff_file: Annotated[
         Path | None,
-        typer.Option(
+        _readable_file_opt(
             "--diff-file",
-            help="Path to a git unified diff file (diff mode only; omit to read from stdin).",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
+            "Path to a git unified diff file (diff mode only; omit to read from stdin).",
         ),
     ] = None,
     strategy: Annotated[
@@ -264,25 +367,11 @@ def scan(  # noqa: C901
     ] = 2048,
     output_json: Annotated[
         Path | None,
-        typer.Option(
-            "--output-json",
-            help="Write the JSON report to this path.",
-            file_okay=True,
-            dir_okay=False,
-            writable=True,
-            resolve_path=True,
-        ),
+        _writable_file_opt("--output-json", "Write the JSON report to this path."),
     ] = None,
     output_sarif: Annotated[
         Path | None,
-        typer.Option(
-            "--output-sarif",
-            help="Write a SARIF 2.1.0 report to this path.",
-            file_okay=True,
-            dir_okay=False,
-            writable=True,
-            resolve_path=True,
-        ),
+        _writable_file_opt("--output-sarif", "Write a SARIF 2.1.0 report to this path."),
     ] = None,
     no_fail: Annotated[
         bool,
@@ -382,42 +471,16 @@ def scan(  # noqa: C901
 @app.command("build-cleanvul-benchmark")
 def build_cleanvul_benchmark(
     ctx: typer.Context,
-    dataset_path: Annotated[
-        Path,
-        typer.Argument(
-            help="Path to the CleanVul CSV or Parquet file.",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
-        ),
-    ],
+    dataset_path: Annotated[Path, _readable_file_arg("Path to the CleanVul CSV or Parquet file.")],
     sample_count: Annotated[
         int,
         typer.Option("-n", "--samples", help="Number of samples to generate."),
     ] = 50,
     output_dir: Annotated[
-        Path,
-        typer.Option(
-            "--output-dir",
-            help="Directory to write benchmark JSON files.",
-            file_okay=False,
-            dir_okay=True,
-            writable=True,
-            resolve_path=True,
-        ),
+        Path, _writable_dir_opt("--output-dir", "Directory to write benchmark JSON files.")
     ] = DEFAULT_BENCHMARK_DIR,
     repo_cache_dir: Annotated[
-        Path,
-        typer.Option(
-            "--repo-cache-dir",
-            help="Directory to cache cloned repositories.",
-            file_okay=False,
-            dir_okay=True,
-            writable=True,
-            resolve_path=True,
-        ),
+        Path, _writable_dir_opt("--repo-cache-dir", "Directory to cache cloned repositories.")
     ] = DEFAULT_CLEANVUL_REPO_CACHE_DIR,
     seed: Annotated[
         int | None,
@@ -461,42 +524,16 @@ def build_cleanvul_benchmark(
 @app.command("build-cleanvul-benchmark-compare-rankings")
 def build_cleanvul_benchmark_compare_rankings(
     ctx: typer.Context,
-    dataset_path: Annotated[
-        Path,
-        typer.Argument(
-            help="Path to the CleanVul CSV or Parquet file.",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
-        ),
-    ],
+    dataset_path: Annotated[Path, _readable_file_arg("Path to the CleanVul CSV or Parquet file.")],
     sample_count: Annotated[
         int,
         typer.Option("-n", "--samples", help="Number of samples to generate."),
     ] = 50,
     output_dir: Annotated[
-        Path,
-        typer.Option(
-            "--output-dir",
-            help="Directory to write benchmark JSON files.",
-            file_okay=False,
-            dir_okay=True,
-            writable=True,
-            resolve_path=True,
-        ),
+        Path, _writable_dir_opt("--output-dir", "Directory to write benchmark JSON files.")
     ] = DEFAULT_BENCHMARK_DIR,
     repo_cache_dir: Annotated[
-        Path,
-        typer.Option(
-            "--repo-cache-dir",
-            help="Directory to cache cloned repositories.",
-            file_okay=False,
-            dir_okay=True,
-            writable=True,
-            resolve_path=True,
-        ),
+        Path, _writable_dir_opt("--repo-cache-dir", "Directory to cache cloned repositories.")
     ] = DEFAULT_CLEANVUL_REPO_CACHE_DIR,
     seed: Annotated[
         int | None,
@@ -512,79 +549,154 @@ def build_cleanvul_benchmark_compare_rankings(
     ] = 2048,
     cpg_structural_coefficients: Annotated[
         Path | None,
-        typer.Option(
+        _readable_file_opt(
             "--cpg-structural-coefficients",
-            help=(
-                "Optional YAML with tuned RankingCoefficients for the "
-                "cpg_structural strategy. Defaults to the strategy's built-in "
-                "coefficients when omitted."
-            ),
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
+            "Optional YAML with tuned RankingCoefficients for the cpg_structural strategy.",
         ),
     ] = None,
     budgeted_ranking_config: Annotated[
         Path | None,
-        typer.Option(
+        _readable_file_opt(
             "--budgeted-ranking-config",
-            help=(
-                "Optional YAML with a tuned BudgetedRankingConfig for the "
-                "evidence_budgeted strategy. Defaults to BudgetedRankingConfig() "
-                "when omitted."
-            ),
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
+            "Optional YAML with a tuned BudgetedRankingConfig for the evidence_budgeted strategy.",
         ),
     ] = None,
     multiplicative_amplification_coefficients: Annotated[
         Path | None,
-        typer.Option(
+        _readable_file_opt(
             "--multiplicative-amplification-coefficients",
-            help=(
-                "Optional YAML with tuned RankingCoefficients for the "
-                "multiplicative_amplification strategy. Defaults to the strategy's "
-                "built-in coefficients when omitted."
-            ),
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
+            "Optional YAML with tuned RankingCoefficients for the multiplicative_amplification strategy.",
         ),
     ] = None,
     current_coefficients: Annotated[
         Path | None,
-        typer.Option(
+        _readable_file_opt(
             "--current-coefficients",
-            help=(
-                "Optional YAML with tuned RankingCoefficients for the "
-                "current (NodeRelevanceRankingService) strategy. Defaults to "
-                "the strategy's built-in coefficients when omitted."
-            ),
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
+            "Optional YAML with tuned RankingCoefficients for the current strategy.",
         ),
     ] = None,
 ) -> None:
     """Build aligned CleanVul-with-context datasets for all ranking strategies."""
 
-    neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
-    strategy_factories = build_strategy_factories(
-        token_budget=token_budget,
+    _run_compare_rankings(
+        ctx=ctx,
+        dataset_path=dataset_path,
+        sample_count=sample_count,
+        output_dir=output_dir,
+        repo_cache_dir=repo_cache_dir,
         seed=seed,
+        max_call_depth=max_call_depth,
+        token_budget=token_budget,
         cpg_structural_coefficients=cpg_structural_coefficients,
-        budgeted_ranking_config_path=budgeted_ranking_config,
+        budgeted_ranking_config=budgeted_ranking_config,
         multiplicative_amplification_coefficients=multiplicative_amplification_coefficients,
         current_coefficients=current_coefficients,
+    )
+
+
+@app.command("build-cleanvul-benchmark-compare-rankings-all")
+def build_cleanvul_benchmark_compare_rankings_all(
+    ctx: typer.Context,
+    dataset_path: Annotated[Path, _readable_file_arg("Path to the CleanVul CSV or Parquet file.")],
+    sample_count: Annotated[
+        int,
+        typer.Option("-n", "--samples", help="Number of samples to generate."),
+    ] = 50,
+    output_dir: Annotated[
+        Path, _writable_dir_opt("--output-dir", "Directory to write benchmark JSON files.")
+    ] = DEFAULT_BENCHMARK_DIR,
+    repo_cache_dir: Annotated[
+        Path, _writable_dir_opt("--repo-cache-dir", "Directory to cache cloned repositories.")
+    ] = DEFAULT_CLEANVUL_REPO_CACHE_DIR,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Random seed for sampling."),
+    ] = None,
+    max_call_depth: Annotated[
+        int,
+        typer.Option("--max-call-depth", help="Max call depth for context expansion."),
+    ] = 3,
+    token_budget: Annotated[
+        int,
+        typer.Option("--token-budget", help="Token budget for context assembly."),
+    ] = 2048,
+    cpg_structural_coefficients: Annotated[
+        Path | None,
+        _readable_file_opt(
+            "--cpg-structural-coefficients",
+            "Best-tuned YAML for cpg_structural (omit to use built-in defaults).",
+        ),
+    ] = None,
+    budgeted_ranking_config: Annotated[
+        Path | None,
+        _readable_file_opt(
+            "--budgeted-ranking-config",
+            "Best-tuned BudgetedRankingConfig YAML (omit to use built-in defaults).",
+        ),
+    ] = None,
+    multiplicative_amplification_coefficients: Annotated[
+        Path | None,
+        _readable_file_opt(
+            "--multiplicative-amplification-coefficients",
+            "Best-tuned YAML for multiplicative_amplification (omit to use built-in defaults).",
+        ),
+    ] = None,
+    current_coefficients: Annotated[
+        Path | None,
+        _readable_file_opt(
+            "--current-coefficients",
+            "Best-tuned YAML for current strategy (omit to use built-in defaults).",
+        ),
+    ] = None,
+    cpg_structural_last: Annotated[
+        Path,
+        _readable_file_opt(
+            "--cpg-structural-last",
+            "Last-trial YAML for cpg_structural; defaults to config/best_cpg_structural_last.yaml.",
+        ),
+    ] = DEFAULT_LAST_CPG_STRUCTURAL,
+    budgeted_ranking_config_last: Annotated[
+        Path,
+        _readable_file_opt(
+            "--budgeted-ranking-config-last",
+            "Last-trial BudgetedRankingConfig YAML; defaults to config/best_evidence_budgeted_last.yaml.",
+        ),
+    ] = DEFAULT_LAST_EVIDENCE_BUDGETED,
+    multiplicative_amplification_last: Annotated[
+        Path,
+        _readable_file_opt(
+            "--multiplicative-amplification-last",
+            "Last-trial YAML for multiplicative_amplification; defaults to config/best_multiplicative_amplification_last.yaml.",
+        ),
+    ] = DEFAULT_LAST_MULTIPLICATIVE_AMPLIFICATION,
+    current_last: Annotated[
+        Path,
+        _readable_file_opt(
+            "--current-last",
+            "Last-trial YAML for current strategy; defaults to config/best_current_last.yaml.",
+        ),
+    ] = DEFAULT_LAST_CURRENT,
+) -> None:
+    """Build CleanVul-with-context datasets for all strategies plus last-trial variants in one pass.
+
+    Generates best-coefficient and last-trial-coefficient datasets from the same
+    sample set, ensuring the two are directly comparable. Equivalent to running
+    ``build-cleanvul-benchmark-compare-rankings`` twice but faster and guaranteed
+    to use identical samples.
+    """
+
+    neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
+    strategy_factories = build_combined_strategy_factories(
+        token_budget=token_budget,
+        seed=seed,
+        cpg_structural_best=cpg_structural_coefficients,
+        cpg_structural_last=cpg_structural_last,
+        budgeted_ranking_config_best=budgeted_ranking_config,
+        budgeted_ranking_config_last=budgeted_ranking_config_last,
+        multiplicative_amplification_best=multiplicative_amplification_coefficients,
+        multiplicative_amplification_last=multiplicative_amplification_last,
+        current_best=current_coefficients,
+        current_last=current_last,
     )
     service = CleanVulBenchmarkService(
         dataset_path=dataset_path,
@@ -598,7 +710,6 @@ def build_cleanvul_benchmark_compare_rankings(
         strategy_factories=strategy_factories,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
-
     typer.secho(
         f"Wrote benchmark datasets to {dataset_paths}, entries to {entries_path}",
         fg=typer.colors.GREEN,
@@ -622,37 +733,13 @@ def tune_ranking_coefficients(
     ],
     dataset: Annotated[
         Path,
-        typer.Option(
-            "--dataset",
-            help="CleanVul CSV path used to build per-trial benchmarks.",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            resolve_path=True,
-        ),
+        _readable_file_opt("--dataset", "CleanVul CSV path used to build per-trial benchmarks."),
     ],
     output_dir: Annotated[
-        Path,
-        typer.Option(
-            "--output-dir",
-            help="Directory for per-trial benchmark artifacts.",
-            file_okay=False,
-            dir_okay=True,
-            writable=True,
-            resolve_path=True,
-        ),
+        Path, _writable_dir_opt("--output-dir", "Directory for per-trial benchmark artifacts.")
     ],
     repo_cache_dir: Annotated[
-        Path,
-        typer.Option(
-            "--repo-cache-dir",
-            help="Directory to cache cloned repositories.",
-            file_okay=False,
-            dir_okay=True,
-            writable=True,
-            resolve_path=True,
-        ),
+        Path, _writable_dir_opt("--repo-cache-dir", "Directory to cache cloned repositories.")
     ],
     trials: Annotated[int, typer.Option("--trials", help="Number of Optuna trials.")] = 20,
     sample_count: Annotated[
@@ -878,15 +965,16 @@ def export_best_coefficients(
             help="Optuna study name passed to tune-ranking-coefficients.",
         ),
     ],
-    output: Annotated[
+    output_best: Annotated[
         Path,
-        typer.Option(
-            "--output",
-            help="Destination YAML path for the tuned coefficients.",
-            file_okay=True,
-            dir_okay=False,
-            writable=True,
-            resolve_path=True,
+        _writable_file_opt(
+            "--output-best", "Destination YAML path for the best tuned coefficients."
+        ),
+    ],
+    output_last: Annotated[
+        Path,
+        _writable_file_opt(
+            "--output-last", "Destination YAML path for the last tuned coefficients."
         ),
     ],
     base_coefficients: Annotated[
@@ -905,14 +993,7 @@ def export_best_coefficients(
     ] = DEFAULT_BASE_COEFFICIENTS,
     study_dir: Annotated[
         Path,
-        typer.Option(
-            "--study-dir",
-            help="Directory containing the Optuna SQLite study DBs.",
-            file_okay=False,
-            dir_okay=True,
-            readable=True,
-            resolve_path=True,
-        ),
+        _readable_dir_opt("--study-dir", "Directory containing the Optuna SQLite study DBs."),
     ] = DEFAULT_STUDY_DIR,
 ) -> None:
     """Materialize the best params of a tuning study as a ready-to-use YAML.
@@ -930,6 +1011,7 @@ def export_best_coefficients(
     storage_url = f"sqlite:///{study_dir / f'{study_name}.db'}"
     study = optuna.load_study(study_name=study_name, storage=storage_url)
     best_params = study.best_params
+    last_params = study.trials[-1].params if study.trials else {}
     logger = logging.getLogger(__name__)
     logger.info(
         "loaded study %s (best FNR=%.4f, %d params)",
@@ -939,8 +1021,10 @@ def export_best_coefficients(
     )
 
     if strategy == RankingStrategy.EVIDENCE_BUDGETED:
-        config = budgeted_config_from_best_params(best_params)
-        config.to_yaml(output)
+        best_config = budgeted_config_from_best_params(best_params)
+        best_config.to_yaml(output_best)
+        last_config = budgeted_config_from_best_params(last_params)
+        last_config.to_yaml(output_last)
     elif strategy in (
         RankingStrategy.CPG_STRUCTURAL,
         RankingStrategy.MULTIPLICATIVE_AMPLIFICATION,
@@ -948,7 +1032,9 @@ def export_best_coefficients(
     ):
         base = RankingCoefficients.from_yaml(base_coefficients)
         coefficients = coefficients_from_best_params(best_params, base)
-        coefficients.to_yaml(output)
+        coefficients.to_yaml(output_best)
+        last_coefficients = coefficients_from_best_params(last_params, base)
+        last_coefficients.to_yaml(output_last)
     else:
         raise typer.BadParameter(
             f"strategy {strategy.value!r} has no tunable coefficients to export",
@@ -956,7 +1042,7 @@ def export_best_coefficients(
         )
 
     typer.secho(
-        f"Wrote tuned coefficients for {strategy.value} to {output}",
+        f"Wrote tuned coefficients for {strategy.value} to {output_best} and {output_last}",
         fg=typer.colors.GREEN,
     )
 

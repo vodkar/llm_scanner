@@ -1,0 +1,14 @@
+depth_decay: 0.6566197393628225
+context_strength: 0.14573489367976472
+role_prior_temperature: 1.3204946281333756
+finding_evidence_scale: 1.1076734125869234
+taint_evidence_scale: 0.6529186533539152
+cpg_role_evidence_scale: 0.6000660714057986
+lexical_fallback_cap: 0.4702400314754466
+token_cost_power: 0.650930545545688
+novelty_penalty: 0.44183336746050544
+role_coverage_bonus: 0.27723904535515165
+small_node_token_threshold: 360
+local_window_radius: 5
+max_candidates_per_node: 8
+budget_safety_ratio: 0.9779888413705012
