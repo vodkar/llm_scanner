@@ -63,6 +63,25 @@ def test_cache_key_defaults_match_explicit_hub_defaults() -> None:
     )
 
 
+def test_cache_key_without_semgrep_is_unchanged() -> None:
+    """Semgrep-off keys keep their pre-Semgrep value so existing caches stay valid."""
+
+    assert compute_sample_cache_key(**_BASE_KWARGS) == "d829e5c410adde0f7092420dff3687b69b4df7a3"
+    assert compute_sample_cache_key(**_BASE_KWARGS, semgrep_config=None) == (
+        compute_sample_cache_key(**_BASE_KWARGS)
+    )
+
+
+def test_cache_key_changes_with_semgrep_config() -> None:
+    """Enabling Semgrep, or changing its rule config, yields a different cache key."""
+
+    off = compute_sample_cache_key(**_BASE_KWARGS)
+    python_rules = compute_sample_cache_key(**_BASE_KWARGS, semgrep_config="p/python")
+    django_rules = compute_sample_cache_key(**_BASE_KWARGS, semgrep_config="p/django")
+
+    assert len({off, python_rules, django_rules}) == 3
+
+
 def test_cache_key_uses_schema_v3() -> None:
     """Schema v3 adds static findings; v2 pickles must not be reused."""
 

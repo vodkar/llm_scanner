@@ -10,6 +10,11 @@ DLINT_FINDING_QUERY: Final[LiteralString] = (
     "MATCH (n:Finding:DlintFinding {id:$id}) "
     "RETURN n.file AS file, n.line_number AS line_number, n.issue_id AS issue_id"
 )
+SEMGREP_FINDING_QUERY: Final[LiteralString] = (
+    "MATCH (n:Finding:SemgrepFinding {id:$id}) "
+    "RETURN n.file AS file, n.line_number AS line_number, n.rule_id AS rule_id, "
+    "n.cwe_id AS cwe_id, n.severity AS severity"
+)
 GRAPH_NODE_QUERY: Final[LiteralString] = (
     "MATCH (n:Code:Function {id:$id}) RETURN n.id AS id, n.name AS name"
 )

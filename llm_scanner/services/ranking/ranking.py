@@ -12,7 +12,12 @@ from models.context import CodeContextNode
 from models.edges.analysis import StaticAnalysisReports
 from models.nodes import Node
 from models.nodes.base import BaseCodeNode
-from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
+from models.nodes.finding import (
+    BanditFindingNode,
+    DlintFindingNode,
+    FindingNode,
+    SemgrepFindingNode,
+)
 from services.ranking.ranking_config import (
     CombinerWeights,
     ContextBreakdown,
@@ -455,9 +460,8 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
 
         severity_score = max(self._finding_severity(finding) for finding in direct_findings)
         confidence_score = max(self._finding_confidence(finding) for finding in direct_findings)
-        has_bandit = any(isinstance(finding, BanditFindingNode) for finding in direct_findings)
-        has_dlint = any(isinstance(finding, DlintFindingNode) for finding in direct_findings)
-        if has_bandit and has_dlint:
+        analyzer_types = {type(finding) for finding in direct_findings}
+        if len(analyzer_types) > 1:
             agreement_score = AGREEMENT_BOTH_ANALYZERS
         elif len(direct_findings) > 1:
             agreement_score = AGREEMENT_MULTIPLE_FINDINGS
@@ -480,7 +484,8 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
         path = self.coefficients.security_path_breakdown
         security_path_evidence = 0.0
         if any(
-            isinstance(finding, BanditFindingNode) and finding.cwe_id in HIGH_RISK_CWES
+            isinstance(finding, BanditFindingNode | SemgrepFindingNode)
+            and finding.cwe_id in HIGH_RISK_CWES
             for finding in direct_findings
         ):
             security_path_evidence = max(sink_indicator, path.high_risk_cwe_evidence_base)
@@ -494,7 +499,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     def _finding_severity(self, finding: FindingNode) -> float:
         """Return a normalized severity score for any finding type."""
 
-        if isinstance(finding, BanditFindingNode):
+        if isinstance(finding, BanditFindingNode | SemgrepFindingNode):
             return self._severity_score(finding.severity)
         if isinstance(finding, DlintFindingNode):
             severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)
@@ -504,7 +509,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     def _finding_confidence(self, finding: FindingNode) -> float:
         """Return a confidence proxy derived from finding severity."""
 
-        if isinstance(finding, BanditFindingNode):
+        if isinstance(finding, BanditFindingNode | SemgrepFindingNode):
             return self._severity_confidence(finding.severity)
         if isinstance(finding, DlintFindingNode):
             severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)

@@ -26,3 +26,8 @@ class BanditFindingNode(FindingNode):
 
 class DlintFindingNode(FindingNode):
     issue_id: int
+
+
+class SemgrepFindingNode(FindingNode):
+    cwe_id: int | None = None
+    severity: IssueSeverity

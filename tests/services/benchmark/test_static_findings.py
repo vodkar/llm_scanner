@@ -5,7 +5,7 @@ from pathlib import Path
 from models.bandit_report import IssueSeverity
 from models.base import NodeID
 from models.context import CodeContextNode
-from models.nodes.finding import BanditFindingNode, DlintFindingNode
+from models.nodes.finding import BanditFindingNode, DlintFindingNode, SemgrepFindingNode
 from models.static_finding import AnalyzerTool
 from services.benchmark.static_findings import attach_findings
 from services.context_assembler.source_map import build_source_map
@@ -92,3 +92,23 @@ def test_attach_sorts_and_dedupes() -> None:
 def test_attach_with_empty_inputs() -> None:
     assert attach_findings([], _SOURCE_MAP, [_ROOT]) == []
     assert attach_findings([_bandit(12)], [], [_ROOT]) == []
+
+
+def test_attach_semgrep_finding_keeps_cwe_and_severity() -> None:
+    semgrep = SemgrepFindingNode(
+        file=Path("app.py"),
+        line_number=12,
+        rule_id="python.lang.security.audit.dangerous-system-call",
+        cwe_id=78,
+        severity=IssueSeverity.HIGH,
+        reason="os.system with user input",
+    )
+
+    [finding] = attach_findings([semgrep], _SOURCE_MAP, [_ROOT])
+
+    assert finding.tool is AnalyzerTool.SEMGREP
+    assert finding.rule_id == "python.lang.security.audit.dangerous-system-call"
+    assert finding.cwe_id == 78
+    assert finding.severity is IssueSeverity.HIGH
+    assert finding.snippet_line == 2
+    assert finding.is_root is True
