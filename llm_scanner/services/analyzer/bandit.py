@@ -23,11 +23,13 @@ class BanditAnalyzerService(BaseAnalyzerService):
             issue: Bandit issue instance.
 
         Returns:
-            Finding payload with cwe_id.
+            Finding payload with cwe_id, rule_id and line_end.
         """
 
         payload = issue.model_dump()
         payload["cwe_id"] = payload.pop("cwe", None)
-        payload.pop("column_number", None)
-        payload.pop("line_range", None)
+        payload["rule_id"] = payload.pop("test_id", "")
+        payload["column_number"] = max(payload["column_number"], 0)
+        line_range: list[int] = payload.pop("line_range", [])
+        payload["line_end"] = max(line_range) if line_range else None
         return payload

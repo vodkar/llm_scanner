@@ -15,6 +15,7 @@ from models.benchmark.benchmark import (
 )
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import CodeContextNode, Context, FileSpans
+from models.nodes.finding import FindingNode
 from pipeline import GeneralScannerPipeline
 from repositories.context import ContextRepository
 from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
@@ -30,6 +31,7 @@ from services.benchmark.prepared_sample import (
     save_prepared_sample,
 )
 from services.benchmark.repo_checkout import RepoCheckoutService
+from services.benchmark.static_findings import attach_findings
 from services.context_assembler.context_assembler import ContextAssemblerService
 from services.ranking.ranking import ContextNodeRankingStrategy
 from services.source_code import SourceCodeService
@@ -89,6 +91,13 @@ class CleanVulBenchmarkService(BaseModel):
         default=12,
         ge=1,
         description="Fan-in degree at/above which a node is treated as a hub.",
+    )
+    include_static_findings: bool = Field(
+        default=False,
+        description=(
+            "Attach Bandit/Dlint findings located in each rendered snippet plus a "
+            "snippet→repo source map to every BenchmarkSample."
+        ),
     )
     min_score: int = Field(default=4, ge=0, le=4)
     max_repo_size_bytes: int | None = Field(
@@ -283,7 +292,9 @@ class CleanVulBenchmarkService(BaseModel):
             self.neo4j_config.password,
         ) as neo4j_client:
             neo4j_client.run_write(CLEAR_DATABASE_QUERY)
-            GeneralScannerPipeline(src=repo_path, neo4j_client=neo4j_client).build_cpg()
+            findings, _ = GeneralScannerPipeline(
+                src=repo_path, neo4j_client=neo4j_client
+            ).build_cpg()
 
             context_repository = ContextRepository(client=neo4j_client)
             strategies: dict[str, ContextNodeRankingStrategy] = {
@@ -319,6 +330,7 @@ class CleanVulBenchmarkService(BaseModel):
             neighborhood_edges=neighborhood_edges,
             path_fill_edge_types=path_fill_edge_types,
             traversal_relationship_types=traversal_relationship_types,
+            static_findings=findings,
             cache_key=cache_key,
         )
         save_prepared_sample(cache_dir, sample)
@@ -375,6 +387,7 @@ class CleanVulBenchmarkService(BaseModel):
                 strategies=strategies,
                 shared_inputs=shared_inputs,
                 cached_neighborhood_edges=prepared.neighborhood_edges,
+                findings=prepared.static_findings,
             )
             entries_by_sample_id[prepared.sample_id] = prepared.entry
             for strategy_name in strategy_factories:
@@ -667,7 +680,9 @@ class CleanVulBenchmarkService(BaseModel):
             self.neo4j_config.password,
         ) as neo4j_client:
             neo4j_client.run_write(CLEAR_DATABASE_QUERY)
-            GeneralScannerPipeline(src=repo_path, neo4j_client=neo4j_client).build_cpg()
+            findings, _ = GeneralScannerPipeline(
+                src=repo_path, neo4j_client=neo4j_client
+            ).build_cpg()
 
             context_repository = ContextRepository(client=neo4j_client)
             strategies: dict[str, ContextNodeRankingStrategy] = {
@@ -686,6 +701,7 @@ class CleanVulBenchmarkService(BaseModel):
                 context_repository=context_repository,
                 strategies=strategies,
                 shared_inputs=shared_inputs,
+                findings=findings,
             )
 
     def _prepare_shared_context_inputs(
@@ -760,11 +776,14 @@ class CleanVulBenchmarkService(BaseModel):
         shared_inputs: _SharedContextInputs,
         *,
         cached_neighborhood_edges: list[tuple[NodeID, NodeID, str]] | None = None,
+        findings: Sequence[FindingNode] = (),
     ) -> dict[str, Context]:
         """Render one context per strategy using shared fetched inputs.
 
         Pass ``cached_neighborhood_edges`` (and ``context_repository=None``) to
         render from a ``PreparedSample`` cache without any Neo4j connection.
+        ``findings`` are resolved against each rendered snippet and stored on
+        ``Context.static_findings``.
         """
 
         contexts: dict[str, Context] = {}
@@ -786,7 +805,13 @@ class CleanVulBenchmarkService(BaseModel):
                 ranking_strategy=strategy,
                 cached_neighborhood_edges=cached_neighborhood_edges,
             )
-            contexts[strategy_name] = context_service.assemble_from_nodes(repo_path, context_nodes)
+            context = context_service.assemble_from_nodes(repo_path, context_nodes)
+            root_nodes = [node for node in context_nodes if node.depth == 0]
+            contexts[strategy_name] = context.model_copy(
+                update={
+                    "static_findings": attach_findings(findings, context.source_map, root_nodes)
+                }
+            )
 
         return contexts
 
@@ -825,6 +850,8 @@ class CleanVulBenchmarkService(BaseModel):
             metadata=self._entry_metadata(entry),
             cwe_types=[f"CWE-{n}" for n in entry.cwe_ids],
             severity="unknown",
+            static_findings=context.static_findings if self.include_static_findings else None,
+            source_map=context.source_map if self.include_static_findings else None,
         )
 
     def _entry_metadata(self, entry: CleanVulEntry) -> CleanVulSampleMetadata:

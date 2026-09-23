@@ -28,12 +28,14 @@ from pydantic import BaseModel, ConfigDict
 from models.base import NodeID
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import CodeContextNode
+from models.nodes.finding import FindingNode
 
 _LOGGER = logging.getLogger(__name__)
 
 # Bump when ``PreparedSample`` gains a new field that Phase 2 cannot infer
 # from existing pickle content. Old cache files are silently ignored.
-_CACHE_SCHEMA_VERSION = 2
+# v3: PreparedSample.static_findings (analyzer findings for the checkout).
+_CACHE_SCHEMA_VERSION = 3
 
 
 class PreparedSample(BaseModel):
@@ -57,6 +59,7 @@ class PreparedSample(BaseModel):
     neighborhood_edges: list[tuple[NodeID, NodeID, str]]
     path_fill_edge_types: tuple[str, ...]
     traversal_relationship_types: tuple[str, ...]
+    static_findings: list[FindingNode] = []
     cache_key: str
 
 

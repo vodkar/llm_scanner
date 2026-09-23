@@ -1,9 +1,10 @@
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from models.base import NodeID
+from models.static_finding import StaticFinding
 
 
 class CodeContextNode(BaseModel):
@@ -58,6 +59,27 @@ class CodeContextNode(BaseModel):
     )
 
 
+class SnippetSegment(BaseModel):
+    """Maps a run of consecutive snippet lines from one file back to repo lines.
+
+    ``repo_lines[i]`` is the repository line rendered at snippet line
+    ``snippet_line_start + i``. Repo lines may be non-contiguous because blank
+    and comment-only lines are dropped during rendering.
+    """
+
+    file_path: Path = Field(..., description="Repo-relative source file")
+    snippet_line_start: int = Field(..., ge=1, description="1-based first snippet line")
+    snippet_line_end: int = Field(..., ge=1, description="1-based last snippet line (inclusive)")
+    repo_lines: tuple[int, ...] = Field(..., description="Repo line for each snippet line")
+
+    @model_validator(mode="after")
+    def _check_lengths(self) -> Self:
+        expected = self.snippet_line_end - self.snippet_line_start + 1
+        if len(self.repo_lines) != expected:
+            raise ValueError(f"repo_lines has {len(self.repo_lines)} entries, expected {expected}")
+        return self
+
+
 class Context(BaseModel):
     """LLM context assembled for a single finding."""
 
@@ -67,6 +89,12 @@ class Context(BaseModel):
     # )
     context_text: str = Field(default="", description="Rendered LLM context")
     token_count: int = Field(default=0, ge=0, description="Estimated token count")
+    source_map: list[SnippetSegment] = Field(
+        default_factory=list, description="Snippet line → repo location mapping"
+    )
+    static_findings: list[StaticFinding] = Field(
+        default_factory=list, description="Analyzer findings located in the snippet"
+    )
 
 
 class FileSpans(NamedTuple):

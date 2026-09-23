@@ -71,6 +71,10 @@ DEFAULT_TESTS_DIR: Final[Path] = ROOT_DIR / "tests"
 DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
 DEFAULT_BENCHMARK_DIR: Final[Path] = ROOT_DIR / "data"
+_INCLUDE_STATIC_FINDINGS_HELP: Final[str] = (
+    "Attach Bandit/Dlint findings located in each rendered snippet plus a "
+    "snippet→repo source map to every benchmark sample."
+)
 DEFAULT_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cvefixes_repos"
 DEFAULT_CLEANVUL_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cleanvul_repos"
 DEFAULT_STUDY_DIR: Final[Path] = ROOT_DIR / "data" / "tuning_runs"
@@ -174,6 +178,7 @@ def _run_compare_rankings(
     budgeted_ranking_config: Path | None,
     multiplicative_amplification_coefficients: Path | None,
     current_coefficients: Path | None,
+    include_static_findings: bool,
 ) -> None:
     neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
     strategy_factories = build_strategy_factories(
@@ -194,6 +199,7 @@ def _run_compare_rankings(
         max_call_depth=max_call_depth,
         token_budget=token_budget,
         strategy_factories=strategy_factories,
+        include_static_findings=include_static_findings,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
     typer.secho(
@@ -494,6 +500,10 @@ def build_cleanvul_benchmark(
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
     ] = 2048,
+    include_static_findings: Annotated[
+        bool,
+        typer.Option("--include-static-findings", help=_INCLUDE_STATIC_FINDINGS_HELP),
+    ] = False,
 ) -> None:
     """Build the CleanVul-with-context benchmark dataset."""
 
@@ -507,6 +517,7 @@ def build_cleanvul_benchmark(
         neo4j_config=neo4j_config,
         max_call_depth=max_call_depth,
         token_budget=token_budget,
+        include_static_findings=include_static_findings,
         strategy_factories={
             RankingStrategies.CURRENT: partial(
                 _build_current_ranking_strategy, current_coefficients=None
@@ -575,6 +586,10 @@ def build_cleanvul_benchmark_compare_rankings(
             "Optional YAML with tuned RankingCoefficients for the current strategy.",
         ),
     ] = None,
+    include_static_findings: Annotated[
+        bool,
+        typer.Option("--include-static-findings", help=_INCLUDE_STATIC_FINDINGS_HELP),
+    ] = False,
 ) -> None:
     """Build aligned CleanVul-with-context datasets for all ranking strategies."""
 
@@ -591,6 +606,7 @@ def build_cleanvul_benchmark_compare_rankings(
         budgeted_ranking_config=budgeted_ranking_config,
         multiplicative_amplification_coefficients=multiplicative_amplification_coefficients,
         current_coefficients=current_coefficients,
+        include_static_findings=include_static_findings,
     )
 
 
@@ -676,6 +692,10 @@ def build_cleanvul_benchmark_compare_rankings_all(
             "Last-trial YAML for current strategy; defaults to config/best_current_last.yaml.",
         ),
     ] = DEFAULT_LAST_CURRENT,
+    include_static_findings: Annotated[
+        bool,
+        typer.Option("--include-static-findings", help=_INCLUDE_STATIC_FINDINGS_HELP),
+    ] = False,
 ) -> None:
     """Build CleanVul-with-context datasets for all strategies plus last-trial variants in one pass.
 
@@ -708,6 +728,7 @@ def build_cleanvul_benchmark_compare_rankings_all(
         max_call_depth=max_call_depth,
         token_budget=token_budget,
         strategy_factories=strategy_factories,
+        include_static_findings=include_static_findings,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
     typer.secho(

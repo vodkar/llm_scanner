@@ -69,23 +69,68 @@ def test_issue_payload_renames_cwe_to_cwe_id(bandit_service: BanditAnalyzerServi
     assert payload["reason"] == "XSS vulnerability"
 
 
-def test_issue_payload_removes_column_number_and_line_range(
+def test_issue_payload_keeps_column_and_converts_line_range(
     bandit_service: BanditAnalyzerService,
 ) -> None:
     issue = BanditIssue(
         cwe=22,
         file=Path("test.py"),
         line_number=1,
-        column_number=0,
+        column_number=4,
         line_range=[1, 5],
+        severity=IssueSeverity.LOW,
+        reason="test",
+        test_id="B605",
+    )
+
+    payload = bandit_service._issue_payload(issue)
+
+    assert payload["column_number"] == 4
+    assert payload["line_end"] == 5
+    assert payload["rule_id"] == "B605"
+    assert "line_range" not in payload
+    assert "test_id" not in payload
+
+
+def test_issue_payload_empty_line_range_gives_no_line_end(
+    bandit_service: BanditAnalyzerService,
+) -> None:
+    issue = BanditIssue(
+        cwe=22,
+        file=Path("test.py"),
+        line_number=3,
+        column_number=0,
+        line_range=[],
         severity=IssueSeverity.LOW,
         reason="test",
     )
 
     payload = bandit_service._issue_payload(issue)
 
-    assert "column_number" not in payload
-    assert "line_range" not in payload
+    assert payload["line_end"] is None
+    assert payload["rule_id"] == ""
+
+
+def test_bandit_finding_node_keeps_reason_and_rule(
+    bandit_service: BanditAnalyzerService,
+) -> None:
+    issue = BanditIssue(
+        cwe=78,
+        file=Path("app.py"),
+        line_number=7,
+        column_number=2,
+        line_range=[7],
+        severity=IssueSeverity.HIGH,
+        reason="shell=True",
+        test_id="B602",
+    )
+
+    finding = BanditFindingNode(**bandit_service._issue_payload(issue))
+
+    assert finding.reason == "shell=True"
+    assert finding.rule_id == "B602"
+    assert finding.line_end == 7
+    assert finding.column_number == 2
 
 
 def test_normalize_issue_path_resolves_relative_to_target(
@@ -104,3 +149,19 @@ def test_normalize_issue_path_handles_absolute_paths(
     absolute_path = tmp_path / "src" / "app.py"
     normalized = bandit_service._normalize_issue_path(absolute_path)
     assert normalized == Path("src/app.py")
+
+
+def test_issue_payload_clamps_negative_column(bandit_service: BanditAnalyzerService) -> None:
+    issue = BanditIssue(
+        cwe=78,
+        file=Path("app.py"),
+        line_number=1,
+        column_number=-1,
+        line_range=[1],
+        severity=IssueSeverity.LOW,
+        reason="x",
+    )
+
+    finding = BanditFindingNode(**bandit_service._issue_payload(issue))
+
+    assert finding.column_number == 0
