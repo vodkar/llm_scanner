@@ -1,11 +1,22 @@
 """Attach static-analysis findings to a rendered snippet via its source map."""
 
 from collections.abc import Sequence
+from typing import Final
 
 from models.context import CodeContextNode, SnippetSegment
-from models.nodes.finding import BanditFindingNode, DlintFindingNode, FindingNode
+from models.nodes.finding import (
+    BanditFindingNode,
+    DlintFindingNode,
+    FindingNode,
+    SemgrepFindingNode,
+)
 from models.static_finding import AnalyzerTool, StaticFinding
 from services.context_assembler.source_map import resolve_snippet_line
+
+_SEVERITY_FINDINGS: Final[tuple[type[BanditFindingNode], type[SemgrepFindingNode]]] = (
+    BanditFindingNode,
+    SemgrepFindingNode,
+)
 
 
 def attach_findings(
@@ -19,7 +30,7 @@ def attach_findings(
     is not rendered, to the first rendered line of ``[line_number, line_end]``.
 
     Args:
-        findings: Bandit/Dlint findings with repo-relative locations.
+        findings: Bandit/Dlint/Semgrep findings with repo-relative locations.
         source_map: Source map of the rendered snippet.
         root_nodes: Depth-0 context nodes, used to compute ``is_root``.
 
@@ -53,8 +64,8 @@ def _to_static_finding(
     return StaticFinding(
         tool=_tool_for(finding),
         rule_id=finding.rule_id,
-        cwe_id=finding.cwe_id if isinstance(finding, BanditFindingNode) else None,
-        severity=finding.severity if isinstance(finding, BanditFindingNode) else None,
+        cwe_id=finding.cwe_id if isinstance(finding, _SEVERITY_FINDINGS) else None,
+        severity=finding.severity if isinstance(finding, _SEVERITY_FINDINGS) else None,
         message=finding.reason,
         file_path=finding.file,
         repo_line=finding.line_number,
@@ -81,4 +92,6 @@ def _tool_for(finding: FindingNode) -> AnalyzerTool:
         return AnalyzerTool.BANDIT
     if isinstance(finding, DlintFindingNode):
         return AnalyzerTool.DLINT
+    if isinstance(finding, SemgrepFindingNode):
+        return AnalyzerTool.SEMGREP
     raise TypeError(f"Unsupported finding type: {type(finding).__name__}")

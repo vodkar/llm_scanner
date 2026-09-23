@@ -74,6 +74,7 @@ def compute_sample_cache_key(
     exclude_test_nodes: bool = True,
     damp_call_graph_hubs: bool = True,
     hub_fanin_threshold: int = 12,
+    semgrep_config: str | None = None,
 ) -> str:
     """Compute a stable SHA1 cache key for the prepared-sample artefact.
 
@@ -85,7 +86,9 @@ def compute_sample_cache_key(
     ``exclude_test_nodes`` is included because it changes the cached neighborhood
     superset, so toggling it must not reuse a stale cache. ``damp_call_graph_hubs``
     and ``hub_fanin_threshold`` are included for the same reason: they prune the
-    cached neighborhood, so different values must not collide.
+    cached neighborhood, so different values must not collide. ``semgrep_config``
+    is the Semgrep rule config when Semgrep ran (None otherwise); it is appended
+    only when set so Semgrep-off keys match those from before Semgrep existed.
     """
 
     spans_repr: list[tuple[str, tuple[tuple[int, int], ...]]] = []
@@ -106,6 +109,7 @@ def compute_sample_cache_key(
         f"exclude_test_nodes={exclude_test_nodes}",
         f"damp_call_graph_hubs={damp_call_graph_hubs}",
         f"hub_fanin_threshold={hub_fanin_threshold}",
+        *(() if semgrep_config is None else (f"semgrep_config={semgrep_config}",)),
     )
     digest = hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
     return digest

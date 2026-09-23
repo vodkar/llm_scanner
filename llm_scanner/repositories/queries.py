@@ -65,6 +65,15 @@ FINDING_NODE_QUERIES: Final[dict[str, LiteralString]] = {
         "    n.line_number = r.line_number, "
         "    n.issue_id = r.issue_id"
     ),
+    "SemgrepFinding": (
+        "UNWIND $rows AS r "
+        "MERGE (n:Finding:SemgrepFinding {id: r.id}) "
+        "SET n.file = r.file, "
+        "    n.line_number = r.line_number, "
+        "    n.rule_id = r.rule_id, "
+        "    n.cwe_id = r.cwe_id, "
+        "    n.severity = r.severity"
+    ),
 }
 
 FINDING_RELATIONSHIP_QUERIES: Final[dict[str, LiteralString]] = {

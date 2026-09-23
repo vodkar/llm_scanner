@@ -7,7 +7,12 @@ from typing import Final, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from clients.neo4j import Neo4jConfig, build_client
+from clients.analyzers.semgrep import (
+    DEFAULT_SEMGREP_CONFIG,
+    SemgrepExecutionError,
+    semgrep_rules_fingerprint,
+)
+from clients.neo4j import Neo4jClient, Neo4jConfig, build_client
 from models.base import NodeID
 from models.benchmark.benchmark import (
     BenchmarkSample,
@@ -95,9 +100,20 @@ class CleanVulBenchmarkService(BaseModel):
     include_static_findings: bool = Field(
         default=False,
         description=(
-            "Attach Bandit/Dlint findings located in each rendered snippet plus a "
+            "Attach analyzer findings located in each rendered snippet plus a "
             "snippet→repo source map to every BenchmarkSample."
         ),
+    )
+    enable_semgrep: bool = Field(
+        default=False,
+        description=(
+            "Run Semgrep alongside Bandit/Dlint. Its findings feed ranking and "
+            "static findings; part of the prepared-sample cache key when enabled."
+        ),
+    )
+    semgrep_config: str = Field(
+        default=DEFAULT_SEMGREP_CONFIG,
+        description="Semgrep --config value (registry id or local rules path).",
     )
     min_score: int = Field(default=4, ge=0, le=4)
     max_repo_size_bytes: int | None = Field(
@@ -116,6 +132,23 @@ class CleanVulBenchmarkService(BaseModel):
             "agnostic of per-strategy configuration."
         ),
     )
+
+    def _scanner_pipeline(
+        self, repo_path: Path, neo4j_client: Neo4jClient
+    ) -> GeneralScannerPipeline:
+        """Return the scanner pipeline configured with this run's analyzer options."""
+
+        return GeneralScannerPipeline(
+            src=repo_path,
+            neo4j_client=neo4j_client,
+            enable_semgrep=self.enable_semgrep,
+            semgrep_config=self.semgrep_config,
+        )
+
+    def _semgrep_cache_config(self) -> str | None:
+        """Return the Semgrep rules fingerprint for the cache key, or None when off."""
+
+        return semgrep_rules_fingerprint(self.semgrep_config) if self.enable_semgrep else None
 
     def build(self) -> tuple[Path, Path]:
         """Generate the benchmark JSON files.
@@ -245,6 +278,9 @@ class CleanVulBenchmarkService(BaseModel):
                     cache_dir=cache_dir,
                     loader_options=loader_options,
                 )
+            except SemgrepExecutionError:
+                # Skipping would bias the sample set by network luck; abort instead.
+                raise
             except Exception:
                 logger.exception("Failed to prepare sample for %s", commit_url)
                 continue
@@ -276,6 +312,7 @@ class CleanVulBenchmarkService(BaseModel):
             exclude_test_nodes=self.exclude_test_nodes,
             damp_call_graph_hubs=self.damp_call_graph_hubs,
             hub_fanin_threshold=self.hub_fanin_threshold,
+            semgrep_config=self._semgrep_cache_config(),
         )
         cached = load_prepared_sample(cache_dir, cache_key)
         if cached is not None:
@@ -292,9 +329,7 @@ class CleanVulBenchmarkService(BaseModel):
             self.neo4j_config.password,
         ) as neo4j_client:
             neo4j_client.run_write(CLEAR_DATABASE_QUERY)
-            findings, _ = GeneralScannerPipeline(
-                src=repo_path, neo4j_client=neo4j_client
-            ).build_cpg()
+            findings, _ = self._scanner_pipeline(repo_path, neo4j_client).build_cpg()
 
             context_repository = ContextRepository(client=neo4j_client)
             strategies: dict[str, ContextNodeRankingStrategy] = {
@@ -528,6 +563,9 @@ class CleanVulBenchmarkService(BaseModel):
                             entry=pair.fixed_entry,
                             strategy_factories=strategy_factories,
                         )
+                    except SemgrepExecutionError:
+                        # Skipping would bias the sample set by network luck; abort instead.
+                        raise
                     except Exception:
                         logger.exception("Failed to scan repository for %s", commit_url)
                         continue
@@ -680,9 +718,7 @@ class CleanVulBenchmarkService(BaseModel):
             self.neo4j_config.password,
         ) as neo4j_client:
             neo4j_client.run_write(CLEAR_DATABASE_QUERY)
-            findings, _ = GeneralScannerPipeline(
-                src=repo_path, neo4j_client=neo4j_client
-            ).build_cpg()
+            findings, _ = self._scanner_pipeline(repo_path, neo4j_client).build_cpg()
 
             context_repository = ContextRepository(client=neo4j_client)
             strategies: dict[str, ContextNodeRankingStrategy] = {

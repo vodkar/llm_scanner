@@ -20,6 +20,7 @@ _PACKAGE_DIR: Final[Path] = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
+from clients.analyzers.semgrep import DEFAULT_SEMGREP_CONFIG
 from clients.neo4j import Neo4jConfig, build_client
 from clients.openai_compatible import DEFAULT_REPETITION_PENALTY, OpenAICompatibleClient
 from diff_parser import parse_unified_diff
@@ -72,9 +73,18 @@ DEFAULT_SAMPLE_FILE: Final[Path] = DEFAULT_TESTS_DIR / "sample.py"
 DEFAULT_OUTPUT_FILE: Final[Path] = ROOT_DIR / "output.yaml"
 DEFAULT_BENCHMARK_DIR: Final[Path] = ROOT_DIR / "data"
 _INCLUDE_STATIC_FINDINGS_HELP: Final[str] = (
-    "Attach Bandit/Dlint findings located in each rendered snippet plus a "
+    "Attach analyzer findings located in each rendered snippet plus a "
     "snippet→repo source map to every benchmark sample."
 )
+_ENABLE_SEMGREP_HELP: Final[str] = (
+    "Also run Semgrep; its findings feed ranking and static findings. "
+    "Registry configs need network access."
+)
+_SEMGREP_CONFIG_HELP: Final[str] = (
+    "Semgrep --config value: a registry id such as p/python or a local rules path "
+    "('auto' is unsupported because metrics are disabled)."
+)
+_STUDY_SEMGREP_ATTR: Final[str] = "semgrep_config"
 DEFAULT_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cvefixes_repos"
 DEFAULT_CLEANVUL_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cleanvul_repos"
 DEFAULT_STUDY_DIR: Final[Path] = ROOT_DIR / "data" / "tuning_runs"
@@ -179,6 +189,8 @@ def _run_compare_rankings(
     multiplicative_amplification_coefficients: Path | None,
     current_coefficients: Path | None,
     include_static_findings: bool,
+    enable_semgrep: bool,
+    semgrep_config: str,
 ) -> None:
     neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
     strategy_factories = build_strategy_factories(
@@ -200,12 +212,43 @@ def _run_compare_rankings(
         token_budget=token_budget,
         strategy_factories=strategy_factories,
         include_static_findings=include_static_findings,
+        enable_semgrep=enable_semgrep,
+        semgrep_config=semgrep_config,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
     typer.secho(
         f"Wrote benchmark datasets to {dataset_paths}, entries to {entries_path}",
         fg=typer.colors.GREEN,
     )
+
+
+def _bind_study_semgrep_config(study: optuna.Study, semgrep_config: str | None) -> None:
+    """Record the study's Semgrep config, refusing to resume it with a different one.
+
+    Studies created before Semgrep support carry no record; if they already have
+    trials, those trials ran without Semgrep.
+
+    Args:
+        study: Optuna study being created or resumed.
+        semgrep_config: Semgrep config for this run, or None when Semgrep is off.
+
+    Raises:
+        typer.BadParameter: If the study was run with a different Semgrep setting.
+    """
+
+    has_record = _STUDY_SEMGREP_ATTR in study.user_attrs or bool(study.trials)
+    recorded: str | None = study.user_attrs.get(_STUDY_SEMGREP_ATTR)
+    if has_record and recorded != semgrep_config:
+        raise typer.BadParameter(
+            f"Study {study.study_name!r} was created with {_describe_semgrep(recorded)}; "
+            "rerun with matching --enable-semgrep/--semgrep-config or pick a new --study-name.",
+            param_hint="--enable-semgrep",
+        )
+    study.set_user_attr(_STUDY_SEMGREP_ATTR, semgrep_config)
+
+
+def _describe_semgrep(semgrep_config: str | None) -> str:
+    return "Semgrep off" if semgrep_config is None else f"Semgrep config {semgrep_config!r}"
 
 
 # ── CLI commands ─────────────────────────────────────────────────────────────
@@ -339,7 +382,7 @@ def scan(  # noqa: C901
         IssueSeverity,
         typer.Option(
             "--min-severity",
-            help="Minimum Bandit severity to include (Dlint always included).",
+            help="Minimum Bandit/Semgrep severity to include (Dlint always included).",
             case_sensitive=False,
         ),
     ] = IssueSeverity.HIGH,
@@ -386,6 +429,14 @@ def scan(  # noqa: C901
             help="Exit 0 even when vulnerabilities are found (useful for reporting-only CI steps).",
         ),
     ] = False,
+    enable_semgrep: Annotated[
+        bool,
+        typer.Option("--enable-semgrep", help=_ENABLE_SEMGREP_HELP),
+    ] = False,
+    semgrep_config: Annotated[
+        str,
+        typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
+    ] = DEFAULT_SEMGREP_CONFIG,
 ) -> None:
     """Run the LLM-assisted security scanner against a project directory.
 
@@ -422,7 +473,12 @@ def scan(  # noqa: C901
     )
 
     with build_client(neo4j_config.uri, neo4j_config.user, neo4j_config.password) as neo4j_client:
-        pipeline = GeneralScannerPipeline(src=src, neo4j_client=neo4j_client)
+        pipeline = GeneralScannerPipeline(
+            src=src,
+            neo4j_client=neo4j_client,
+            enable_semgrep=enable_semgrep,
+            semgrep_config=semgrep_config,
+        )
 
         report: ScanReport
         if mode == "full":
@@ -504,6 +560,14 @@ def build_cleanvul_benchmark(
         bool,
         typer.Option("--include-static-findings", help=_INCLUDE_STATIC_FINDINGS_HELP),
     ] = False,
+    enable_semgrep: Annotated[
+        bool,
+        typer.Option("--enable-semgrep", help=_ENABLE_SEMGREP_HELP),
+    ] = False,
+    semgrep_config: Annotated[
+        str,
+        typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
+    ] = DEFAULT_SEMGREP_CONFIG,
 ) -> None:
     """Build the CleanVul-with-context benchmark dataset."""
 
@@ -518,6 +582,8 @@ def build_cleanvul_benchmark(
         max_call_depth=max_call_depth,
         token_budget=token_budget,
         include_static_findings=include_static_findings,
+        enable_semgrep=enable_semgrep,
+        semgrep_config=semgrep_config,
         strategy_factories={
             RankingStrategies.CURRENT: partial(
                 _build_current_ranking_strategy, current_coefficients=None
@@ -590,6 +656,14 @@ def build_cleanvul_benchmark_compare_rankings(
         bool,
         typer.Option("--include-static-findings", help=_INCLUDE_STATIC_FINDINGS_HELP),
     ] = False,
+    enable_semgrep: Annotated[
+        bool,
+        typer.Option("--enable-semgrep", help=_ENABLE_SEMGREP_HELP),
+    ] = False,
+    semgrep_config: Annotated[
+        str,
+        typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
+    ] = DEFAULT_SEMGREP_CONFIG,
 ) -> None:
     """Build aligned CleanVul-with-context datasets for all ranking strategies."""
 
@@ -607,6 +681,8 @@ def build_cleanvul_benchmark_compare_rankings(
         multiplicative_amplification_coefficients=multiplicative_amplification_coefficients,
         current_coefficients=current_coefficients,
         include_static_findings=include_static_findings,
+        enable_semgrep=enable_semgrep,
+        semgrep_config=semgrep_config,
     )
 
 
@@ -696,6 +772,14 @@ def build_cleanvul_benchmark_compare_rankings_all(
         bool,
         typer.Option("--include-static-findings", help=_INCLUDE_STATIC_FINDINGS_HELP),
     ] = False,
+    enable_semgrep: Annotated[
+        bool,
+        typer.Option("--enable-semgrep", help=_ENABLE_SEMGREP_HELP),
+    ] = False,
+    semgrep_config: Annotated[
+        str,
+        typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
+    ] = DEFAULT_SEMGREP_CONFIG,
 ) -> None:
     """Build CleanVul-with-context datasets for all strategies plus last-trial variants in one pass.
 
@@ -729,6 +813,8 @@ def build_cleanvul_benchmark_compare_rankings_all(
         token_budget=token_budget,
         strategy_factories=strategy_factories,
         include_static_findings=include_static_findings,
+        enable_semgrep=enable_semgrep,
+        semgrep_config=semgrep_config,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
     typer.secho(
@@ -846,8 +932,20 @@ def tune_ranking_coefficients(
         ),
     ] = True,
     seed: Annotated[int, typer.Option("--seed", help="Optuna sampler seed.")] = 42,
+    enable_semgrep: Annotated[
+        bool,
+        typer.Option("--enable-semgrep", help=_ENABLE_SEMGREP_HELP),
+    ] = False,
+    semgrep_config: Annotated[
+        str,
+        typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
+    ] = DEFAULT_SEMGREP_CONFIG,
 ) -> None:
-    """Tune ranking coefficients with Optuna against an LLM judge."""
+    """Tune ranking coefficients with Optuna against an LLM judge.
+
+    Semgrep options apply to Phase 1 sample preparation; trials re-rank the
+    prepared samples. A study records its Semgrep setting and refuses to resume
+    with a different one."""
 
     base_coeff_obj: RankingCoefficients | None
     if strategy == RankingStrategy.EVIDENCE_BUDGETED:
@@ -886,6 +984,7 @@ def tune_ranking_coefficients(
         load_if_exists=True,
         sampler=optuna.samplers.TPESampler(seed=seed),
     )
+    _bind_study_semgrep_config(study, semgrep_config if enable_semgrep else None)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger(__name__)
@@ -913,6 +1012,8 @@ def tune_ranking_coefficients(
         token_budget=DEFAULT_TOKEN_BUDGET,
         strategy_factories=prep_factories,
         delete_checkouts=False,
+        enable_semgrep=enable_semgrep,
+        semgrep_config=semgrep_config,
     )
     prepared_samples = prep_service.prepare_samples(prepared_cache_dir)
     logger.info(
@@ -1065,6 +1166,12 @@ def export_best_coefficients(
     typer.secho(
         f"Wrote tuned coefficients for {strategy.value} to {output_best} and {output_last}",
         fg=typer.colors.GREEN,
+    )
+    recorded_semgrep: str | None = study.user_attrs.get(_STUDY_SEMGREP_ATTR)
+    typer.secho(
+        f"Study {study_name!r} was tuned with {_describe_semgrep(recorded_semgrep)}; "
+        "build benchmarks with matching --enable-semgrep/--semgrep-config.",
+        fg=typer.colors.YELLOW,
     )
 
 

@@ -1,7 +1,10 @@
 """Static-findings enrichment in the CleanVul benchmark service."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
+from clients.analyzers.semgrep import semgrep_rules_fingerprint
+from clients.neo4j import Neo4jClient
 from models.bandit_report import IssueSeverity
 from models.base import NodeID
 from models.benchmark.cleanvul import CleanVulEntry
@@ -122,6 +125,27 @@ def test_to_sample_omits_enrichment_when_disabled(tmp_path: Path) -> None:
 
     assert "static_findings" not in dumped
     assert "source_map" not in dumped
+
+
+def test_scanner_pipeline_disables_semgrep_by_default(tmp_path: Path) -> None:
+    service = _service(tmp_path, include=True)
+
+    pipeline = service._scanner_pipeline(tmp_path, MagicMock(spec=Neo4jClient))
+
+    assert pipeline.enable_semgrep is False
+    assert service._semgrep_cache_config() is None
+
+
+def test_scanner_pipeline_forwards_semgrep_options(tmp_path: Path) -> None:
+    service = _service(tmp_path, include=True).model_copy(
+        update={"enable_semgrep": True, "semgrep_config": "p/django"}
+    )
+
+    pipeline = service._scanner_pipeline(tmp_path, MagicMock(spec=Neo4jClient))
+
+    assert pipeline.enable_semgrep is True
+    assert pipeline.semgrep_config == "p/django"
+    assert service._semgrep_cache_config() == semgrep_rules_fingerprint("p/django")
 
 
 def test_prepared_sample_round_trips_findings(tmp_path: Path) -> None:
