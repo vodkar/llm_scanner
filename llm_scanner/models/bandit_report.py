@@ -15,4 +15,5 @@ class BanditIssue(StaticAnalyzerIssue):
     line_number: int
     column_number: int
     line_range: list[int]
+    test_id: str = ""
     # byte: int

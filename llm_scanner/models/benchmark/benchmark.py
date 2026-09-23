@@ -1,4 +1,15 @@
-from pydantic import BaseModel, ConfigDict, Field
+from typing import ClassVar
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
+
+from models.context import SnippetSegment
+from models.static_finding import StaticFinding
 
 
 class BenchmarkMetadata(BaseModel):
@@ -43,6 +54,29 @@ class BenchmarkSample(BaseModel):
     )
     cwe_types: list[str] = Field(default_factory=list, description="Additional CWE tags")
     severity: str = Field(..., description="Severity label")
+    static_findings: list[StaticFinding] | None = Field(
+        default=None,
+        description="Analyzer findings located in `code` (only with --include-static-findings)",
+    )
+    source_map: list[SnippetSegment] | None = Field(
+        default=None,
+        description="`code` line → repo location mapping (only with --include-static-findings)",
+    )
+
+    _OPTIONAL_ENRICHMENT_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"static_findings", "source_map"}
+    )
+
+    @model_serializer(mode="wrap")
+    def _drop_absent_enrichment(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        """Omit enrichment keys that were not requested, keeping legacy output unchanged."""
+
+        data: dict[str, object] = handler(self)
+        return {
+            key: value
+            for key, value in data.items()
+            if not (key in self._OPTIONAL_ENRICHMENT_FIELDS and value is None)
+        }
 
 
 class BenchmarkDataset(BaseModel):

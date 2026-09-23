@@ -61,11 +61,12 @@ def test_issue_payload_includes_issue_id(dlint_service: DlintAnalyzerService) ->
     assert payload["file"] == Path("src/app.py")
     assert payload["line_number"] == 10
     assert payload["reason"] == "Insecure use of eval"
+    assert payload["rule_id"] == "DUO123"
+    assert payload["column_number"] == 5
     assert "code" not in payload
-    assert "column_number" not in payload
 
 
-def test_issue_payload_removes_code_and_column_number(dlint_service: DlintAnalyzerService) -> None:
+def test_issue_payload_moves_code_to_rule_id(dlint_service: DlintAnalyzerService) -> None:
     issue = DlintIssue(
         code="DUO105",
         file=Path("test.py"),
@@ -77,7 +78,8 @@ def test_issue_payload_removes_code_and_column_number(dlint_service: DlintAnalyz
     payload = dlint_service._issue_payload(issue)
 
     assert "code" not in payload
-    assert "column_number" not in payload
+    assert payload["rule_id"] == "DUO105"
+    assert payload["issue_id"] == 105
 
 
 def test_normalize_issue_path_resolves_relative_to_target(

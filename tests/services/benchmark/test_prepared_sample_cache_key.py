@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from models.context import FileSpans
+from services.benchmark import prepared_sample
 from services.benchmark.prepared_sample import compute_sample_cache_key
 
 _BASE_KWARGS = {
@@ -60,3 +61,9 @@ def test_cache_key_defaults_match_explicit_hub_defaults() -> None:
     assert compute_sample_cache_key(**_BASE_KWARGS) == compute_sample_cache_key(
         **_BASE_KWARGS, damp_call_graph_hubs=True, hub_fanin_threshold=12
     )
+
+
+def test_cache_key_uses_schema_v3() -> None:
+    """Schema v3 adds static findings; v2 pickles must not be reused."""
+
+    assert prepared_sample._CACHE_SCHEMA_VERSION == 3

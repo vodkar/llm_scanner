@@ -8,10 +8,15 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from models.base import NodeID
-from models.context import CodeContextNode, Context, FileSpans
+from models.context import CodeContextNode, Context, FileSpans, SnippetSegment
 from repositories.context import ContextRepository
 from repositories.queries import code_traversal_relationship_types
 from services.context_assembler.node_filters import is_test_path, text_uses_test_framework
+from services.context_assembler.source_map import (
+    RenderedLine,
+    build_source_map,
+    has_nonstandard_line_breaks,
+)
 from services.ranking.ranking import (
     ContextNodeRankingStrategy,
 )
@@ -329,12 +334,13 @@ class ContextAssemblerService(BaseModel):
         """Rank and render already-fetched context nodes into final text."""
 
         cloned_nodes: list[CodeContextNode] = [node.model_copy(deep=True) for node in nodes]
-        context_text, token_count = self._render_context(repo_path, cloned_nodes)
+        context_text, token_count, source_map = self._render_context(repo_path, cloned_nodes)
 
         return Context(
             description="Finding from spans query",
             context_text=context_text,
             token_count=token_count,
+            source_map=source_map,
         )
 
     def assemble_for_spans(self, repo_path: Path, files_spans: list[FileSpans]) -> Context:
@@ -356,7 +362,9 @@ class ContextAssemblerService(BaseModel):
 
         return self.assemble_from_nodes(repo_path, context_nodes)
 
-    def _render_context(self, repo_path: Path, nodes: list[CodeContextNode]) -> tuple[str, int]:
+    def _render_context(
+        self, repo_path: Path, nodes: list[CodeContextNode]
+    ) -> tuple[str, int, list[SnippetSegment]]:
         """Render text context for a finding and enforce token budget.
 
         Args:
@@ -364,14 +372,14 @@ class ContextAssemblerService(BaseModel):
             nodes: Context nodes to render.
 
         Returns:
-            Tuple of rendered context text and token count.
+            Tuple of rendered context text, token count and snippet source map.
         """
 
         _LOGGER.debug("Rendering context for %d nodes", len(nodes))
 
         nodes = self.ranking_strategy.rank_nodes(nodes)
         if not nodes:
-            return "", 0
+            return "", 0, []
 
         file_lines_to_read: dict[Path, set[int]] = defaultdict(set)
         for node in nodes:
@@ -379,12 +387,15 @@ class ContextAssemblerService(BaseModel):
                 file_lines_to_read[node.file_path].add(line_number)
 
         read_lines: dict[Path, dict[int, str]] = defaultdict(dict)
+        unmappable_files: set[Path] = set()
         for file_path, line_numbers in file_lines_to_read.items():
             try:
                 text = (repo_path / file_path).read_text(encoding="utf-8", errors="ignore")
             except OSError:
                 _LOGGER.warning("Cannot read source file %s; skipping its lines", file_path)
                 continue
+            if has_nonstandard_line_breaks(text):
+                unmappable_files.add(file_path)
             lines = text.splitlines()
             for line_number in line_numbers:
                 if line_number > len(lines):
@@ -394,12 +405,21 @@ class ContextAssemblerService(BaseModel):
         selected_ids = self._select_nodes_with_path_fill(nodes, read_lines)
 
         lines_to_keep = self._lines_for_selection(nodes, selected_ids)
-        candidate_text = self._render_text(read_lines, lines_to_keep)
+        rendered_lines = self._render_lines(read_lines, lines_to_keep)
+        candidate_text = "\n".join(text for _, _, text in rendered_lines)
 
         if not candidate_text:
             _LOGGER.warning("Empty snippet for project %s", repo_path)
 
-        return candidate_text, self._estimate_tokens(candidate_text)
+        return (
+            candidate_text,
+            self._estimate_tokens(candidate_text),
+            [
+                segment
+                for segment in build_source_map(rendered_lines)
+                if segment.file_path not in unmappable_files
+            ],
+        )
 
     def _select_nodes_with_path_fill(
         self,
@@ -540,19 +560,21 @@ class ContextAssemblerService(BaseModel):
                 result[node.file_path].add(line_number)
         return result
 
-    @staticmethod
-    def _render_text(
+    @classmethod
+    def _render_lines(
+        cls,
         read_lines: dict[Path, dict[int, str]],
         lines_to_keep: dict[Path, set[int]],
-    ) -> str:
-        """Render the final text from the chosen line set per file.
+    ) -> list[RenderedLine]:
+        """Return rendered lines with provenance, in output order.
 
-        Exact-duplicate module-level boilerplate lines (e.g. repeated
-        ``logger = logging.getLogger(__name__)`` from different files) are
-        collapsed to their first occurrence; all other lines are kept verbatim.
+        Empty lines are skipped and exact-duplicate module-level boilerplate
+        lines (e.g. repeated ``logger = logging.getLogger(__name__)`` from
+        different files) are collapsed to their first occurrence; all other
+        lines are kept verbatim.
         """
 
-        parts: list[str] = []
+        rendered: list[RenderedLine] = []
         seen_boilerplate: set[str] = set()
         for file_path, lines in lines_to_keep.items():
             file_lines = read_lines.get(file_path, {})
@@ -564,8 +586,18 @@ class ContextAssemblerService(BaseModel):
                     if line in seen_boilerplate:
                         continue
                     seen_boilerplate.add(line)
-                parts.append(line)
-        return "\n".join(parts)
+                rendered.append((file_path, line_number, line))
+        return rendered
+
+    @classmethod
+    def _render_text(
+        cls,
+        read_lines: dict[Path, dict[int, str]],
+        lines_to_keep: dict[Path, set[int]],
+    ) -> str:
+        """Render the final text from the chosen line set per file."""
+
+        return "\n".join(text for _, _, text in cls._render_lines(read_lines, lines_to_keep))
 
     @staticmethod
     def _sanitize_line(line: str) -> str:
