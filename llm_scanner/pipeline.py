@@ -35,6 +35,8 @@ from services.ranking.strategy_factory import RankingStrategyFactory
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
+DEFAULT_TOKEN_BUDGET: Final[int] = 4096
+
 _SEVERITY_RANK: Final = MappingProxyType(
     {IssueSeverity.LOW: 0, IssueSeverity.MEDIUM: 1, IssueSeverity.HIGH: 2}
 )
@@ -186,7 +188,7 @@ class GeneralScannerPipeline(BaseModel):
         llm_review_service: LLMCodeReviewService,
         *,
         max_call_depth: int = 3,
-        token_budget: int = 2048,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
         min_severity: IssueSeverity = IssueSeverity.HIGH,
     ) -> ScanReport:
         """Run a full-project scan: build CPG, filter findings, assemble context, review.
@@ -249,7 +251,7 @@ class GeneralScannerPipeline(BaseModel):
         llm_review_service: LLMCodeReviewService,
         *,
         max_call_depth: int = 3,
-        token_budget: int = 2048,
+        token_budget: int = DEFAULT_TOKEN_BUDGET,
     ) -> ScanReport:
         """Run a diff-mode scan: build CPG, resolve spans to nodes, review.
 

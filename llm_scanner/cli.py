@@ -32,7 +32,7 @@ from models.edges import RelationshipBase
 from models.nodes import Node
 from models.ranking_strategy import RankingStrategy
 from models.scan import ScanReport
-from pipeline import GeneralScannerPipeline
+from pipeline import DEFAULT_TOKEN_BUDGET, GeneralScannerPipeline
 from repositories.graph import GraphRepository
 from sarif_exporter import SARIFExporter
 from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService
@@ -91,7 +91,6 @@ DEFAULT_STUDY_DIR: Final[Path] = ROOT_DIR / "data" / "tuning_runs"
 DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
     ROOT_DIR / "config" / "ranking_coefficients_cpg_structural.yaml"
 )
-DEFAULT_TOKEN_BUDGET: Final = 2048
 DEFAULT_LAST_CPG_STRUCTURAL: Final[Path] = ROOT_DIR / "config" / "best_cpg_structural_last.yaml"
 DEFAULT_LAST_CURRENT: Final[Path] = ROOT_DIR / "config" / "best_current_last.yaml"
 DEFAULT_LAST_EVIDENCE_BUDGETED: Final[Path] = (
@@ -413,7 +412,7 @@ def scan(  # noqa: C901
     token_budget: Annotated[
         int,
         typer.Option("--token-budget", help="Token budget per assembled context."),
-    ] = 2048,
+    ] = DEFAULT_TOKEN_BUDGET,
     output_json: Annotated[
         Path | None,
         _writable_file_opt("--output-json", "Write the JSON report to this path."),
@@ -555,7 +554,7 @@ def build_cleanvul_benchmark(
     token_budget: Annotated[
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
-    ] = 2048,
+    ] = DEFAULT_TOKEN_BUDGET,
     include_static_findings: Annotated[
         bool,
         typer.Option("--include-static-findings", help=_INCLUDE_STATIC_FINDINGS_HELP),
@@ -623,7 +622,7 @@ def build_cleanvul_benchmark_compare_rankings(
     token_budget: Annotated[
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
-    ] = 2048,
+    ] = DEFAULT_TOKEN_BUDGET,
     cpg_structural_coefficients: Annotated[
         Path | None,
         _readable_file_opt(
@@ -711,7 +710,7 @@ def build_cleanvul_benchmark_compare_rankings_all(
     token_budget: Annotated[
         int,
         typer.Option("--token-budget", help="Token budget for context assembly."),
-    ] = 2048,
+    ] = DEFAULT_TOKEN_BUDGET,
     cpg_structural_coefficients: Annotated[
         Path | None,
         _readable_file_opt(
