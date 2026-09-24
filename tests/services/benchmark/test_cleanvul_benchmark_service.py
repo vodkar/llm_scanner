@@ -313,6 +313,64 @@ def test_build_writes_partial_datasets_on_keyboard_interrupt(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("failing_side", ["vulnerable", "fixed"])
+def test_build_deletes_clones_left_by_failed_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing_side: str
+) -> None:
+    """A clone whose checkout fails (e.g. commit gone upstream) must not leak disk."""
+    row = _make_row()
+    repo_url = "https://github.com/owner/repo"
+
+    def _fetch_entries(
+        self: CleanVulLoaderService,
+    ) -> list[tuple[list[CleanVulRow], str, str]]:
+        del self
+        return [([row], repo_url, "abcdef123456")]
+
+    def _checkout_repo(
+        self: RepoCheckoutService, repo_url: str, fix_hash: str, is_vulnerable: bool
+    ) -> Path:
+        del fix_hash
+        clone = self.repo_path_for_url(repo_url)
+        (clone / ".git").mkdir(parents=True, exist_ok=True)
+        if ("vulnerable" if is_vulnerable else "fixed") == failing_side:
+            raise RuntimeError("fatal: bad object abcdef123456")
+        return clone
+
+    monkeypatch.setattr(CleanVulLoaderService, "fetch_entries", _fetch_entries)
+    monkeypatch.setattr(RepoCheckoutService, "checkout_repo", _checkout_repo)
+
+    _make_service(tmp_path, delete_checkouts=True).build()
+
+    assert list((tmp_path / "repos").rglob("owner_repo")) == []
+
+
+def test_build_keeps_failed_clones_when_checkouts_are_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = _make_row()
+
+    def _fetch_entries(
+        self: CleanVulLoaderService,
+    ) -> list[tuple[list[CleanVulRow], str, str]]:
+        del self
+        return [([row], "https://github.com/owner/repo", "abcdef123456")]
+
+    def _checkout_repo(
+        self: RepoCheckoutService, repo_url: str, fix_hash: str, is_vulnerable: bool
+    ) -> Path:
+        del fix_hash, is_vulnerable
+        (self.repo_path_for_url(repo_url) / ".git").mkdir(parents=True, exist_ok=True)
+        raise RuntimeError("fatal: bad object abcdef123456")
+
+    monkeypatch.setattr(CleanVulLoaderService, "fetch_entries", _fetch_entries)
+    monkeypatch.setattr(RepoCheckoutService, "checkout_repo", _checkout_repo)
+
+    _make_service(tmp_path, delete_checkouts=False).build()
+
+    assert (tmp_path / "repos" / "vulnerable" / "owner_repo").exists()
+
+
 def test_build_uses_separate_checkout_roots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

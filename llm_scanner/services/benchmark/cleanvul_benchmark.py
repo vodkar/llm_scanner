@@ -517,6 +517,10 @@ class CleanVulBenchmarkService(BaseModel):
                         )
                     except Exception:
                         logger.exception("Failed to checkout %s at %s", repo_url, fix_hash)
+                        # The clone may exist even though checkout failed (e.g. commit
+                        # gone upstream); drop it so skipped commits do not leak disk.
+                        self._delete_checkout(vulnerable_repo_service.repo_path_for_url(repo_url))
+                        self._delete_checkout(fixed_repo_service.repo_path_for_url(repo_url))
                         continue
 
                     repo_size_reason = self._repo_size_reason(
