@@ -8,6 +8,7 @@ from pydantic import (
     model_serializer,
 )
 
+from models.benchmark.cleanvul import CLEANVUL_DATASET_NAME
 from models.context import SnippetSegment
 from models.static_finding import StaticFinding
 
@@ -41,6 +42,19 @@ class CleanVulSampleMetadata(BaseModel):
     commit_url: str = Field(..., description="Source commit URL")
     description: str = Field(default="", description="Commit message used as description")
     cwe_number: int | None = Field(default=None, description="Primary numeric CWE identifier")
+    source_dataset: str = Field(
+        default=CLEANVUL_DATASET_NAME, description="Name of the dataset the sample came from"
+    )
+    source_file: str = Field(
+        default="", description="Source dataset file name; empty in datasets built before v4"
+    )
+    source_row_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "0-based record positions in ``source_file`` (pandas index; header excluded) "
+            "of the rows merged into the sample"
+        ),
+    )
 
 
 class BenchmarkSample(BaseModel):

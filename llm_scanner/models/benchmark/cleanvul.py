@@ -1,6 +1,10 @@
+from typing import Final
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from models.context import FileSpans
+
+CLEANVUL_DATASET_NAME: Final[str] = "CleanVul"
 
 
 class CleanVulEntry(BaseModel):
@@ -25,4 +29,17 @@ class CleanVulEntry(BaseModel):
     commit_msg: str = Field(default="", description="Commit message")
     is_vulnerable: bool = Field(
         ..., description="True = func_before (vulnerable), False = func_after (fixed)"
+    )
+    source_dataset: str = Field(
+        default=CLEANVUL_DATASET_NAME, description="Name of the source dataset"
+    )
+    source_file: str = Field(
+        ..., description="Source dataset file name, e.g. vulnerability_score_4.csv"
+    )
+    source_row_ids: list[int] = Field(
+        ...,
+        description=(
+            "0-based record positions in ``source_file`` of the rows merged into this "
+            "entry (pandas index; header excluded)"
+        ),
     )

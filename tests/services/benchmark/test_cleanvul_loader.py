@@ -52,6 +52,42 @@ def test_fetch_entries_filters_by_extension(monkeypatch: pytest.MonkeyPatch) -> 
     assert results[0][0][0].extension == "py"
 
 
+def test_fetch_entries_keeps_source_row_position(monkeypatch: pytest.MonkeyPatch) -> None:
+    """row_id is the 0-based record position in the file, counting filtered rows."""
+    rows = [
+        _make_row(extension="js"),
+        _make_row(func_before="def a():\n    pass"),
+        _make_row(is_test="True"),
+        _make_row(func_before="def b():\n    pass"),
+    ]
+    service = _make_service()
+    monkeypatch.setattr(service, "_load_rows", lambda: rows)
+
+    [(group, _repo_url, _fix_hash)] = service.fetch_entries()
+
+    assert [row.row_id for row in group] == [1, 3]
+
+
+def test_load_rows_csv_row_ids_count_records_not_lines(tmp_path: Path) -> None:
+    """Multi-line quoted fields must not shift row ids."""
+    csv_path = tmp_path / "data.csv"
+    header = "func_before,func_after,commit_url,file_name,vulnerability_score,extension\n"
+    first = (
+        '"def a():\n    pass","def a():\n    return 1",https://github.com/o/r/commit/1,a.py,4,py\n'
+    )
+    second = (
+        '"def b():\n    pass","def b():\n    return 1",https://github.com/o/r/commit/2,b.py,4,py\n'
+    )
+    csv_path.write_text(header + first + second, encoding="utf-8")
+
+    entries = _make_service(dataset_path=csv_path, min_score=4).fetch_entries()
+
+    assert [(group[0].file_name, group[0].row_id) for group, _, _ in entries] == [
+        ("a.py", 0),
+        ("b.py", 1),
+    ]
+
+
 def test_fetch_entries_filters_by_score(monkeypatch: pytest.MonkeyPatch) -> None:
     """min_score=3 should keep only rows with score >= 3."""
     rows = [

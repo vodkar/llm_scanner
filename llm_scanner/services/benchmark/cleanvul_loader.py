@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 class CleanVulRow(BaseModel):
     """Raw row from the CleanVul dataset after type coercion."""
 
+    row_id: int = Field(
+        ...,
+        ge=0,
+        description="0-based record position in the source file (pandas index; header excluded)",
+    )
     func_before: str
     func_after: str
     commit_url: str
@@ -49,8 +54,8 @@ class CleanVulLoaderService(BaseModel):
         # Preserve insertion order so shuffling in the benchmark service is deterministic
         groups: dict[tuple[str, str], list[CleanVulRow]] = {}
 
-        for raw in raw_rows:
-            row = self._coerce_row(raw)
+        for row_id, raw in enumerate(raw_rows):
+            row = self._coerce_row(raw, row_id)
 
             if row.extension != "py":
                 continue
@@ -174,7 +179,7 @@ class CleanVulLoaderService(BaseModel):
         raise ValueError(f"Unsupported file extension: {suffix!r}. Use .csv, .tsv, or .parquet")
 
     @staticmethod
-    def _coerce_row(raw: dict[str, Any]) -> CleanVulRow:
+    def _coerce_row(raw: dict[str, Any], row_id: int) -> CleanVulRow:
         """Coerce a raw dictionary into a CleanVulRow, handling CSV string types.
 
         CSV files represent all values as strings; this method normalises booleans
@@ -182,6 +187,7 @@ class CleanVulLoaderService(BaseModel):
 
         Args:
             raw: Raw row dictionary from the dataset.
+            row_id: 0-based record position of ``raw`` in the source file.
 
         Returns:
             Validated CleanVulRow instance.
@@ -207,6 +213,7 @@ class CleanVulLoaderService(BaseModel):
             return str(v).strip().lower() in ("true", "1", "yes")
 
         return CleanVulRow(
+            row_id=row_id,
             func_before=_str("func_before"),
             func_after=_str("func_after"),
             commit_url=_str("commit_url"),

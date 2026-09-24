@@ -35,7 +35,8 @@ _LOGGER = logging.getLogger(__name__)
 # Bump when ``PreparedSample`` gains a new field that Phase 2 cannot infer
 # from existing pickle content. Old cache files are silently ignored.
 # v3: PreparedSample.static_findings (analyzer findings for the checkout).
-_CACHE_SCHEMA_VERSION = 3
+# v4: CleanVulEntry.source_dataset/source_file/source_row_ids.
+_CACHE_SCHEMA_VERSION = 4
 
 
 class PreparedSample(BaseModel):

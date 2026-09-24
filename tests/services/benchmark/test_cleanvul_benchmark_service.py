@@ -23,6 +23,7 @@ _COMMIT_URL = "https://github.com/owner/repo/commit/abcdef123456"
 
 def _make_row(**overrides: object) -> CleanVulRow:
     base = CleanVulRow(
+        row_id=0,
         func_before="def foo():\n    bad()",
         func_after="def foo():\n    good()",
         commit_url=_COMMIT_URL,
@@ -51,6 +52,8 @@ def _make_entry(is_vulnerable: bool, func_code: str = "def foo():\n    pass") ->
         vulnerability_score=3,
         commit_msg="fix: patch XSS",
         is_vulnerable=is_vulnerable,
+        source_file="cleanvul.csv",
+        source_row_ids=[0],
     )
 
 

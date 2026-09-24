@@ -145,6 +145,11 @@ class CleanVulBenchmarkService(BaseModel):
             semgrep_config=self.semgrep_config,
         )
 
+    def _cache_loader_options(self) -> dict[str, object]:
+        """Return loader settings that change cached entries (row ids depend on the file)."""
+
+        return {"min_score": self.min_score, "dataset_file": self.dataset_path.name}
+
     def _semgrep_cache_config(self) -> str | None:
         """Return the Semgrep rules fingerprint for the cache key, or None when off."""
 
@@ -195,7 +200,7 @@ class CleanVulBenchmarkService(BaseModel):
         self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        loader_options = {"min_score": self.min_score}
+        loader_options = self._cache_loader_options()
         loader = CleanVulLoaderService(
             dataset_path=self.dataset_path,
             min_score=self.min_score,
@@ -652,6 +657,7 @@ class CleanVulBenchmarkService(BaseModel):
         fixed_spans_by_file: dict[str, list[tuple[int, int]]] = {}
         vuln_func_codes: list[str] = []
         fixed_func_codes: list[str] = []
+        source_row_ids: list[int] = []
 
         for row in rows:
             vuln_file = vulnerable_repo_path / row.file_name
@@ -675,6 +681,7 @@ class CleanVulBenchmarkService(BaseModel):
             fixed_spans_by_file.setdefault(row.file_name, []).append(fixed_span)
             vuln_func_codes.append(row.func_before)
             fixed_func_codes.append(row.func_after)
+            source_row_ids.append(row.row_id)
 
         if not vuln_spans_by_file or not fixed_spans_by_file:
             return None
@@ -699,6 +706,8 @@ class CleanVulBenchmarkService(BaseModel):
                 vulnerability_score=representative.vulnerability_score,
                 commit_msg=representative.commit_msg,
                 is_vulnerable=is_vulnerable,
+                source_file=self.dataset_path.name,
+                source_row_ids=source_row_ids,
             )
 
         return _CleanVulEntryPair(
@@ -895,6 +904,9 @@ class CleanVulBenchmarkService(BaseModel):
             commit_url=entry.commit_url,
             description=entry.commit_msg,
             cwe_number=entry.cwe_id,
+            source_dataset=entry.source_dataset,
+            source_file=entry.source_file,
+            source_row_ids=entry.source_row_ids,
         )
 
     def _entry_pair_budget_reason(self, pair: _CleanVulEntryPair) -> str | None:

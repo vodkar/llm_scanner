@@ -63,10 +63,10 @@ def test_cache_key_defaults_match_explicit_hub_defaults() -> None:
     )
 
 
-def test_cache_key_without_semgrep_is_unchanged() -> None:
-    """Semgrep-off keys keep their pre-Semgrep value so existing caches stay valid."""
+def test_cache_key_without_semgrep_has_no_semgrep_part() -> None:
+    """Semgrep-off keys carry no Semgrep component (pinned at schema v4)."""
 
-    assert compute_sample_cache_key(**_BASE_KWARGS) == "d829e5c410adde0f7092420dff3687b69b4df7a3"
+    assert compute_sample_cache_key(**_BASE_KWARGS) == "982a21430941edfe689f33a7507be192ed0c017e"
     assert compute_sample_cache_key(**_BASE_KWARGS, semgrep_config=None) == (
         compute_sample_cache_key(**_BASE_KWARGS)
     )
@@ -82,7 +82,7 @@ def test_cache_key_changes_with_semgrep_config() -> None:
     assert len({off, python_rules, django_rules}) == 3
 
 
-def test_cache_key_uses_schema_v3() -> None:
-    """Schema v3 adds static findings; v2 pickles must not be reused."""
+def test_cache_key_uses_schema_v4() -> None:
+    """Schema v4 adds source identity to cached entries; v3 pickles must not be reused."""
 
-    assert prepared_sample._CACHE_SCHEMA_VERSION == 3
+    assert prepared_sample._CACHE_SCHEMA_VERSION == 4

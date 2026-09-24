@@ -40,6 +40,8 @@ def _entry() -> CleanVulEntry:
         files_spans=[FileSpans(Path("app.py"), [(1, 2)])],
         vulnerability_score=4,
         is_vulnerable=True,
+        source_file="cleanvul.csv",
+        source_row_ids=[0],
     )
 
 
