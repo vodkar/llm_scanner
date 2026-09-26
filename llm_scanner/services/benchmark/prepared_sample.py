@@ -36,7 +36,8 @@ _LOGGER = logging.getLogger(__name__)
 # from existing pickle content. Old cache files are silently ignored.
 # v3: PreparedSample.static_findings (analyzer findings for the checkout).
 # v4: CleanVulEntry.source_dataset/source_file/source_row_ids.
-_CACHE_SCHEMA_VERSION = 4
+# v5: non-security analyzer rules (e.g. Bandit B101) dropped from findings and scores.
+_CACHE_SCHEMA_VERSION = 5
 
 
 class PreparedSample(BaseModel):

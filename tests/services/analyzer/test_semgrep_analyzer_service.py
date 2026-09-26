@@ -60,3 +60,36 @@ def test_findings_are_semgrep_nodes_with_rule_and_cwe(
     assert finding.line_end == 6
     assert finding.column_number == 8
     assert finding.reason == "eval detected"
+
+
+@pytest.mark.parametrize(
+    ("category", "kept"),
+    [
+        ("security", True),
+        ("Security", True),
+        (None, True),
+        ("correctness", False),
+        ("best-practice", False),
+        ("maintainability", False),
+    ],
+)
+def test_only_security_or_uncategorised_rules_are_kept(
+    semgrep_service: SemgrepAnalyzerService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    category: str | None,
+    kept: bool,
+) -> None:
+    issue = SemgrepIssue(
+        check_id="python.lang.rule",
+        file=tmp_path / "app.py",
+        line_number=1,
+        severity=IssueSeverity.LOW,
+        reason="r",
+        category=category,
+    )
+    monkeypatch.setattr(SemgrepStaticAnalyzer, "run", lambda self: MagicMock(issues=[issue]))
+
+    findings, _ = semgrep_service.get_findings_with_edges([])
+
+    assert len(findings) == int(kept)

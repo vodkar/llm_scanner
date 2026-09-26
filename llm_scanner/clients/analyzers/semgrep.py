@@ -177,6 +177,8 @@ def _semgrep_executable() -> str:
 
 def _to_issue(raw: dict[str, Any]) -> SemgrepIssue:
     extra: dict[str, Any] = raw.get("extra", {})
+    metadata: dict[str, Any] = extra.get("metadata", {})
+    category = metadata.get("category")
     return SemgrepIssue(
         check_id=raw["check_id"],
         file=Path(raw["path"]),
@@ -184,8 +186,9 @@ def _to_issue(raw: dict[str, Any]) -> SemgrepIssue:
         line_end=raw["end"]["line"],
         column_number=max(raw["start"].get("col", 1) - 1, 0),
         severity=_SEVERITY_BY_LEVEL.get(str(extra.get("severity", "")).upper(), IssueSeverity.LOW),
-        cwe=_parse_cwe(extra.get("metadata", {}).get("cwe")),
+        cwe=_parse_cwe(metadata.get("cwe")),
         reason=extra.get("message", ""),
+        category=str(category) if category is not None else None,
     )
 
 

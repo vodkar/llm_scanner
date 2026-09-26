@@ -165,3 +165,46 @@ def test_issue_payload_clamps_negative_column(bandit_service: BanditAnalyzerServ
     finding = BanditFindingNode(**bandit_service._issue_payload(issue))
 
     assert finding.column_number == 0
+
+
+def _bandit_issue(test_id: str) -> BanditIssue:
+    return BanditIssue(
+        cwe=703,
+        file=Path("app.py"),
+        line_number=1,
+        column_number=0,
+        line_range=[1],
+        severity=IssueSeverity.LOW,
+        reason="x",
+        test_id=test_id,
+    )
+
+
+@pytest.mark.parametrize("test_id", ["B101", "B110", "B112", "B403", "B404"])
+def test_non_security_tests_are_dropped(
+    bandit_service: BanditAnalyzerService,
+    monkeypatch: pytest.MonkeyPatch,
+    test_id: str,
+) -> None:
+    monkeypatch.setattr(
+        BanditStaticAnalyzer, "run", lambda self: MagicMock(issues=[_bandit_issue(test_id)])
+    )
+
+    findings, _ = bandit_service.get_findings_with_edges([])
+
+    assert findings == []
+
+
+@pytest.mark.parametrize("test_id", ["B301", "B311", "B413", "B602", "B608", ""])
+def test_security_tests_are_kept(
+    bandit_service: BanditAnalyzerService,
+    monkeypatch: pytest.MonkeyPatch,
+    test_id: str,
+) -> None:
+    monkeypatch.setattr(
+        BanditStaticAnalyzer, "run", lambda self: MagicMock(issues=[_bandit_issue(test_id)])
+    )
+
+    findings, _ = bandit_service.get_findings_with_edges([])
+
+    assert [finding.rule_id for finding in findings] == [test_id]

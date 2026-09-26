@@ -100,6 +100,16 @@ def test_run_parses_cwe_variants(
     assert issue.cwe == expected
 
 
+def test_run_parses_rule_category(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = _result(tmp_path / "a.py")
+    result["extra"]["metadata"]["category"] = "correctness"  # type: ignore[index]
+    _patch_run(monkeypatch, {"results": [result, _result(tmp_path / "b.py")], "errors": []})
+
+    issues = SemgrepStaticAnalyzer(src=tmp_path).run().issues
+
+    assert [issue.category for issue in issues] == ["correctness", None]
+
+
 def test_run_passes_config_and_disables_metrics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

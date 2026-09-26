@@ -36,6 +36,21 @@ class BaseAnalyzerService(BaseModel):
     def _static_analyzer(self) -> IStaticAnalyzer:
         pass
 
+    def _is_security_relevant(self, issue: StaticAnalyzerIssue) -> bool:
+        """Return whether ``issue`` reports a security weakness rather than code hygiene.
+
+        Analyzers override this to drop rules such as Bandit's ``assert`` check,
+        which would otherwise feed ranking and benchmark findings as noise.
+
+        Args:
+            issue: Analyzer issue instance.
+
+        Returns:
+            True to keep the issue.
+        """
+
+        return True
+
     def _issue_payload(self, issue: StaticAnalyzerIssue) -> dict[str, Any]:
         """Build finding payload for the given analyzer issue.
 
@@ -79,9 +94,16 @@ class BaseAnalyzerService(BaseModel):
         """
 
         report = self._static_analyzer.run()
+        issues = [issue for issue in report.issues if self._is_security_relevant(issue)]
+        if len(issues) < len(report.issues):
+            logger.debug(
+                "%s dropped %d non-security issue(s)",
+                type(self).__name__,
+                len(report.issues) - len(issues),
+            )
 
         findings: list[FindingNode] = []
-        for issue in report.issues:
+        for issue in issues:
             normalized_path = self._normalize_issue_path(issue.file)
             payload = self._issue_payload(issue)
             payload["file"] = normalized_path
