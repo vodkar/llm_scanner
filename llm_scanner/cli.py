@@ -37,6 +37,10 @@ from repositories.graph import GraphRepository
 from sarif_exporter import SARIFExporter
 from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeService
+from services.benchmark.sample_exclusions import (
+    DEFAULT_EXCLUSION_SECTIONS,
+    load_excluded_row_ids,
+)
 from services.cpg_parser.ts_parser.cpg_builder import (
     CPGDirectoryBuilder,
     CPGFileBuilder,
@@ -83,6 +87,13 @@ _ENABLE_SEMGREP_HELP: Final[str] = (
 _SEMGREP_CONFIG_HELP: Final[str] = (
     "Semgrep --config value: a registry id such as p/python or a local rules path "
     "('auto' is unsupported because metrics are disabled)."
+)
+_EXCLUDE_SAMPLES_HELP: Final[str] = (
+    "JSON file of audited samples (e.g. wrong labels) whose CleanVul commits are "
+    "left out; entries carry cleanvul_source_row_ids."
+)
+_EXCLUDE_SECTION_HELP: Final[str] = (
+    "Top-level list in --exclude-samples to exclude; repeatable. Defaults to 'samples'."
 )
 _STUDY_SEMGREP_ATTR: Final[str] = "semgrep_config"
 DEFAULT_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cvefixes_repos"
@@ -190,6 +201,7 @@ def _run_compare_rankings(
     include_static_findings: bool,
     enable_semgrep: bool,
     semgrep_config: str,
+    excluded_row_ids: frozenset[int],
 ) -> None:
     neo4j_config: Neo4jConfig = ctx.obj["neo4j"]
     strategy_factories = build_strategy_factories(
@@ -213,12 +225,44 @@ def _run_compare_rankings(
         include_static_findings=include_static_findings,
         enable_semgrep=enable_semgrep,
         semgrep_config=semgrep_config,
+        excluded_row_ids=excluded_row_ids,
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
     typer.secho(
         f"Wrote benchmark datasets to {dataset_paths}, entries to {entries_path}",
         fg=typer.colors.GREEN,
     )
+
+
+def _excluded_row_ids(
+    exclude_samples: Path | None,
+    dataset_path: Path,
+    exclude_sections: list[str] | None,
+) -> frozenset[int]:
+    """Load the CleanVul row ids to exclude, reporting a bad file as a CLI error.
+
+    Args:
+        exclude_samples: Exclusion JSON file, or None to exclude nothing.
+        dataset_path: CleanVul dataset the benchmark is built from.
+        exclude_sections: Sections of the file to exclude; None means the default.
+
+    Returns:
+        Row ids to exclude.
+
+    Raises:
+        typer.BadParameter: If the exclusion file is invalid for this dataset.
+    """
+
+    if exclude_samples is None:
+        return frozenset()
+    try:
+        return load_excluded_row_ids(
+            exclude_samples,
+            dataset_path,
+            exclude_sections or DEFAULT_EXCLUSION_SECTIONS,
+        )
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--exclude-samples") from error
 
 
 def _bind_study_semgrep_config(study: optuna.Study, semgrep_config: str | None) -> None:
@@ -567,6 +611,14 @@ def build_cleanvul_benchmark(
         str,
         typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
     ] = DEFAULT_SEMGREP_CONFIG,
+    exclude_samples: Annotated[
+        Path | None,
+        _readable_file_opt("--exclude-samples", _EXCLUDE_SAMPLES_HELP),
+    ] = None,
+    exclude_sections: Annotated[
+        list[str] | None,
+        typer.Option("--exclude-section", help=_EXCLUDE_SECTION_HELP),
+    ] = None,
 ) -> None:
     """Build the CleanVul-with-context benchmark dataset."""
 
@@ -583,6 +635,7 @@ def build_cleanvul_benchmark(
         include_static_findings=include_static_findings,
         enable_semgrep=enable_semgrep,
         semgrep_config=semgrep_config,
+        excluded_row_ids=_excluded_row_ids(exclude_samples, dataset_path, exclude_sections),
         strategy_factories={
             RankingStrategies.CURRENT: partial(
                 _build_current_ranking_strategy, current_coefficients=None
@@ -663,6 +716,14 @@ def build_cleanvul_benchmark_compare_rankings(
         str,
         typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
     ] = DEFAULT_SEMGREP_CONFIG,
+    exclude_samples: Annotated[
+        Path | None,
+        _readable_file_opt("--exclude-samples", _EXCLUDE_SAMPLES_HELP),
+    ] = None,
+    exclude_sections: Annotated[
+        list[str] | None,
+        typer.Option("--exclude-section", help=_EXCLUDE_SECTION_HELP),
+    ] = None,
 ) -> None:
     """Build aligned CleanVul-with-context datasets for all ranking strategies."""
 
@@ -682,6 +743,7 @@ def build_cleanvul_benchmark_compare_rankings(
         include_static_findings=include_static_findings,
         enable_semgrep=enable_semgrep,
         semgrep_config=semgrep_config,
+        excluded_row_ids=_excluded_row_ids(exclude_samples, dataset_path, exclude_sections),
     )
 
 
@@ -779,6 +841,14 @@ def build_cleanvul_benchmark_compare_rankings_all(
         str,
         typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
     ] = DEFAULT_SEMGREP_CONFIG,
+    exclude_samples: Annotated[
+        Path | None,
+        _readable_file_opt("--exclude-samples", _EXCLUDE_SAMPLES_HELP),
+    ] = None,
+    exclude_sections: Annotated[
+        list[str] | None,
+        typer.Option("--exclude-section", help=_EXCLUDE_SECTION_HELP),
+    ] = None,
 ) -> None:
     """Build CleanVul-with-context datasets for all strategies plus last-trial variants in one pass.
 
@@ -814,6 +884,7 @@ def build_cleanvul_benchmark_compare_rankings_all(
         include_static_findings=include_static_findings,
         enable_semgrep=enable_semgrep,
         semgrep_config=semgrep_config,
+        excluded_row_ids=_excluded_row_ids(exclude_samples, dataset_path, exclude_sections),
     )
     dataset_paths, entries_path = service.build_all_ranking_strategies()
     typer.secho(
@@ -939,6 +1010,14 @@ def tune_ranking_coefficients(
         str,
         typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
     ] = DEFAULT_SEMGREP_CONFIG,
+    exclude_samples: Annotated[
+        Path | None,
+        _readable_file_opt("--exclude-samples", _EXCLUDE_SAMPLES_HELP),
+    ] = None,
+    exclude_sections: Annotated[
+        list[str] | None,
+        typer.Option("--exclude-section", help=_EXCLUDE_SECTION_HELP),
+    ] = None,
 ) -> None:
     """Tune ranking coefficients with Optuna against an LLM judge.
 
@@ -1013,6 +1092,7 @@ def tune_ranking_coefficients(
         delete_checkouts=False,
         enable_semgrep=enable_semgrep,
         semgrep_config=semgrep_config,
+        excluded_row_ids=_excluded_row_ids(exclude_samples, dataset, exclude_sections),
     )
     prepared_samples = prep_service.prepare_samples(prepared_cache_dir)
     logger.info(

@@ -116,6 +116,13 @@ class CleanVulBenchmarkService(BaseModel):
         description="Semgrep --config value (registry id or local rules path).",
     )
     min_score: int = Field(default=4, ge=0, le=4)
+    excluded_row_ids: frozenset[int] = Field(
+        default=frozenset(),
+        description=(
+            "CleanVul row ids (e.g. audited wrong labels) whose commits are left out "
+            "of the dataset; see services.benchmark.sample_exclusions."
+        ),
+    )
     max_repo_size_bytes: int | None = Field(
         default=1024 * 1024 * 100,  # 100 MB
         ge=1,
@@ -204,6 +211,7 @@ class CleanVulBenchmarkService(BaseModel):
         loader = CleanVulLoaderService(
             dataset_path=self.dataset_path,
             min_score=self.min_score,
+            excluded_row_ids=self.excluded_row_ids,
         )
         candidate_rows = loader.fetch_entries()
 
@@ -476,6 +484,7 @@ class CleanVulBenchmarkService(BaseModel):
         loader = CleanVulLoaderService(
             dataset_path=self.dataset_path,
             min_score=self.min_score,
+            excluded_row_ids=self.excluded_row_ids,
         )
         candidate_rows = loader.fetch_entries()
         rng = random.Random(self.seed)

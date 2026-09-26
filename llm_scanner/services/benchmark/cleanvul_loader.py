@@ -39,13 +39,19 @@ class CleanVulLoaderService(BaseModel):
     min_score: int = Field(
         default=3, ge=0, le=4, description="Minimum vulnerability_score to include"
     )
+    excluded_row_ids: frozenset[int] = Field(
+        default=frozenset(),
+        description="Row ids whose whole commit group is dropped (e.g. audited wrong labels)",
+    )
 
     def fetch_entries(self) -> list[tuple[list[CleanVulRow], str, str]]:
         """Load and filter rows from the dataset, grouped by commit.
 
         Multiple rows from the same commit (same repo + fix hash) are merged
         into a single group so that all modified functions are processed together
-        in one repository checkout.
+        in one repository checkout. A group containing any ``excluded_row_ids``
+        row is dropped entirely: both benchmark sides of a commit share its rows,
+        and dropping only some rows would re-emit the same commit.
 
         Returns:
             List of (rows_for_commit, repo_url, fix_hash) tuples, one per unique commit.
@@ -84,7 +90,14 @@ class CleanVulLoaderService(BaseModel):
                 groups[key] = []
             groups[key].append(row)
 
-        return [(rows, repo_url, fix_hash) for (repo_url, fix_hash), rows in groups.items()]
+        kept = {
+            key: rows
+            for key, rows in groups.items()
+            if self.excluded_row_ids.isdisjoint(row.row_id for row in rows)
+        }
+        if self.excluded_row_ids:
+            logger.info("Excluded %d commit(s) containing listed row ids", len(groups) - len(kept))
+        return [(rows, repo_url, fix_hash) for (repo_url, fix_hash), rows in kept.items()]
 
     @staticmethod
     def _parse_commit_url(commit_url: str) -> tuple[str, str]:

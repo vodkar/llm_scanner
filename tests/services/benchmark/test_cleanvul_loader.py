@@ -288,3 +288,37 @@ def test_load_rows_csv(tmp_path: Path) -> None:
 
     assert len(rows) == 1
     assert rows[0]["func_before"] == "def foo():"
+
+
+def test_fetch_entries_drops_whole_commit_of_excluded_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An excluded row removes its whole commit group; other commits stay."""
+    rows = [
+        _make_row(commit_url="https://github.com/o/r/commit/aaa"),
+        _make_row(commit_url="https://github.com/o/r/commit/aaa", func_before="def b():\n    pass"),
+        _make_row(commit_url="https://github.com/o/r/commit/bbb"),
+    ]
+    service = _make_service(excluded_row_ids=frozenset({1}))
+    monkeypatch.setattr(service, "_load_rows", lambda: rows)
+
+    results = service.fetch_entries()
+
+    assert [fix_hash for _rows, _repo_url, fix_hash in results] == ["bbb"]
+    assert [row.row_id for row in results[0][0]] == [2]
+
+
+def test_fetch_entries_ignores_excluded_ids_of_filtered_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Excluding a row that the filters already dropped leaves its commit intact."""
+    rows = [
+        _make_row(extension="js"),
+        _make_row(),
+    ]
+    service = _make_service(excluded_row_ids=frozenset({0}))
+    monkeypatch.setattr(service, "_load_rows", lambda: rows)
+
+    [(group, _repo_url, _fix_hash)] = service.fetch_entries()
+
+    assert [row.row_id for row in group] == [1]

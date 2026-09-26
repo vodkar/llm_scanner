@@ -81,6 +81,32 @@ Key options:
 | `--token-budget` | 2048 | Token budget per assembled context |
 | `--seed` | none | Random seed for reproducible sampling |
 | `--min-score` | 3 | *(CleanVul only)* Minimum `vulnerability_score` (0–4) |
+| `--exclude-samples` | none | *(CleanVul only)* JSON file of audited samples to leave out (see below) |
+| `--exclude-section` | `samples` | *(CleanVul only)* Top-level list of `--exclude-samples` to use; repeatable |
+
+#### Excluding wrongly labelled samples
+
+`--exclude-samples` (on all CleanVul build commands and `tune-ranking-coefficients`)
+takes a JSON object whose lists hold entries with `cleanvul_source_row_ids` — the
+0-based data-row indices stored in `metadata.source_row_ids`. Every commit that
+contains a listed row is dropped, both its vulnerable and fixed sample. If the file
+has a `source_csv`, its file name must match the dataset's, since row ids only make
+sense for that file.
+
+```bash
+uv run llm-scanner build-cleanvul-benchmark-compare-rankings \
+  /var/opt/llm4codesec-framework/benchmarks/CleanVul/vulnerability_score_4.csv \
+  --exclude-samples /var/opt/llm4codesec-framework/benchmarks/cleanvul_wrong_labels.json \
+  --exclude-section samples --exclude-section disputed
+```
+
+#### Non-security analyzer findings
+
+Analyzer rules that report code hygiene rather than a security weakness are dropped
+before they reach ranking, benchmark `static_findings`, or scan reports: Bandit
+`B101` (assert), `B110`/`B112` (swallowed exceptions) and the import-only checks
+`B401`–`B410` (their risky calls are reported separately), plus Semgrep rules whose
+`metadata.category` is anything other than `security`.
 
 ## Ranking strategies
 
