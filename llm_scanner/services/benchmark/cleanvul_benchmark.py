@@ -7,7 +7,12 @@ from typing import Final, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from clients.neo4j import Neo4jConfig, build_client
+from clients.analyzers.semgrep import (
+    DEFAULT_SEMGREP_CONFIG,
+    SemgrepExecutionError,
+    semgrep_rules_fingerprint,
+)
+from clients.neo4j import Neo4jClient, Neo4jConfig, build_client
 from models.base import NodeID
 from models.benchmark.benchmark import (
     BenchmarkSample,
@@ -15,6 +20,7 @@ from models.benchmark.benchmark import (
 )
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import CodeContextNode, Context, FileSpans
+from models.nodes.finding import FindingNode
 from pipeline import GeneralScannerPipeline
 from repositories.context import ContextRepository
 from services.benchmark.cleanvul_loader import CleanVulLoaderService, CleanVulRow
@@ -30,6 +36,7 @@ from services.benchmark.prepared_sample import (
     save_prepared_sample,
 )
 from services.benchmark.repo_checkout import RepoCheckoutService
+from services.benchmark.static_findings import attach_findings
 from services.context_assembler.context_assembler import ContextAssemblerService
 from services.ranking.ranking import ContextNodeRankingStrategy
 from services.source_code import SourceCodeService
@@ -90,6 +97,24 @@ class CleanVulBenchmarkService(BaseModel):
         ge=1,
         description="Fan-in degree at/above which a node is treated as a hub.",
     )
+    include_static_findings: bool = Field(
+        default=False,
+        description=(
+            "Attach analyzer findings located in each rendered snippet plus a "
+            "snippet→repo source map to every BenchmarkSample."
+        ),
+    )
+    enable_semgrep: bool = Field(
+        default=False,
+        description=(
+            "Run Semgrep alongside Bandit/Dlint. Its findings feed ranking and "
+            "static findings; part of the prepared-sample cache key when enabled."
+        ),
+    )
+    semgrep_config: str = Field(
+        default=DEFAULT_SEMGREP_CONFIG,
+        description="Semgrep --config value (registry id or local rules path).",
+    )
     min_score: int = Field(default=4, ge=0, le=4)
     max_repo_size_bytes: int | None = Field(
         default=1024 * 1024 * 100,  # 100 MB
@@ -107,6 +132,28 @@ class CleanVulBenchmarkService(BaseModel):
             "agnostic of per-strategy configuration."
         ),
     )
+
+    def _scanner_pipeline(
+        self, repo_path: Path, neo4j_client: Neo4jClient
+    ) -> GeneralScannerPipeline:
+        """Return the scanner pipeline configured with this run's analyzer options."""
+
+        return GeneralScannerPipeline(
+            src=repo_path,
+            neo4j_client=neo4j_client,
+            enable_semgrep=self.enable_semgrep,
+            semgrep_config=self.semgrep_config,
+        )
+
+    def _cache_loader_options(self) -> dict[str, object]:
+        """Return loader settings that change cached entries (row ids depend on the file)."""
+
+        return {"min_score": self.min_score, "dataset_file": self.dataset_path.name}
+
+    def _semgrep_cache_config(self) -> str | None:
+        """Return the Semgrep rules fingerprint for the cache key, or None when off."""
+
+        return semgrep_rules_fingerprint(self.semgrep_config) if self.enable_semgrep else None
 
     def build(self) -> tuple[Path, Path]:
         """Generate the benchmark JSON files.
@@ -153,7 +200,7 @@ class CleanVulBenchmarkService(BaseModel):
         self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        loader_options = {"min_score": self.min_score}
+        loader_options = self._cache_loader_options()
         loader = CleanVulLoaderService(
             dataset_path=self.dataset_path,
             min_score=self.min_score,
@@ -236,6 +283,9 @@ class CleanVulBenchmarkService(BaseModel):
                     cache_dir=cache_dir,
                     loader_options=loader_options,
                 )
+            except SemgrepExecutionError:
+                # Skipping would bias the sample set by network luck; abort instead.
+                raise
             except Exception:
                 logger.exception("Failed to prepare sample for %s", commit_url)
                 continue
@@ -267,6 +317,7 @@ class CleanVulBenchmarkService(BaseModel):
             exclude_test_nodes=self.exclude_test_nodes,
             damp_call_graph_hubs=self.damp_call_graph_hubs,
             hub_fanin_threshold=self.hub_fanin_threshold,
+            semgrep_config=self._semgrep_cache_config(),
         )
         cached = load_prepared_sample(cache_dir, cache_key)
         if cached is not None:
@@ -283,7 +334,7 @@ class CleanVulBenchmarkService(BaseModel):
             self.neo4j_config.password,
         ) as neo4j_client:
             neo4j_client.run_write(CLEAR_DATABASE_QUERY)
-            GeneralScannerPipeline(src=repo_path, neo4j_client=neo4j_client).build_cpg()
+            findings, _ = self._scanner_pipeline(repo_path, neo4j_client).build_cpg()
 
             context_repository = ContextRepository(client=neo4j_client)
             strategies: dict[str, ContextNodeRankingStrategy] = {
@@ -319,6 +370,7 @@ class CleanVulBenchmarkService(BaseModel):
             neighborhood_edges=neighborhood_edges,
             path_fill_edge_types=path_fill_edge_types,
             traversal_relationship_types=traversal_relationship_types,
+            static_findings=findings,
             cache_key=cache_key,
         )
         save_prepared_sample(cache_dir, sample)
@@ -375,6 +427,7 @@ class CleanVulBenchmarkService(BaseModel):
                 strategies=strategies,
                 shared_inputs=shared_inputs,
                 cached_neighborhood_edges=prepared.neighborhood_edges,
+                findings=prepared.static_findings,
             )
             entries_by_sample_id[prepared.sample_id] = prepared.entry
             for strategy_name in strategy_factories:
@@ -464,6 +517,10 @@ class CleanVulBenchmarkService(BaseModel):
                         )
                     except Exception:
                         logger.exception("Failed to checkout %s at %s", repo_url, fix_hash)
+                        # The clone may exist even though checkout failed (e.g. commit
+                        # gone upstream); drop it so skipped commits do not leak disk.
+                        self._delete_checkout(vulnerable_repo_service.repo_path_for_url(repo_url))
+                        self._delete_checkout(fixed_repo_service.repo_path_for_url(repo_url))
                         continue
 
                     repo_size_reason = self._repo_size_reason(
@@ -515,6 +572,9 @@ class CleanVulBenchmarkService(BaseModel):
                             entry=pair.fixed_entry,
                             strategy_factories=strategy_factories,
                         )
+                    except SemgrepExecutionError:
+                        # Skipping would bias the sample set by network luck; abort instead.
+                        raise
                     except Exception:
                         logger.exception("Failed to scan repository for %s", commit_url)
                         continue
@@ -601,6 +661,7 @@ class CleanVulBenchmarkService(BaseModel):
         fixed_spans_by_file: dict[str, list[tuple[int, int]]] = {}
         vuln_func_codes: list[str] = []
         fixed_func_codes: list[str] = []
+        source_row_ids: list[int] = []
 
         for row in rows:
             vuln_file = vulnerable_repo_path / row.file_name
@@ -624,6 +685,7 @@ class CleanVulBenchmarkService(BaseModel):
             fixed_spans_by_file.setdefault(row.file_name, []).append(fixed_span)
             vuln_func_codes.append(row.func_before)
             fixed_func_codes.append(row.func_after)
+            source_row_ids.append(row.row_id)
 
         if not vuln_spans_by_file or not fixed_spans_by_file:
             return None
@@ -648,6 +710,8 @@ class CleanVulBenchmarkService(BaseModel):
                 vulnerability_score=representative.vulnerability_score,
                 commit_msg=representative.commit_msg,
                 is_vulnerable=is_vulnerable,
+                source_file=self.dataset_path.name,
+                source_row_ids=source_row_ids,
             )
 
         return _CleanVulEntryPair(
@@ -667,7 +731,7 @@ class CleanVulBenchmarkService(BaseModel):
             self.neo4j_config.password,
         ) as neo4j_client:
             neo4j_client.run_write(CLEAR_DATABASE_QUERY)
-            GeneralScannerPipeline(src=repo_path, neo4j_client=neo4j_client).build_cpg()
+            findings, _ = self._scanner_pipeline(repo_path, neo4j_client).build_cpg()
 
             context_repository = ContextRepository(client=neo4j_client)
             strategies: dict[str, ContextNodeRankingStrategy] = {
@@ -686,6 +750,7 @@ class CleanVulBenchmarkService(BaseModel):
                 context_repository=context_repository,
                 strategies=strategies,
                 shared_inputs=shared_inputs,
+                findings=findings,
             )
 
     def _prepare_shared_context_inputs(
@@ -760,11 +825,14 @@ class CleanVulBenchmarkService(BaseModel):
         shared_inputs: _SharedContextInputs,
         *,
         cached_neighborhood_edges: list[tuple[NodeID, NodeID, str]] | None = None,
+        findings: Sequence[FindingNode] = (),
     ) -> dict[str, Context]:
         """Render one context per strategy using shared fetched inputs.
 
         Pass ``cached_neighborhood_edges`` (and ``context_repository=None``) to
         render from a ``PreparedSample`` cache without any Neo4j connection.
+        ``findings`` are resolved against each rendered snippet and stored on
+        ``Context.static_findings``.
         """
 
         contexts: dict[str, Context] = {}
@@ -786,7 +854,13 @@ class CleanVulBenchmarkService(BaseModel):
                 ranking_strategy=strategy,
                 cached_neighborhood_edges=cached_neighborhood_edges,
             )
-            contexts[strategy_name] = context_service.assemble_from_nodes(repo_path, context_nodes)
+            context = context_service.assemble_from_nodes(repo_path, context_nodes)
+            root_nodes = [node for node in context_nodes if node.depth == 0]
+            contexts[strategy_name] = context.model_copy(
+                update={
+                    "static_findings": attach_findings(findings, context.source_map, root_nodes)
+                }
+            )
 
         return contexts
 
@@ -825,6 +899,8 @@ class CleanVulBenchmarkService(BaseModel):
             metadata=self._entry_metadata(entry),
             cwe_types=[f"CWE-{n}" for n in entry.cwe_ids],
             severity="unknown",
+            static_findings=context.static_findings if self.include_static_findings else None,
+            source_map=context.source_map if self.include_static_findings else None,
         )
 
     def _entry_metadata(self, entry: CleanVulEntry) -> CleanVulSampleMetadata:
@@ -832,6 +908,9 @@ class CleanVulBenchmarkService(BaseModel):
             commit_url=entry.commit_url,
             description=entry.commit_msg,
             cwe_number=entry.cwe_id,
+            source_dataset=entry.source_dataset,
+            source_file=entry.source_file,
+            source_row_ids=entry.source_row_ids,
         )
 
     def _entry_pair_budget_reason(self, pair: _CleanVulEntryPair) -> str | None:

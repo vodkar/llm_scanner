@@ -1,4 +1,16 @@
-from pydantic import BaseModel, ConfigDict, Field
+from typing import ClassVar
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
+
+from models.benchmark.cleanvul import CLEANVUL_DATASET_NAME
+from models.context import SnippetSegment
+from models.static_finding import StaticFinding
 
 
 class BenchmarkMetadata(BaseModel):
@@ -30,6 +42,19 @@ class CleanVulSampleMetadata(BaseModel):
     commit_url: str = Field(..., description="Source commit URL")
     description: str = Field(default="", description="Commit message used as description")
     cwe_number: int | None = Field(default=None, description="Primary numeric CWE identifier")
+    source_dataset: str = Field(
+        default=CLEANVUL_DATASET_NAME, description="Name of the dataset the sample came from"
+    )
+    source_file: str = Field(
+        default="", description="Source dataset file name; empty in datasets built before v4"
+    )
+    source_row_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "0-based record positions in ``source_file`` (pandas index; header excluded) "
+            "of the rows merged into the sample"
+        ),
+    )
 
 
 class BenchmarkSample(BaseModel):
@@ -43,6 +68,29 @@ class BenchmarkSample(BaseModel):
     )
     cwe_types: list[str] = Field(default_factory=list, description="Additional CWE tags")
     severity: str = Field(..., description="Severity label")
+    static_findings: list[StaticFinding] | None = Field(
+        default=None,
+        description="Analyzer findings located in `code` (only with --include-static-findings)",
+    )
+    source_map: list[SnippetSegment] | None = Field(
+        default=None,
+        description="`code` line → repo location mapping (only with --include-static-findings)",
+    )
+
+    _OPTIONAL_ENRICHMENT_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"static_findings", "source_map"}
+    )
+
+    @model_serializer(mode="wrap")
+    def _drop_absent_enrichment(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
+        """Omit enrichment keys that were not requested, keeping legacy output unchanged."""
+
+        data: dict[str, object] = handler(self)
+        return {
+            key: value
+            for key, value in data.items()
+            if not (key in self._OPTIONAL_ENRICHMENT_FIELDS and value is None)
+        }
 
 
 class BenchmarkDataset(BaseModel):

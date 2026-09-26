@@ -23,11 +23,10 @@ class DlintAnalyzerService(BaseAnalyzerService):
             issue: Dlint issue instance.
 
         Returns:
-            Finding payload with issue_id.
+            Finding payload with issue_id and rule_id.
         """
 
         payload = issue.model_dump()
         payload["issue_id"] = issue.id
-        payload.pop("code", None)
-        payload.pop("column_number", None)
+        payload["rule_id"] = payload.pop("code")
         return payload

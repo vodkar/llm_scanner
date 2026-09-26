@@ -43,8 +43,9 @@ class BanditStaticAnalyzer(IStaticAnalyzer):
                     severity=IssueSeverity(report["issue_severity"]),
                     reason=report["issue_text"],
                     line_number=report["line_number"],
-                    column_number=report.get("column_number", 0),
+                    column_number=report.get("col_offset", 0),
                     line_range=report.get("line_range", []),
+                    test_id=report.get("test_id", ""),
                 )
             )
 

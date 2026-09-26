@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from models.context import FileSpans
+from services.benchmark import prepared_sample
 from services.benchmark.prepared_sample import compute_sample_cache_key
 
 _BASE_KWARGS = {
@@ -60,3 +61,28 @@ def test_cache_key_defaults_match_explicit_hub_defaults() -> None:
     assert compute_sample_cache_key(**_BASE_KWARGS) == compute_sample_cache_key(
         **_BASE_KWARGS, damp_call_graph_hubs=True, hub_fanin_threshold=8
     )
+
+
+def test_cache_key_without_semgrep_has_no_semgrep_part() -> None:
+    """Semgrep-off keys carry no Semgrep component (pinned at schema v4)."""
+
+    assert compute_sample_cache_key(**_BASE_KWARGS) == "3e7176848f722fae0116e428a032f1d68368bc6f"
+    assert compute_sample_cache_key(**_BASE_KWARGS, semgrep_config=None) == (
+        compute_sample_cache_key(**_BASE_KWARGS)
+    )
+
+
+def test_cache_key_changes_with_semgrep_config() -> None:
+    """Enabling Semgrep, or changing its rule config, yields a different cache key."""
+
+    off = compute_sample_cache_key(**_BASE_KWARGS)
+    python_rules = compute_sample_cache_key(**_BASE_KWARGS, semgrep_config="p/python")
+    django_rules = compute_sample_cache_key(**_BASE_KWARGS, semgrep_config="p/django")
+
+    assert len({off, python_rules, django_rules}) == 3
+
+
+def test_cache_key_uses_schema_v4() -> None:
+    """Schema v4 adds source identity to cached entries; v3 pickles must not be reused."""
+
+    assert prepared_sample._CACHE_SCHEMA_VERSION == 4
