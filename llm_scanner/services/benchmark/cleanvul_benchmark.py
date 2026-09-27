@@ -44,6 +44,9 @@ from services.source_code import SourceCodeService
 logger = logging.getLogger(__name__)
 LOGGING_INTERVAL = 10
 CLEAR_DATABASE_QUERY: Final[str] = "MATCH (n) DETACH DELETE n"
+# Working-tree size (excluding .git). 190 MiB admits mid-sized projects such as mlflow,
+# ceph and edx-platform (<=25 MB of Python) and still skips tensorflow/pytorch/FreeCAD.
+DEFAULT_MAX_REPO_SIZE_BYTES: Final[int] = 190 * 1024 * 1024
 
 RankingStrategyFactory = Callable[[Path], ContextNodeRankingStrategy]
 
@@ -124,7 +127,7 @@ class CleanVulBenchmarkService(BaseModel):
         ),
     )
     max_repo_size_bytes: int | None = Field(
-        default=1024 * 1024 * 100,  # 100 MB
+        default=DEFAULT_MAX_REPO_SIZE_BYTES,
         ge=1,
         description=(
             "Optional upper bound for checked-out repository size in bytes. "

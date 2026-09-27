@@ -485,3 +485,38 @@ def test_build_skips_repositories_over_size_limit(
 
     payload = json.loads(main_path.read_text(encoding="utf-8"))
     assert payload["samples"] == []
+
+
+def _repo_with_size(root: Path, size_bytes: int) -> Path:
+    """Create a checkout whose files total ``size_bytes`` (sparse, so no real disk use)."""
+    root.mkdir(parents=True)
+    with (root / "blob.bin").open("wb") as handle:
+        handle.truncate(size_bytes)
+    return root
+
+
+def test_default_repo_size_limit_is_190_mib(tmp_path: Path) -> None:
+    assert _make_service(tmp_path).max_repo_size_bytes == 190 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    ("size_mib", "skipped"),
+    [(183, False), (199, True)],  # edx-platform-sized passes; pytorch-sized is skipped
+)
+def test_default_repo_size_limit_admits_mid_sized_repos(
+    tmp_path: Path, size_mib: int, skipped: bool
+) -> None:
+    service = CleanVulBenchmarkService.model_validate(
+        {
+            "dataset_path": tmp_path / "cleanvul.csv",
+            "output_dir": tmp_path / "out",
+            "repo_cache_dir": tmp_path / "repos",
+            "sample_count": 2,
+            "max_call_depth": 2,
+            "strategy_factories": {"current": lambda _repo_path: None},
+        }
+    )
+    vulnerable = _repo_with_size(tmp_path / "vulnerable", size_mib * 1024 * 1024)
+    fixed = _repo_with_size(tmp_path / "fixed", 1024)
+
+    assert (service._repo_size_reason(vulnerable, fixed) is not None) is skipped
