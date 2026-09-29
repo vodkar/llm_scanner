@@ -6,7 +6,8 @@ from typing import Final
 
 from models.context import SnippetSegment
 
-type RenderedLine = tuple[Path, int, str]
+type RenderedLine = tuple[Path | None, int, str]
+"""``(file_path, repo_line, text)``; ``file_path`` is ``None`` for synthetic marker lines."""
 
 # Characters ``str.splitlines()`` treats as line breaks but Python's tokenizer
 # (and therefore Bandit, Dlint and the CPG) does not.
@@ -31,11 +32,14 @@ def has_nonstandard_line_breaks(text: str) -> bool:
 def build_source_map(rendered_lines: Sequence[RenderedLine]) -> list[SnippetSegment]:
     """Group rendered lines into per-file runs of consecutive snippet lines.
 
+    Synthetic lines (``file_path is None``, e.g. root/context section markers)
+    occupy a snippet line but are not mapped to any repository location.
+
     Args:
         rendered_lines: ``(file_path, repo_line, text)`` in snippet order.
 
     Returns:
-        Segments covering every rendered line exactly once, in snippet order.
+        Segments covering every repository-backed line exactly once, in snippet order.
     """
 
     segments: list[SnippetSegment] = []
@@ -43,6 +47,11 @@ def build_source_map(rendered_lines: Sequence[RenderedLine]) -> list[SnippetSegm
     run_start = 1
     run_lines: list[int] = []
     for index, (file_path, repo_line, _) in enumerate(rendered_lines, start=1):
+        if file_path is None:
+            if run_lines:
+                segments.append(_segment(run_file, run_start, run_lines))
+                run_lines = []
+            continue
         if file_path != run_file and run_lines:
             segments.append(_segment(run_file, run_start, run_lines))
             run_lines = []

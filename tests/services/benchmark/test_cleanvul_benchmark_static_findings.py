@@ -101,7 +101,7 @@ def test_render_attaches_findings(tmp_path: Path) -> None:
     )
 
     [finding] = contexts["dummy"].static_findings
-    assert finding.snippet_line == 2
+    assert finding.snippet_line == 3
     assert finding.is_root is True
     assert contexts["dummy"].context_text.split("\n")[finding.snippet_line - 1] == (
         "    os.system(cmd)"

@@ -9,7 +9,7 @@ from pydantic import (
 )
 
 from models.benchmark.cleanvul import CLEANVUL_DATASET_NAME
-from models.context import SnippetSegment
+from models.context import RootContext, SnippetSegment
 from models.static_finding import StaticFinding
 
 
@@ -61,7 +61,13 @@ class BenchmarkSample(BaseModel):
     """Single labeled benchmark sample."""
 
     id: str = Field(..., description="Sample identifier")
-    code: str = Field(..., description="Assembled context text")
+    code: str = Field(
+        ..., description="Assembled context text: each ROOT section followed by its CONTEXT"
+    )
+    roots: list[RootContext] = Field(
+        default_factory=list,
+        description="Structured per-root split of `code`: root code and its own context",
+    )
     label: int = Field(..., ge=0, le=1, description="Binary label for vulnerability")
     metadata: BenchmarkSampleMetadata | CleanVulSampleMetadata = Field(
         ..., description="Sample metadata"

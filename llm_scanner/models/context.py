@@ -80,14 +80,40 @@ class SnippetSegment(BaseModel):
         return self
 
 
+class RootContext(BaseModel):
+    """One root (code under analysis) paired with the context attributed to it.
+
+    Roots are depth-0 nodes merged by overlapping line spans within a file, so a
+    function and the variable/call nodes inside it form a single root. Every
+    rendered context node is attributed to exactly one root: the nearest one
+    over the selected neighborhood graph.
+    """
+
+    file_path: Path = Field(..., description="Repo-relative file of the root")
+    line_start: int = Field(..., ge=1, description="First repo line of the root")
+    line_end: int = Field(..., ge=1, description="Last repo line of the root")
+    code: str = Field(..., description="Rendered root code the model must focus on")
+    context: str = Field(
+        default="", description="Rendered reference-only context attributed to this root"
+    )
+
+
 class Context(BaseModel):
-    """LLM context assembled for a single finding."""
+    """LLM context assembled for a single finding.
+
+    ``context_text`` renders every root followed by its own context, separated
+    by explicit ``ROOT``/``CONTEXT`` marker lines; ``roots`` holds the same
+    split in structured form.
+    """
 
     description: str = Field(..., description="Short linter description")
     # nodes: list[CodeContextNode] = Field(
     #     default_factory=list[CodeContextNode], description="Context nodes"
     # )
     context_text: str = Field(default="", description="Rendered LLM context")
+    roots: list[RootContext] = Field(
+        default_factory=list, description="Per-root code and its attributed context"
+    )
     token_count: int = Field(default=0, ge=0, description="Estimated token count")
     source_map: list[SnippetSegment] = Field(
         default_factory=list, description="Snippet line → repo location mapping"

@@ -4,12 +4,12 @@ import re
 from collections import defaultdict, deque
 from collections.abc import Callable
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from models.base import NodeID
-from models.context import CodeContextNode, Context, FileSpans, SnippetSegment
+from models.context import CodeContextNode, Context, FileSpans, RootContext, SnippetSegment
 from repositories.context import ContextRepository
 from repositories.queries import code_traversal_relationship_types
 from services.context_assembler.node_filters import is_test_path, text_uses_test_framework
@@ -30,6 +30,32 @@ _LOGGER = logging.getLogger(__name__)
 _BOILERPLATE_LINE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"^\s*_?[A-Za-z][\w.]*\s*=\s*logging\.getLogger"),
 )
+
+_ROOT_MARKER: Final[str] = (
+    "# ===== ROOT {index}/{total}: {file_path}:{line_start}-{line_end} | code under analysis ====="
+)
+_CONTEXT_MARKER: Final[str] = (
+    "# ----- CONTEXT for ROOT {index} | reference only: related callers, callees "
+    "and definitions -----"
+)
+_FILE_MARKER: Final[str] = "# file: {file_path}"
+
+type LinesByFile = dict[Path, set[int]]
+
+
+class _RootGroup(NamedTuple):
+    """Depth-0 nodes of one file whose line spans overlap, rendered as one root."""
+
+    file_path: Path
+    line_start: int
+    line_end: int
+    node_ids: frozenset[NodeID]
+
+
+class _RenderedContext(NamedTuple):
+    text: str
+    source_map: list[SnippetSegment]
+    roots: list[RootContext]
 
 
 class ContextAssemblerService(BaseModel):
@@ -335,13 +361,14 @@ class ContextAssemblerService(BaseModel):
         """Rank and render already-fetched context nodes into final text."""
 
         cloned_nodes: list[CodeContextNode] = [node.model_copy(deep=True) for node in nodes]
-        context_text, token_count, source_map = self._render_context(repo_path, cloned_nodes)
+        rendered = self._render_context(repo_path, cloned_nodes)
 
         return Context(
             description="Finding from spans query",
-            context_text=context_text,
-            token_count=token_count,
-            source_map=source_map,
+            context_text=rendered.text,
+            token_count=self._estimate_tokens(rendered.text) if rendered.text else 0,
+            source_map=rendered.source_map,
+            roots=rendered.roots,
         )
 
     def assemble_for_spans(self, repo_path: Path, files_spans: list[FileSpans]) -> Context:
@@ -363,29 +390,70 @@ class ContextAssemblerService(BaseModel):
 
         return self.assemble_from_nodes(repo_path, context_nodes)
 
-    def _render_context(
-        self, repo_path: Path, nodes: list[CodeContextNode]
-    ) -> tuple[str, int, list[SnippetSegment]]:
-        """Render text context for a finding and enforce token budget.
+    def _render_context(self, repo_path: Path, nodes: list[CodeContextNode]) -> _RenderedContext:
+        """Render per-root sections for a finding within the token budget.
+
+        Nodes are ranked and selected with budgeted path-fill as a whole; each
+        selected non-root node is then attributed to its nearest root group, and
+        every root is rendered followed by its own context section.
 
         Args:
             repo_path: Path to the repository root.
             nodes: Context nodes to render.
 
         Returns:
-            Tuple of rendered context text, token count and snippet source map.
+            Rendered text, its snippet source map and the structured per-root split.
         """
 
         _LOGGER.debug("Rendering context for %d nodes", len(nodes))
 
         nodes = self.ranking_strategy.rank_nodes(nodes)
         if not nodes:
-            return "", 0, []
+            return _RenderedContext("", [], [])
 
-        file_lines_to_read: dict[Path, set[int]] = defaultdict(set)
+        full_lines, read_lines, unmappable_files = self._read_node_lines(repo_path, nodes)
+        adjacency = self._build_path_fill_adjacency(nodes)
+        selected_ids = self._select_nodes_with_path_fill(nodes, read_lines, adjacency)
+        groups = self._group_root_nodes(nodes)
+
+        if groups:
+            rendered_lines, roots = self._render_root_sections(
+                nodes, groups, selected_ids, adjacency, full_lines, read_lines
+            )
+        else:
+            lines_to_keep = self._complete_structure(
+                full_lines, self._lines_for_selection(nodes, selected_ids), {}
+            )
+            self._ensure_line_text(read_lines, full_lines, lines_to_keep)
+            rendered_lines, roots = self._render_lines(read_lines, lines_to_keep), []
+
+        text = "\n".join(line_text for _, _, line_text in rendered_lines)
+        if not text:
+            _LOGGER.warning("Empty snippet for project %s", repo_path)
+
+        return _RenderedContext(
+            text,
+            [
+                segment
+                for segment in build_source_map(rendered_lines)
+                if segment.file_path not in unmappable_files
+            ],
+            roots,
+        )
+
+    def _read_node_lines(
+        self, repo_path: Path, nodes: list[CodeContextNode]
+    ) -> tuple[dict[Path, list[str]], dict[Path, dict[int, str]], set[Path]]:
+        """Read source files of ``nodes``.
+
+        Returns:
+            Full raw lines per file, sanitized text of node-covered lines per file,
+            and files whose line numbering cannot be mapped back to analyzers.
+        """
+
+        file_lines_to_read: LinesByFile = defaultdict(set)
         for node in nodes:
-            for line_number in range(node.line_start, node.line_end + 1):
-                file_lines_to_read[node.file_path].add(line_number)
+            file_lines_to_read[node.file_path].update(range(node.line_start, node.line_end + 1))
 
         full_lines: dict[Path, list[str]] = {}
         read_lines: dict[Path, dict[int, str]] = defaultdict(dict)
@@ -404,35 +472,182 @@ class ContextAssemblerService(BaseModel):
                 if line_number > len(lines):
                     continue
                 read_lines[file_path][line_number] = self._sanitize_line(lines[line_number - 1])
+        return full_lines, read_lines, unmappable_files
 
-        selected_ids = self._select_nodes_with_path_fill(nodes, read_lines)
+    @classmethod
+    def _group_root_nodes(cls, nodes: list[CodeContextNode]) -> list[_RootGroup]:
+        """Merge depth-0 nodes with overlapping line spans in a file into root groups.
 
-        lines_to_keep = self._lines_for_selection(nodes, selected_ids)
-        root_lines = self._lines_for_selection(
-            nodes, {node.identifier for node in nodes if node.depth == 0}
+        A function root and the variable/call nodes nested inside it become one
+        group, while two separate functions stay distinct roots. Groups are
+        ordered by first file appearance, then by line.
+        """
+
+        roots_by_file: dict[Path, list[CodeContextNode]] = defaultdict(list)
+        for node in nodes:
+            if node.depth == 0:
+                roots_by_file[node.file_path].append(node)
+
+        groups: list[_RootGroup] = []
+        for file_path, file_roots in roots_by_file.items():
+            pending: list[CodeContextNode] = []
+            for node in sorted(file_roots, key=lambda n: (n.line_start, n.line_end)):
+                if pending and node.line_start > max(n.line_end for n in pending):
+                    groups.append(cls._make_root_group(file_path, pending))
+                    pending = []
+                pending.append(node)
+            groups.append(cls._make_root_group(file_path, pending))
+        return groups
+
+    @classmethod
+    def _make_root_group(cls, file_path: Path, nodes: list[CodeContextNode]) -> _RootGroup:
+        return _RootGroup(
+            file_path=file_path,
+            line_start=min(node.line_start for node in nodes),
+            line_end=max(node.line_end for node in nodes),
+            node_ids=frozenset(node.identifier for node in nodes),
         )
-        lines_to_keep = self._complete_structure(full_lines, lines_to_keep, root_lines)
-        self._ensure_line_text(read_lines, full_lines, lines_to_keep)
-        rendered_lines = self._render_lines(read_lines, lines_to_keep)
-        candidate_text = "\n".join(text for _, _, text in rendered_lines)
 
-        if not candidate_text:
-            _LOGGER.warning("Empty snippet for project %s", repo_path)
+    @classmethod
+    def _assign_root_owners(
+        cls,
+        nodes: list[CodeContextNode],
+        groups: list[_RootGroup],
+        selected_ids: set[NodeID],
+        adjacency: dict[NodeID, set[NodeID]],
+    ) -> dict[NodeID, int]:
+        """Map every selected node to the index of the root group it serves.
 
-        return (
-            candidate_text,
-            self._estimate_tokens(candidate_text),
-            [
-                segment
-                for segment in build_source_map(rendered_lines)
-                if segment.file_path not in unmappable_files
-            ],
+        A multi-source BFS restricted to the selected nodes attributes each node
+        to its nearest root, so a context node rendered under a root is linked to
+        it through rendered code. Neighbors are visited in sorted order to keep
+        ties deterministic. Nodes not connected to any root fall back to the
+        closest root in the same file, else to the first root.
+        """
+
+        owners: dict[NodeID, int] = {}
+        queue: deque[NodeID] = deque()
+        for index, group in enumerate(groups):
+            for node_id in sorted(group.node_ids):
+                owners[node_id] = index
+                queue.append(node_id)
+
+        while queue:
+            current = queue.popleft()
+            for neighbor in sorted(adjacency.get(current, ())):
+                if neighbor in owners or neighbor not in selected_ids:
+                    continue
+                owners[neighbor] = owners[current]
+                queue.append(neighbor)
+
+        for node in nodes:
+            if node.identifier in selected_ids and node.identifier not in owners:
+                owners[node.identifier] = cls._closest_group_index(node, groups)
+        return owners
+
+    @staticmethod
+    def _closest_group_index(node: CodeContextNode, groups: list[_RootGroup]) -> int:
+        same_file = [
+            (abs(node.line_start - group.line_start), index)
+            for index, group in enumerate(groups)
+            if group.file_path == node.file_path
+        ]
+        return min(same_file)[1] if same_file else 0
+
+    def _render_root_sections(
+        self,
+        nodes: list[CodeContextNode],
+        groups: list[_RootGroup],
+        selected_ids: set[NodeID],
+        adjacency: dict[NodeID, set[NodeID]],
+        full_lines: dict[Path, list[str]],
+        read_lines: dict[Path, dict[int, str]],
+    ) -> tuple[list[RenderedLine], list[RootContext]]:
+        """Render each root group followed by the context attributed to it.
+
+        Root lines never repeat inside a context section (of any root), while the
+        enclosing ``def``/``class`` headers are completed per section so each
+        section is structurally coherent on its own.
+        """
+
+        owners = self._assign_root_owners(nodes, groups, selected_ids, adjacency)
+        all_root_lines = self._lines_for_selection(
+            nodes, {node_id for group in groups for node_id in group.node_ids}
         )
+
+        rendered: list[RenderedLine] = []
+        roots: list[RootContext] = []
+        seen_boilerplate: set[str] = set()
+        for index, group in enumerate(groups):
+            root_lines = self._lines_for_selection(nodes, set(group.node_ids))
+            root_lines = self._complete_structure(full_lines, root_lines, root_lines)
+            context_ids = {
+                node_id
+                for node_id, owner in owners.items()
+                if owner == index and node_id not in group.node_ids
+            }
+            context_lines: LinesByFile = {
+                file_path: kept
+                for file_path, lines in self._lines_for_selection(nodes, context_ids).items()
+                if (kept := lines - all_root_lines.get(file_path, set()))
+            }
+            context_lines = self._complete_structure(full_lines, context_lines, {})
+            self._ensure_line_text(read_lines, full_lines, root_lines)
+            self._ensure_line_text(read_lines, full_lines, context_lines)
+
+            root_rendered = self._render_lines(read_lines, root_lines, seen_boilerplate)
+            context_rendered = self._with_file_markers(
+                self._render_lines(read_lines, context_lines, seen_boilerplate)
+            )
+            number = index + 1
+            rendered.append(
+                self._marker_line(
+                    _ROOT_MARKER.format(
+                        index=number,
+                        total=len(groups),
+                        file_path=group.file_path,
+                        line_start=group.line_start,
+                        line_end=group.line_end,
+                    )
+                )
+            )
+            rendered.extend(root_rendered)
+            if context_rendered:
+                rendered.append(self._marker_line(_CONTEXT_MARKER.format(index=number)))
+                rendered.extend(context_rendered)
+            roots.append(
+                RootContext(
+                    file_path=group.file_path,
+                    line_start=group.line_start,
+                    line_end=group.line_end,
+                    code="\n".join(text for _, _, text in root_rendered),
+                    context="\n".join(text for _, _, text in context_rendered),
+                )
+            )
+        return rendered, roots
+
+    @classmethod
+    def _with_file_markers(cls, rendered_lines: list[RenderedLine]) -> list[RenderedLine]:
+        """Prefix each run of lines from one file with a ``# file:`` marker line."""
+
+        result: list[RenderedLine] = []
+        current_file: Path | None = None
+        for line in rendered_lines:
+            if line[0] != current_file:
+                current_file = line[0]
+                result.append(cls._marker_line(_FILE_MARKER.format(file_path=current_file)))
+            result.append(line)
+        return result
+
+    @classmethod
+    def _marker_line(cls, text: str) -> RenderedLine:
+        return (None, 0, text)
 
     def _select_nodes_with_path_fill(
         self,
         ranked_nodes: list[CodeContextNode],
         read_lines: dict[Path, dict[int, str]],
+        adjacency: dict[NodeID, set[NodeID]] | None = None,
     ) -> set[NodeID]:
         """Return node IDs to render, preserving CPG connectivity to roots.
 
@@ -448,7 +663,8 @@ class ContextAssemblerService(BaseModel):
 
         root_ids: set[NodeID] = {n.identifier for n in ranked_nodes if n.depth == 0}
 
-        adjacency = self._build_path_fill_adjacency(ranked_nodes)
+        if adjacency is None:
+            adjacency = self._build_path_fill_adjacency(ranked_nodes)
         _LOGGER.debug(
             "Built adjacency with %d entries for %d nodes", len(adjacency), len(ranked_nodes)
         )
@@ -653,17 +869,21 @@ class ContextAssemblerService(BaseModel):
         cls,
         read_lines: dict[Path, dict[int, str]],
         lines_to_keep: dict[Path, set[int]],
+        seen_boilerplate: set[str] | None = None,
     ) -> list[RenderedLine]:
         """Return rendered lines with provenance, in output order.
 
         Empty lines are skipped and exact-duplicate module-level boilerplate
         lines (e.g. repeated ``logger = logging.getLogger(__name__)`` from
         different files) are collapsed to their first occurrence; all other
-        lines are kept verbatim.
+        lines are kept verbatim. Pass a shared ``seen_boilerplate`` set to
+        collapse boilerplate across several rendered sections; it is updated
+        in place.
         """
 
         rendered: list[RenderedLine] = []
-        seen_boilerplate: set[str] = set()
+        if seen_boilerplate is None:
+            seen_boilerplate = set()
         for file_path, lines in lines_to_keep.items():
             file_lines = read_lines.get(file_path, {})
             for line_number in sorted(lines):

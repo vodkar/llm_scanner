@@ -54,7 +54,7 @@ def test_every_mapped_line_matches_sanitized_repo_line(tmp_path: Path) -> None:
     code_lines = context.context_text.split("\n")
 
     covered = sum(len(segment.repo_lines) for segment in context.source_map)
-    assert covered == len(code_lines)
+    assert covered == sum(not line.startswith("# ") for line in code_lines)
     for segment in context.source_map:
         repo_text = (tmp_path / segment.file_path).read_text(encoding="utf-8").splitlines()
         for offset, repo_line in enumerate(segment.repo_lines):

@@ -17,7 +17,12 @@ _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 _REVIEW_SYSTEM_PROMPT: Final[str] = (
     "You are a security engineer performing a code security review in a CI pipeline. "
     "Given assembled Python code context, analyze whether it contains a genuine, "
-    "exploitable vulnerability. Think step by step about untrusted input sources, "
+    "exploitable vulnerability. "
+    "The code is split into sections: each '# ===== ROOT i/N' section is code under "
+    "analysis, and the '# ----- CONTEXT for ROOT i' section after it is reference-only "
+    "code related to that root (callers, callees, definitions). Judge only the ROOT "
+    "code; use its CONTEXT to trace inputs and called behavior. "
+    "Think step by step about untrusted input sources, "
     "sinks, sanitizers, and data flow connecting them. "
     "After you have finished reasoning, output a JSON object on its own final line "
     'with exactly these keys: "vulnerable" (bool), "severity" '

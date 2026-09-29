@@ -907,6 +907,7 @@ class CleanVulBenchmarkService(BaseModel):
         return BenchmarkSample(
             id=sample_id,
             code=context.context_text,
+            roots=context.roots,
             label=int(entry.is_vulnerable),
             metadata=self._entry_metadata(entry),
             cwe_types=[f"CWE-{n}" for n in entry.cwe_ids],

@@ -15,6 +15,10 @@ _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
 JUDGE_SYSTEM_PROMPT: Final[str] = (
     "You are a security engineer reviewing assembled Python code context. "
+    "The code is split into sections: each '# ===== ROOT i/N' section is code under "
+    "analysis, and the '# ----- CONTEXT for ROOT i' section after it is reference-only "
+    "code related to that root (callers, callees, definitions). Judge only the ROOT "
+    "code; use its CONTEXT to trace inputs and called behavior. "
     "Think step by step about whether the code contains a genuine, exploitable "
     "vulnerability: identify untrusted sources, sinks, sanitizers, and any data "
     "flow connecting them. After you have finished reasoning, output "

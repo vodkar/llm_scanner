@@ -32,6 +32,26 @@ def test_build_groups_consecutive_lines_per_file() -> None:
     ]
 
 
+def test_build_skips_marker_lines_but_counts_them() -> None:
+    segments = build_source_map(
+        [
+            (None, 0, "# ===== ROOT 1/1 ====="),
+            (Path("a.py"), 1, "def a():"),
+            (None, 0, "# ----- CONTEXT -----"),
+            (Path("a.py"), 5, "def b():"),
+        ]
+    )
+
+    assert segments == [
+        SnippetSegment(
+            file_path=Path("a.py"), snippet_line_start=2, snippet_line_end=2, repo_lines=(1,)
+        ),
+        SnippetSegment(
+            file_path=Path("a.py"), snippet_line_start=4, snippet_line_end=4, repo_lines=(5,)
+        ),
+    ]
+
+
 def test_build_empty_input_gives_empty_map() -> None:
     assert build_source_map([]) == []
 
