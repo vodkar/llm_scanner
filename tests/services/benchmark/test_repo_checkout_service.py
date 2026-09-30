@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from services.benchmark.repo_checkout import RepoCheckoutService
@@ -15,6 +16,7 @@ def test_checkout_repo_uses_parent_for_vulnerable(monkeypatch) -> None:
 
     monkeypatch.setattr(service, "_fetch_repo", lambda path: fetch_calls.append(path))
     monkeypatch.setattr(service, "_clone_repo", lambda repo_url, path: None)
+    monkeypatch.setattr(service, "_ensure_commit", lambda path, commit_hash: None)
     monkeypatch.setattr(service, "_resolve_parent_hash", lambda path, fix_hash: "parent123")
     monkeypatch.setattr(
         service,
@@ -46,6 +48,7 @@ def test_checkout_repo_uses_fix_hash_for_non_vulnerable(monkeypatch) -> None:
 
     monkeypatch.setattr(service, "_fetch_repo", lambda path: fetch_calls.append(path))
     monkeypatch.setattr(service, "_clone_repo", lambda repo_url, path: None)
+    monkeypatch.setattr(service, "_ensure_commit", lambda path, commit_hash: None)
 
     def _unexpected_parent_resolution(path: Path, fix_hash: str) -> str:
         parent_resolution_called["value"] = True
@@ -68,3 +71,49 @@ def test_checkout_repo_uses_fix_hash_for_non_vulnerable(monkeypatch) -> None:
     assert fetch_calls == [repo_path]
     assert checkout_calls == [(repo_path, "fix123")]
     assert not parent_resolution_called["value"]
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+
+
+def test_checkout_repo_fetches_commit_missing_from_branches(tmp_path: Path) -> None:
+    origin = tmp_path / "origin"
+    _git("init", "--quiet", "-b", "main", str(origin))
+    _git(
+        "-C",
+        str(origin),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "base",
+    )
+    _git("-C", str(origin), "checkout", "--quiet", "-b", "gone")
+    _git(
+        "-C",
+        str(origin),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "fix",
+    )
+    fix_hash = _git("-C", str(origin), "rev-parse", "HEAD").strip()
+    _git("-C", str(origin), "checkout", "--quiet", "main")
+    _git("-C", str(origin), "branch", "--quiet", "-D", "gone")
+    service = RepoCheckoutService(cache_dir=tmp_path / "cache")
+
+    repo_path = service.checkout_repo(
+        repo_url=origin.as_uri(), fix_hash=fix_hash, is_vulnerable=False
+    )
+
+    assert service.resolve_head_hash(repo_path) == fix_hash

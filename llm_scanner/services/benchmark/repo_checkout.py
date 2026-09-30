@@ -41,6 +41,7 @@ class RepoCheckoutService(BaseModel):
             self._clone_repo(repo_url, repo_path)
         else:
             self._fetch_repo(repo_path)
+        self._ensure_commit(repo_path, fix_hash)
 
         target_hash = fix_hash
         if is_vulnerable:
@@ -86,6 +87,34 @@ class RepoCheckoutService(BaseModel):
     def _fetch_repo(self, repo_path: Path) -> None:
         _LOGGER.info("Fetching updates for repository %s", repo_path)
         self._run_git(["-C", str(repo_path), "fetch", "--all", "--tags", "--prune"])
+
+    def _ensure_commit(self, repo_path: Path, commit_hash: str) -> None:
+        """Fetch ``commit_hash`` by SHA when no branch or tag made it reach the clone.
+
+        Commits from deleted or unmerged branches stay fetchable by SHA on GitHub
+        but are not downloaded by ``clone``/``fetch --all``.
+        """
+
+        if self._has_commit(repo_path, commit_hash):
+            return
+        _LOGGER.info("Commit %s not in clone; fetching it by SHA", commit_hash)
+        self._run_git(["-C", str(repo_path), "fetch", "--quiet", "origin", commit_hash])
+
+    def _has_commit(self, repo_path: Path, commit_hash: str) -> bool:
+        result = subprocess.run(
+            [
+                self.git_executable,
+                "-C",
+                str(repo_path),
+                "cat-file",
+                "-e",
+                f"{commit_hash}^{{commit}}",
+            ],
+            check=False,
+            capture_output=True,
+            timeout=60,
+        )
+        return result.returncode == 0
 
     def _checkout_commit(self, repo_path: Path, commit_hash: str) -> None:
         _LOGGER.info("Checking out commit %s in repository %s", commit_hash, repo_path)
