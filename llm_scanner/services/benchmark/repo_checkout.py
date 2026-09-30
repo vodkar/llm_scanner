@@ -39,7 +39,7 @@ class RepoCheckoutService(BaseModel):
         repo_path = self._repo_path_for_url(repo_url)
         if not repo_path.exists():
             self._clone_repo(repo_url, repo_path)
-        else:
+        elif not self._has_commit(repo_path, fix_hash):
             self._fetch_repo(repo_path)
         self._ensure_commit(repo_path, fix_hash)
 

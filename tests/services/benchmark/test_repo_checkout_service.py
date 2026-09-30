@@ -117,3 +117,30 @@ def test_checkout_repo_fetches_commit_missing_from_branches(tmp_path: Path) -> N
     )
 
     assert service.resolve_head_hash(repo_path) == fix_hash
+
+
+def test_checkout_repo_skips_fetch_when_clone_has_commit(tmp_path: Path, monkeypatch) -> None:
+    origin = tmp_path / "origin"
+    _git("init", "--quiet", "-b", "main", str(origin))
+    _git(
+        "-C",
+        str(origin),
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "fix",
+    )
+    fix_hash = _git("-C", str(origin), "rev-parse", "HEAD").strip()
+    service = RepoCheckoutService(cache_dir=tmp_path / "cache")
+    service.checkout_repo(repo_url=origin.as_uri(), fix_hash=fix_hash, is_vulnerable=False)
+    fetch_calls: list[Path] = []
+    monkeypatch.setattr(service, "_fetch_repo", lambda path: fetch_calls.append(path))
+
+    service.checkout_repo(repo_url=origin.as_uri(), fix_hash=fix_hash, is_vulnerable=False)
+
+    assert fetch_calls == []
