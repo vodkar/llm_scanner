@@ -4,5 +4,15 @@
     ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
-    "python-envs.pythonProjects": []
+    "python-envs.pythonProjects": [],
+    "files.watcherExclude": {
+        "**/data/repo_cache*/**": true,
+        "**/data/**": true
+    },
+    "python.analysis.exclude": [
+        "data/**",
+        "**/node_modules",
+        "**/__pycache__",
+        "**/.*"
+    ]
 }

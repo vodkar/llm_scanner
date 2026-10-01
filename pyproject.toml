@@ -94,6 +94,6 @@ omit = [
 ]
 
 [tool.pyright]
-exclude = [".venv", "data/repo_cache/**", ".claude/**","**/node_modules", "**/__pycache__"]
+exclude = [".venv", "data/repo_cache*/**", ".claude/**","**/node_modules", "**/__pycache__"]
 
-ignore = ["data/repo_cache"]
+ignore = ["data/repo_cache*"]
