@@ -124,3 +124,25 @@ def test_unparseable_file_falls_back_without_crash(tmp_path: Path) -> None:
     )
 
     assert "def ok(" in context.context_text
+
+
+def test_class_node_with_attribute_span_renders_attributes(tmp_path: Path) -> None:
+    """A class node spanning its attribute block renders the attributes, not nothing."""
+
+    (tmp_path / "agg.py").write_text(
+        "class StringAgg(Aggregate):\n"
+        "    template = \"%(function)s(%(expressions)s, '%(delimiter)s')\"\n"
+        "    def __init__(self, expression, delimiter):\n"
+        "        super().__init__(expression, delimiter=delimiter)\n",
+        encoding="utf-8",
+    )
+
+    context = _service(tmp_path).assemble_from_nodes(
+        tmp_path,
+        [
+            _node("__init__", "agg.py", line_start=3, line_end=4, depth=0),
+            _node("StringAgg", "agg.py", line_start=1, line_end=2, depth=1, node_kind="ClassNode"),
+        ],
+    )
+
+    assert context.roots[0].context.count("template = ") == 1

@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from enum import StrEnum
 from pathlib import Path
+from typing import Final
 
 from pydantic import BaseModel, Field, PrivateAttr
 from tree_sitter import Node as TSNode
@@ -25,6 +26,14 @@ from models.nodes.code import ClassNode, FunctionNode
 from services.cpg_parser.types import ParserResult
 
 logger = logging.getLogger(__name__)
+
+# A class node spans its header plus the leading class-level statements
+# (attributes, docstring) up to this many lines past the header.
+_MAX_CLASS_ATTRIBUTE_LINES: Final[int] = 30
+_CLASS_MEMBER_DEFINITION_TYPES: Final[frozenset[str]] = frozenset(
+    {"function_definition", "class_definition", "decorated_definition"}
+)
+_EMPTY_BODY_STATEMENT_TYPES: Final[frozenset[str]] = frozenset({"pass_statement", "comment"})
 
 
 class ProcessableNodeTypes(StrEnum):
@@ -883,6 +892,7 @@ class NodeProcessor(BaseModel):
         superclasses_node = node.child_by_field_name("superclasses")
         if superclasses_node:
             line_end = superclasses_node.end_point[0] + 1
+        line_end = self.__class_attribute_block_end(node.child_by_field_name("body"), line_end)
 
         class_node = ClassNode(
             identifier=node_id,
@@ -904,6 +914,29 @@ class NodeProcessor(BaseModel):
             edges.extend(child_edges)
 
         return (class_node, (nodes, edges))
+
+    def __class_attribute_block_end(self, body_node: TSNode | None, header_end: int) -> int:
+        """Return the last line of the leading class-level statement block.
+
+        Statements before the first method/nested class (attributes, docstring)
+        extend the class span, capped at ``_MAX_CLASS_ATTRIBUTE_LINES`` past the
+        header. A body of only ``pass`` keeps the header-only span.
+        """
+
+        if body_node is None:
+            return header_end
+
+        line_end: int = header_end
+        for statement in body_node.named_children:
+            if statement.type in _CLASS_MEMBER_DEFINITION_TYPES:
+                break
+            if statement.type in _EMPTY_BODY_STATEMENT_TYPES:
+                continue
+            statement_end: int = statement.end_point[0] + 1
+            if statement_end - header_end > _MAX_CLASS_ATTRIBUTE_LINES:
+                break
+            line_end = statement_end
+        return line_end
 
     def _process_assignment(self, node: TSNode) -> ParserResult:
         """Process an assignment and emit variable nodes and data-flow edges.

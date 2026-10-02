@@ -38,7 +38,7 @@ def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
         name="Product",
         file_path=TEST_CLASS_FILE,
         line_start=5,
-        line_end=5,
+        line_end=8,
     )
 
     assert order_item_class_id in nodes
@@ -47,7 +47,7 @@ def test_tree_sitter_parse__on_class__returns_correct_nodes_and_edges() -> None:
         name="OrderItem",
         file_path=TEST_CLASS_FILE,
         line_start=12,
-        line_end=14,
+        line_end=16,
     )
 
 
