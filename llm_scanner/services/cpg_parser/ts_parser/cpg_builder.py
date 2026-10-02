@@ -14,7 +14,7 @@ from tree_sitter import Language, Parser, Tree
 from models.base import NodeID
 from models.edges.base import RelationshipBase
 from models.nodes import Node
-from models.nodes.code import FunctionNode
+from models.nodes.code import ClassNode, FunctionNode
 from services.cpg_parser.ts_parser.node_processor import NodeProcessor
 from services.cpg_parser.ts_parser.project_symbols import ProjectSymbols
 from services.cpg_parser.types import ParserResult
@@ -347,9 +347,13 @@ class CPGDirectoryBuilder(BaseModel):
                         module_symbols[name] = node_id
                         break
 
-            for name in exported.classes:
+            for name, lineno in exported.classes.items():
                 for node_id, node in nodes.items():
-                    if getattr(node, "name", None) == name and str(node_id).startswith("class:"):
+                    if (
+                        isinstance(node, ClassNode)
+                        and node.name == name
+                        and node.line_start == lineno
+                    ):
                         module_symbols[name] = node_id
                         break
 

@@ -1,15 +1,23 @@
 import io
+import logging
+import pathlib
+import re
+import socket
+import sqlite3
+import subprocess
+import threading
 from dataclasses import dataclass, field
 from typing import Final
 
 from models.base import NodeID
 
-# Methods of builtin types: a call like ``data.items()`` almost never targets a
-# repository method that happens to share the name, so these names never resolve
-# through the repository-unique fallback.
-BUILTIN_TYPE_METHOD_NAMES: Final[frozenset[str]] = frozenset(
+# Methods of builtin and common stdlib object types: a call like ``data.items()``
+# or ``logger.info()`` almost never targets a repository method that happens to
+# share the name, so these names never resolve through the repository-unique
+# fallback.
+COMMON_LIBRARY_METHOD_NAMES: Final[frozenset[str]] = frozenset(
     name
-    for builtin_type in (
+    for library_type in (
         str,
         bytes,
         bytearray,
@@ -23,8 +31,18 @@ BUILTIN_TYPE_METHOD_NAMES: Final[frozenset[str]] = frozenset(
         io.TextIOWrapper,
         io.BufferedReader,
         io.BufferedWriter,
+        logging.Logger,
+        logging.LoggerAdapter,
+        sqlite3.Connection,
+        sqlite3.Cursor,
+        pathlib.Path,
+        re.Pattern,
+        re.Match,
+        subprocess.Popen,
+        socket.socket,
+        threading.Thread,
     )
-    for name in dir(builtin_type)
+    for name in dir(library_type)
 )
 
 

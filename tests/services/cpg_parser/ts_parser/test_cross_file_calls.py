@@ -94,3 +94,27 @@ def test_method_call_named_like_builtin_type_method__stays_unresolved(
     line: int = _line_of("data.items()")
 
     assert _callees_on_line(parsed_project, line) == set()
+
+
+@pytest.mark.parametrize("call", ['logger.info("access")', "cursor.execute(query)"])
+def test_method_call_named_like_stdlib_object_method__stays_unresolved(
+    parsed_project: ParsedProject, call: str
+) -> None:
+    line: int = _line_of(call)
+
+    assert _callees_on_line(parsed_project, line) == set()
+
+
+def test_parameter_shadowing_module_alias__does_not_resolve_as_module(
+    parsed_project: ParsedProject,
+) -> None:
+    line: int = _line_of("return h.sanitize(value)")
+    shadowed_line: int = next(
+        number
+        for number, text in enumerate(
+            (CROSS_FILE_CALLS_PROJECT_ROOT / VIEWS_FILE).read_text().splitlines(), start=1
+        )
+        if "h.sanitize(value)" in text and number > line
+    )
+
+    assert _callees_on_line(parsed_project, shadowed_line) == set()

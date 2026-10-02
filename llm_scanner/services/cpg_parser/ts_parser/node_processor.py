@@ -24,7 +24,7 @@ from models.nodes import CallNode, CodeBlockNode, Node, VariableNode
 from models.nodes.base import NodeType
 from models.nodes.code import ClassNode, FunctionNode
 from services.cpg_parser.ts_parser.project_symbols import (
-    BUILTIN_TYPE_METHOD_NAMES,
+    COMMON_LIBRARY_METHOD_NAMES,
     ProjectSymbols,
 )
 from services.cpg_parser.types import ParserResult
@@ -407,7 +407,7 @@ class NodeProcessor(BaseModel):
         Tried in order: a module alias receiver (``mod.f()``), ``self``/``cls``
         and ``super()`` lookups through the enclosing class and its bases, a
         same-file name match, and finally a method name defined exactly once in
-        the repository (excluding builtin-type method names).
+        the repository (excluding builtin and common stdlib method names).
         """
 
         attribute_node = function_node.child_by_field_name("attribute")
@@ -431,14 +431,20 @@ class NodeProcessor(BaseModel):
         if candidates:
             return candidates[0]
 
-        if method_name in BUILTIN_TYPE_METHOD_NAMES:
+        if method_name in COMMON_LIBRARY_METHOD_NAMES:
             return None
         return self.project_symbols.unique_methods.get(method_name)
 
     def __resolve_module_attribute(self, object_node: TSNode, name: str) -> NodeID | None:
-        """Resolve ``name`` on a receiver that is an imported module alias."""
+        """Resolve ``name`` on a receiver that is an imported module alias.
+
+        A receiver bound in a function scope (parameter or local) shadows the alias.
+        """
 
         receiver = self.__normalize_name(self.__get_snippet(object_node))
+        _, receiver_scope_depth = self.__resolve_symbol_with_depth(receiver)
+        if receiver_scope_depth > 0:
+            return None
         module_symbols = self.prebound_modules.get(receiver)
         if module_symbols is None:
             return None

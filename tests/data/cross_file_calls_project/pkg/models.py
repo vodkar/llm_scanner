@@ -6,3 +6,11 @@ class Song:
 class Payload:
     def items(self):
         return []
+
+
+class AuditLog:
+    def info(self, message):
+        return message
+
+    def execute(self, query):
+        return query

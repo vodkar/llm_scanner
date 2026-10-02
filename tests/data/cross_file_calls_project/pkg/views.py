@@ -27,3 +27,12 @@ def related(song, top):
 
 def count(data):
     return len(data.items())
+
+
+def log_access(logger, cursor, query):
+    logger.info("access")
+    return cursor.execute(query)
+
+
+def shadowed(h, value):
+    return h.sanitize(value)
