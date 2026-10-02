@@ -23,6 +23,10 @@ from models.edges.data_flow import (
 from models.nodes import CallNode, CodeBlockNode, Node, VariableNode
 from models.nodes.base import NodeType
 from models.nodes.code import ClassNode, FunctionNode
+from services.cpg_parser.ts_parser.project_symbols import (
+    BUILTIN_TYPE_METHOD_NAMES,
+    ProjectSymbols,
+)
 from services.cpg_parser.types import ParserResult
 
 logger = logging.getLogger(__name__)
@@ -53,10 +57,13 @@ class NodeProcessor(BaseModel):
     source_text: str
     lines: list[str]
     prebound_symbols: dict[str, NodeID] = Field(default_factory=dict)
+    prebound_modules: dict[str, dict[str, NodeID]] = Field(default_factory=dict)
+    project_symbols: ProjectSymbols = Field(default_factory=ProjectSymbols)
     visited_node_ids: set[str] = Field(default_factory=set)
 
     __scope_stack: list[dict[str, NodeID]] = PrivateAttr(default_factory=lambda: [{}])
     __caller_stack: list[NodeID] = PrivateAttr(default_factory=list[NodeID])
+    __class_stack: list[NodeID] = PrivateAttr(default_factory=list[NodeID])
     __all_functions: dict[str, list[NodeID]] = PrivateAttr(
         default_factory=lambda: defaultdict(list[NodeID])
     )
@@ -391,20 +398,72 @@ class NodeProcessor(BaseModel):
             ):
                 return resolved
         elif function_node.type == "attribute":
-            # Handle method calls like obj.method()
-            attribute_node = function_node.child_by_field_name("attribute")
-            if not attribute_node or attribute_node.type != "identifier":
-                return None
-            method_name = self.__normalize_name(self.__get_snippet(attribute_node))
-            # First try resolving in current scope
-            resolved = self.__resolve_symbol(method_name)
-            if resolved and str(resolved).startswith("function:"):
-                return resolved
-            # Return the first match (could be improved with type inference)
-            candidates = self.__all_functions[method_name]
-            if candidates:
-                return candidates[0]
+            return self.__resolve_attribute_call_target(function_node)
         return None
+
+    def __resolve_attribute_call_target(self, function_node: TSNode) -> NodeID | None:
+        """Resolve ``receiver.name(...)`` to a known function or class.
+
+        Tried in order: a module alias receiver (``mod.f()``), ``self``/``cls``
+        and ``super()`` lookups through the enclosing class and its bases, a
+        same-file name match, and finally a method name defined exactly once in
+        the repository (excluding builtin-type method names).
+        """
+
+        attribute_node = function_node.child_by_field_name("attribute")
+        object_node = function_node.child_by_field_name("object")
+        if not attribute_node or attribute_node.type != "identifier" or object_node is None:
+            return None
+        method_name = self.__normalize_name(self.__get_snippet(attribute_node))
+
+        module_symbol = self.__resolve_module_attribute(object_node, method_name)
+        if module_symbol is not None:
+            return module_symbol
+
+        class_method = self.__resolve_class_method(object_node, method_name)
+        if class_method is not None:
+            return class_method
+
+        resolved = self.__resolve_symbol(method_name)
+        if resolved and str(resolved).startswith("function:"):
+            return resolved
+        candidates = self.__all_functions[method_name]
+        if candidates:
+            return candidates[0]
+
+        if method_name in BUILTIN_TYPE_METHOD_NAMES:
+            return None
+        return self.project_symbols.unique_methods.get(method_name)
+
+    def __resolve_module_attribute(self, object_node: TSNode, name: str) -> NodeID | None:
+        """Resolve ``name`` on a receiver that is an imported module alias."""
+
+        receiver = self.__normalize_name(self.__get_snippet(object_node))
+        module_symbols = self.prebound_modules.get(receiver)
+        if module_symbols is None:
+            return None
+        symbol_id = module_symbols.get(name)
+        if symbol_id is None or not str(symbol_id).startswith(("function:", "class:")):
+            return None
+        return symbol_id
+
+    def __resolve_class_method(self, object_node: TSNode, method_name: str) -> NodeID | None:
+        """Resolve ``self.m()``/``cls.m()``/``super().m()`` through the class hierarchy."""
+
+        if not self.__class_stack:
+            return None
+        class_id = self.__class_stack[-1]
+        if object_node.type == "identifier" and self.__get_snippet(object_node) in {"self", "cls"}:
+            return self.project_symbols.lookup_method(class_id, method_name)
+        if self.__is_super_call(object_node):
+            return self.project_symbols.lookup_base_method(class_id, method_name)
+        return None
+
+    def __is_super_call(self, node: TSNode) -> bool:
+        if node.type != "call":
+            return False
+        callee = node.child_by_field_name("function")
+        return callee is not None and self.__get_snippet(callee) == "super"
 
     def __warn_unresolved_call(self, call_node: TSNode) -> None:
         pass
@@ -906,12 +965,14 @@ class NodeProcessor(BaseModel):
         self.visited_node_ids.add(node_id)
         self.__bind_symbol(name, node_id)
 
+        self.__class_stack.append(node_id)
         for children in node.children:
             if children.type not in ProcessableNodeTypes:
                 continue
             child_nodes, child_edges = self.process(children, block_level=1)
             nodes.update(child_nodes)
             edges.extend(child_edges)
+        self.__class_stack.pop()
 
         return (class_node, (nodes, edges))
 
