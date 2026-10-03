@@ -38,6 +38,9 @@ _CLASS_MEMBER_DEFINITION_TYPES: Final[frozenset[str]] = frozenset(
     {"function_definition", "class_definition", "decorated_definition"}
 )
 _EMPTY_BODY_STATEMENT_TYPES: Final[frozenset[str]] = frozenset({"pass_statement", "comment"})
+_NON_CLASS_SCOPE_TYPES: Final[frozenset[str]] = frozenset(
+    {"function_definition", "lambda", "module"}
+)
 
 
 class ProcessableNodeTypes(StrEnum):
@@ -67,6 +70,7 @@ class NodeProcessor(BaseModel):
     __all_functions: dict[str, list[NodeID]] = PrivateAttr(
         default_factory=lambda: defaultdict(list[NodeID])
     )
+    __method_ids: dict[str, NodeID] = PrivateAttr(default_factory=dict)
     __max_node_name_len: int = PrivateAttr(default=256)
     __used_by_emitted: set[tuple[NodeID, NodeID]] = PrivateAttr(default_factory=set)
 
@@ -136,8 +140,29 @@ class NodeProcessor(BaseModel):
         if str(node_id).startswith("function:"):
             self.__all_functions[normalized].append(node_id)
 
+    def __bind_method(self, name: str, node_id: NodeID) -> None:
+        """Register a method for attribute-call resolution.
+
+        Class-scope names are invisible to bare-name lookups, so a method is
+        never bound in the lexical scope.
+        """
+        normalized = self.__normalize_name(name)
+        if not normalized:
+            return
+        self.__method_ids[normalized] = node_id
+        self.__all_functions[normalized].append(node_id)
+
+    def __is_class_member(self, node: TSNode) -> bool:
+        """Return whether the nearest scope enclosing ``node`` is a class body."""
+        ancestor = node.parent
+        while ancestor is not None and ancestor.type not in _NON_CLASS_SCOPE_TYPES:
+            if ancestor.type == "class_definition":
+                return True
+            ancestor = ancestor.parent
+        return False
+
     def __bind_class_symbol(self, node: TSNode) -> None:
-        """Bind a class name and its methods to the global scope for
+        """Bind a class name to the global scope and register its methods for
         forward reference resolution."""
         name_node = node.child_by_field_name("name")
         if not name_node:
@@ -150,7 +175,7 @@ class NodeProcessor(BaseModel):
         class_id = self.__get_node_id(NodeType.CLASS, class_name, node)
         self.__bind_symbol(class_name, class_id)
 
-        # Also bind all methods in the class for method call resolution
+        # Also register all methods in the class for method call resolution
         body_node = node.child_by_field_name("body")
         if not body_node:
             return
@@ -163,7 +188,7 @@ class NodeProcessor(BaseModel):
                 method_name := self.__normalize_name(self.__get_snippet(method_name_node))
             ):
                 method_id = self.__get_node_id(NodeType.FUNCTION, method_name, child)
-                self.__bind_symbol(method_name, method_id)
+                self.__bind_method(method_name, method_id)
 
     def __bind_function_symbol(self, node: TSNode) -> None:
         """Bind a function name to the global scope for forward reference resolution."""
@@ -408,6 +433,10 @@ class NodeProcessor(BaseModel):
         and ``super()`` lookups through the enclosing class and its bases, a
         same-file name match, and finally a method name defined exactly once in
         the repository (excluding builtin and common stdlib method names).
+
+        The same-file match resolves the attribute like a bare name whose module
+        scope also holds the file's methods: a function-local name wins, then a
+        method, then a module-level function, then any function of that name.
         """
 
         attribute_node = function_node.child_by_field_name("attribute")
@@ -424,7 +453,11 @@ class NodeProcessor(BaseModel):
         if class_method is not None:
             return class_method
 
-        resolved = self.__resolve_symbol(method_name)
+        resolved, scope_depth = self.__resolve_symbol_with_depth(method_name)
+        if scope_depth <= 0:
+            method_id = self.__method_ids.get(method_name)
+            if method_id is not None:
+                return method_id
         if resolved and str(resolved).startswith("function:"):
             return resolved
         candidates = self.__all_functions[method_name]
@@ -830,8 +863,11 @@ class NodeProcessor(BaseModel):
         nodes[node_id] = function_node
         self.visited_node_ids.add(node_id)
 
-        # Bind the function name in the enclosing scope so call sites can resolve it.
-        self.__bind_symbol(name, node_id)
+        if self.__is_class_member(node):
+            self.__bind_method(name, node_id)
+        else:
+            # Bind the function name in the enclosing scope so call sites can resolve it.
+            self.__bind_symbol(name, node_id)
 
         self.__push_scope()
         self.__push_caller(function_node.identifier)
