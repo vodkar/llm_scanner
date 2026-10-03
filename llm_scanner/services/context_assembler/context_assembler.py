@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from models.base import NodeID
 from models.context import CodeContextNode, Context, FileSpans, RootContext, SnippetSegment
+from models.edges.call_graph import CallGraphRelationshipType
 from repositories.context import ContextRepository
 from repositories.queries import code_traversal_relationship_types
 from services.context_assembler.node_filters import is_test_path, text_uses_test_framework
@@ -39,6 +40,12 @@ _CONTEXT_MARKER: Final[str] = (
     "and definitions -----"
 )
 _FILE_MARKER: Final[str] = "# file: {file_path}"
+
+# Incoming edges of these types count toward a node's fan-in for hub damping.
+# Outgoing calls and parameter/data-flow edges do not make a function a hub.
+_FANIN_RELATIONSHIP_TYPES: Final[frozenset[str]] = frozenset(
+    {CallGraphRelationshipType.CALLS, CallGraphRelationshipType.CALLED_BY}
+)
 
 type LinesByFile = dict[Path, set[int]]
 
@@ -228,9 +235,11 @@ class ContextAssemblerService(BaseModel):
         High-fan-in utilities (loggers, i18n ``_``, ``flash``-style helpers) are
         called from many unrelated functions; undirected BFS then pulls every
         caller into the neighborhood even though it shares only that utility with
-        the root. We identify hubs by degree over the call/data-flow edges,
-        recompute root reachability with hubs removed as transit, and keep only
-        roots, the still-reachable component, and the hub nodes themselves.
+        the root. We identify hubs by fan-in (distinct incoming call-graph
+        sources), not total degree, so a function with many call sites or
+        parameters but few callers stays transit. We then recompute root
+        reachability with hubs removed as transit, and keep only roots, the
+        still-reachable component, and the hub nodes themselves.
         """
 
         if len(context_nodes) <= 1:
@@ -244,17 +253,20 @@ class ContextAssemblerService(BaseModel):
         )
 
         adjacency: dict[NodeID, set[NodeID]] = defaultdict(set)
-        for src, dst, _ in edges:
+        callers: dict[NodeID, set[NodeID]] = defaultdict(set)
+        for src, dst, rel_type in edges:
             if src == dst or src not in node_ids or dst not in node_ids:
                 continue
             adjacency[src].add(dst)
             adjacency[dst].add(src)
+            if rel_type in _FANIN_RELATIONSHIP_TYPES:
+                callers[dst].add(src)
 
         hubs: set[NodeID] = {
             node.identifier
             for node in context_nodes
             if str(node.identifier) not in root_set
-            and len(adjacency.get(node.identifier, ())) >= self.hub_fanin_threshold
+            and len(callers.get(node.identifier, ())) >= self.hub_fanin_threshold
         }
         if not hubs:
             return context_nodes
@@ -466,7 +478,9 @@ class ContextAssemblerService(BaseModel):
                 continue
             if has_nonstandard_line_breaks(text):
                 unmappable_files.add(file_path)
-            lines = text.splitlines()
+            # read_text() already normalized \r\n and \r to \n; splitlines() would
+            # also split on \x0c etc., which analyzers and the CPG do not.
+            lines = text.split("\n")
             full_lines[file_path] = lines
             for line_number in line_numbers:
                 if line_number > len(lines):

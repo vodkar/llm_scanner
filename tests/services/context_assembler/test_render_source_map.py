@@ -100,3 +100,20 @@ def test_file_with_form_feed_is_not_mapped(tmp_path: Path) -> None:
     assert "os.system(cmd)" in context.context_text
     assert resolve_snippet_line(context.source_map, Path("ff.py"), 5) is None
     assert context.source_map == []
+
+
+def test_form_feed_line_does_not_shift_rendered_lines(tmp_path: Path) -> None:
+    """Node lines use tokenizer numbering, where a ``\\x0c`` line is a single line."""
+
+    (tmp_path / "ff.py").write_text(
+        "import os\n\x0c\ndef f(cmd):\n    y = cmd\n    os.system(cmd)\n", encoding="utf-8"
+    )
+    node = _node("f", "ff.py", 5).model_copy(update={"line_start": 3})
+
+    context = _service(tmp_path).assemble_from_nodes(tmp_path, [node])
+
+    assert context.context_text.splitlines()[1:] == [
+        "def f(cmd):",
+        "    y = cmd",
+        "    os.system(cmd)",
+    ]

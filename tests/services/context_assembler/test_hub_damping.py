@@ -87,8 +87,46 @@ def _scenario() -> tuple[list[CodeContextNode], list[tuple[NodeID, NodeID, str]]
     edges = [_calls("root", "A"), _calls("A", "B"), _calls("root", "hub")]
     for i in range(12):
         nodes.append(_node(f"C{i}", depth=2))
-        edges.append(_calls("hub", f"C{i}"))
+        edges.append(_calls(f"C{i}", "hub"))
     return nodes, edges
+
+
+def _edge(src: str, dst: str, rel: str) -> tuple[NodeID, NodeID, str]:
+    return (NodeID(src), NodeID(dst), rel)
+
+
+def test_high_fanout_function_is_not_a_hub() -> None:
+    """A callee with one caller but many call sites/params keeps its callees.
+
+    Mirrors the CPG shape ``fn -CALLS-> call -CALLED_BY-> callee`` and
+    ``fn -DEFINED_BY-> param``: the handler's degree is high, its fan-in is 1.
+    """
+
+    def node(node_id: str, depth: int) -> CodeContextNode:
+        return _node(node_id, depth=depth).model_copy(update={"identifier": NodeID(node_id)})
+
+    nodes = [
+        node("function:root", 0),
+        node("call:handler", 0),
+        node("function:handler", 1),
+        node("function:check_permission", 3),
+    ]
+    edges = [
+        _edge("function:root", "call:handler", "CALLS"),
+        _edge("call:handler", "function:handler", "CALLED_BY"),
+        _edge("call:h0", "function:check_permission", "CALLED_BY"),
+    ]
+    for i in range(6):
+        nodes.append(node(f"call:h{i}", 2))
+        edges.append(_edge("function:handler", f"call:h{i}", "CALLS"))
+    for i in range(2):
+        nodes.append(node(f"variable:p{i}", 2))
+        edges.append(_edge("function:handler", f"variable:p{i}", "DEFINED_BY"))
+
+    service = _service(nodes, edges, threshold=8)
+    result = service.fetch_context_nodes_for_root_ids(["function:root", "call:handler"])
+
+    assert {str(n.identifier) for n in result} == {str(n.identifier) for n in nodes}
 
 
 def _names(nodes: list[CodeContextNode]) -> set[str | None]:
