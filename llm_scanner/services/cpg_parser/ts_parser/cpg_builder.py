@@ -44,7 +44,9 @@ class CPGFileBuilder(BaseModel):
         self.__source = absolute_path.read_bytes()
         self.__source_text = self.__source.decode("utf-8", errors="replace")
         self.__tree = self.__parser.parse(self.__source)
-        self.__lines = self.__source_text.splitlines()
+        # Split on "\n" only: tree-sitter rows ignore the extra separators
+        # ``str.splitlines`` honours (form feed, \x1c-\x1e, \x85,  , ...).
+        self.__lines = [line.removesuffix("\r") for line in self.__source_text.split("\n")]
         self.__processor = NodeProcessor(
             path=self.__display_path,
             source=self.__source,
@@ -341,9 +343,13 @@ class CPGDirectoryBuilder(BaseModel):
 
             module_symbols: dict[str, NodeID] = {}
 
-            for name in exported.functions:
+            for name, lineno in exported.functions.items():
                 for node_id, node in nodes.items():
-                    if getattr(node, "name", None) == name and str(node_id).startswith("function:"):
+                    if (
+                        isinstance(node, FunctionNode)
+                        and node.name == name
+                        and node.line_start == lineno
+                    ):
                         module_symbols[name] = node_id
                         break
 
@@ -442,6 +448,7 @@ class CPGDirectoryBuilder(BaseModel):
                 continue
             package = self._resolve_import_from_module(
                 current_module=current_module,
+                is_package=file_path.name == "__init__.py",
                 level=stmt.level,
                 module=stmt.module,
             )
@@ -528,6 +535,7 @@ class CPGDirectoryBuilder(BaseModel):
 
             resolved_module = self._resolve_import_from_module(
                 current_module=current_module,
+                is_package=file_path.name == "__init__.py",
                 level=stmt.level,
                 module=stmt.module,
             )
@@ -552,13 +560,18 @@ class CPGDirectoryBuilder(BaseModel):
         self,
         *,
         current_module: str,
+        is_package: bool,
         level: int,
         module: str | None,
     ) -> str | None:
         if level < 0:
             return None
 
-        current_package = current_module.rsplit(".", 1)[0] if "." in current_module else ""
+        # A package's ``__init__`` is its own current package for relative imports.
+        if is_package:
+            current_package = current_module
+        else:
+            current_package = current_module.rsplit(".", 1)[0] if "." in current_module else ""
 
         # level=0 => absolute import
         if level == 0:
