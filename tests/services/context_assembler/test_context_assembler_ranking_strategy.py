@@ -100,6 +100,8 @@ def test_context_assembler_uses_injected_ranking_strategy(tmp_path: Path) -> Non
 
     # Both nodes are non-roots so the path-fill root-anchor invariant does not
     # force either into the selection; the injected strategy controls order.
+    # The service hands nodes to the strategy sorted by depth, so alpha (depth 1)
+    # comes before beta (depth 2) and the reversing strategy puts beta first.
     alpha_node = CodeContextNode(
         identifier=NodeID("function:alpha"),
         node_kind="FunctionNode",
@@ -107,7 +109,7 @@ def test_context_assembler_uses_injected_ranking_strategy(tmp_path: Path) -> Non
         file_path=Path("alpha.py"),
         line_start=1,
         line_end=2,
-        depth=2,
+        depth=1,
     )
     beta_node = CodeContextNode(
         identifier=NodeID("function:beta"),
@@ -116,7 +118,7 @@ def test_context_assembler_uses_injected_ranking_strategy(tmp_path: Path) -> Non
         file_path=Path("beta.py"),
         line_start=1,
         line_end=2,
-        depth=1,
+        depth=2,
     )
 
     service = ContextAssemblerService(

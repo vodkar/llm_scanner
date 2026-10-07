@@ -169,12 +169,13 @@ def test_path_fill_evicts_low_score_leaf_to_make_room_for_companion(tmp_path: Pa
         nodes=[root, helper, sink, leaf],
         edges=edges,
     )
-    # Budget allows root + leaf + sink (~6 lines) but not all four.
+    # The rendered text (markers included) of root + helper + sink is ~89 tokens and
+    # of all four ~101, so the budget fits the companion path but not the leaf too.
     service = ContextAssemblerService(
         project_root=tmp_path,
         context_repository=repo,
         max_call_depth=4,
-        token_budget=40,
+        token_budget=95,
         ranking_strategy=_ScoreSortStrategy(),
     )
 

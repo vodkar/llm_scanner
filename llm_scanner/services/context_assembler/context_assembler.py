@@ -48,6 +48,7 @@ _FANIN_RELATIONSHIP_TYPES: Final[frozenset[str]] = frozenset(
 )
 
 type LinesByFile = dict[Path, set[int]]
+type FileScopes = dict[Path, list[tuple[frozenset[int], int, int]] | None]
 
 
 class _RootGroup(NamedTuple):
@@ -184,7 +185,12 @@ class ContextAssemblerService(BaseModel):
         *,
         requires_edge_paths: bool | None = None,
     ) -> list[CodeContextNode]:
-        """Fetch context neighborhood for the supplied root node IDs."""
+        """Fetch context neighborhood for the supplied root node IDs.
+
+        The result is ordered by depth, file, line span and id: Neo4j returns rows
+        in no fixed order, and order-sensitive strategies (dummy, random picking,
+        ties in score-sorted rankings) must see the same input on every run.
+        """
 
         if not root_ids:
             return []
@@ -210,7 +216,16 @@ class ContextAssemblerService(BaseModel):
         if self.damp_call_graph_hubs:
             context_nodes = self._prune_hub_mediated_nodes(repo, root_ids, context_nodes)
 
-        context_nodes = self._merge_enclosing_class_nodes(repo, root_ids, context_nodes)
+        context_nodes = sorted(
+            self._merge_enclosing_class_nodes(repo, root_ids, context_nodes),
+            key=lambda node: (
+                node.depth,
+                str(node.file_path),
+                node.line_start,
+                node.line_end,
+                str(node.identifier),
+            ),
+        )
         _LOGGER.info(
             "Fetched %d context nodes neighborhood for %d root IDs",
             len(context_nodes),
@@ -471,19 +486,25 @@ class ContextAssemblerService(BaseModel):
 
         full_lines, read_lines, unmappable_files = self._read_node_lines(repo_path, nodes)
         adjacency = self._build_path_fill_adjacency(nodes)
-        selected_ids = self._select_nodes_with_path_fill(nodes, read_lines, adjacency)
         groups = self._group_root_nodes(nodes)
+        scopes_by_file: FileScopes = {
+            file_path: self._parse_file_scopes("\n".join(lines))
+            for file_path, lines in full_lines.items()
+        }
 
-        if groups:
-            rendered_lines, roots = self._render_root_sections(
-                nodes, groups, selected_ids, adjacency, full_lines, read_lines
+        def render(selection: set[NodeID]) -> tuple[list[RenderedLine], list[RootContext]]:
+            return self._render_selection(
+                nodes, groups, selection, adjacency, full_lines, read_lines, scopes_by_file
             )
-        else:
-            lines_to_keep = self._complete_structure(
-                full_lines, self._lines_for_selection(nodes, selected_ids), {}
-            )
-            self._ensure_line_text(read_lines, full_lines, lines_to_keep)
-            rendered_lines, roots = self._render_lines(read_lines, lines_to_keep), []
+
+        def rendered_tokens(selection: set[NodeID]) -> int:
+            rendered, _ = render(selection)
+            return self._estimate_tokens("\n".join(text for _, _, text in rendered))
+
+        selected_ids = self._select_nodes_with_path_fill(
+            nodes, read_lines, adjacency, selection_tokens=rendered_tokens
+        )
+        rendered_lines, roots = render(selected_ids)
 
         text = "\n".join(line_text for _, _, line_text in rendered_lines)
         if not text:
@@ -498,6 +519,32 @@ class ContextAssemblerService(BaseModel):
             ],
             roots,
         )
+
+    def _render_selection(
+        self,
+        nodes: list[CodeContextNode],
+        groups: list[_RootGroup],
+        selected_ids: set[NodeID],
+        adjacency: dict[NodeID, set[NodeID]],
+        full_lines: dict[Path, list[str]],
+        read_lines: dict[Path, dict[int, str]],
+        scopes_by_file: FileScopes,
+    ) -> tuple[list[RenderedLine], list[RootContext]]:
+        """Render ``selected_ids`` exactly as the final context is rendered.
+
+        Used both for the final text and, during path-fill, to measure a trial
+        selection, so the budget covers marker lines and completed headers too.
+        """
+
+        if groups:
+            return self._render_root_sections(
+                nodes, groups, selected_ids, adjacency, full_lines, read_lines, scopes_by_file
+            )
+        lines_to_keep = self._complete_structure(
+            full_lines, self._lines_for_selection(nodes, selected_ids), {}, scopes_by_file
+        )
+        self._ensure_line_text(read_lines, full_lines, lines_to_keep)
+        return self._render_lines(read_lines, lines_to_keep), []
 
     def _read_node_lines(
         self, repo_path: Path, nodes: list[CodeContextNode]
@@ -622,6 +669,7 @@ class ContextAssemblerService(BaseModel):
         adjacency: dict[NodeID, set[NodeID]],
         full_lines: dict[Path, list[str]],
         read_lines: dict[Path, dict[int, str]],
+        scopes_by_file: FileScopes,
     ) -> tuple[list[RenderedLine], list[RootContext]]:
         """Render each root group followed by the context attributed to it.
 
@@ -640,7 +688,9 @@ class ContextAssemblerService(BaseModel):
         seen_boilerplate: set[str] = set()
         for index, group in enumerate(groups):
             root_lines = self._lines_for_selection(nodes, set(group.node_ids))
-            root_lines = self._complete_structure(full_lines, root_lines, root_lines)
+            root_lines = self._complete_structure(
+                full_lines, root_lines, root_lines, scopes_by_file
+            )
             context_ids = {
                 node_id
                 for node_id, owner in owners.items()
@@ -651,7 +701,7 @@ class ContextAssemblerService(BaseModel):
                 for file_path, lines in self._lines_for_selection(nodes, context_ids).items()
                 if (kept := lines - all_root_lines.get(file_path, set()))
             }
-            context_lines = self._complete_structure(full_lines, context_lines, {})
+            context_lines = self._complete_structure(full_lines, context_lines, {}, scopes_by_file)
             self._ensure_line_text(read_lines, full_lines, root_lines)
             self._ensure_line_text(read_lines, full_lines, context_lines)
 
@@ -708,14 +758,19 @@ class ContextAssemblerService(BaseModel):
         ranked_nodes: list[CodeContextNode],
         read_lines: dict[Path, dict[int, str]],
         adjacency: dict[NodeID, set[NodeID]] | None = None,
+        *,
+        selection_tokens: Callable[[set[NodeID]], int] | None = None,
     ) -> set[NodeID]:
         """Return node IDs to render, preserving CPG connectivity to roots.
 
         Roots (``depth==0``) are pinned. For each non-root candidate (in the
         strategy's sort order) we walk the parent chain produced by a single
         multi-source BFS back to its nearest root, then include the candidate
-        plus any not-yet-selected ancestors **only if** the resulting line set
-        still fits the token budget. No eviction.
+        plus any not-yet-selected ancestors **only if** the resulting selection
+        still fits the token budget. No eviction. ``selection_tokens`` measures a
+        trial selection; pass the final renderer's size so markers and completed
+        headers count against the budget. Without it, only the raw node lines are
+        measured.
         """
 
         if not ranked_nodes:
@@ -743,8 +798,12 @@ class ContextAssemblerService(BaseModel):
             if not new_ids:
                 continue
 
-            trial_lines = self._lines_for_selection(ranked_nodes, selected_ids | new_ids)
-            trial_tokens = self._estimate_tokens(self._render_text(read_lines, trial_lines))
+            trial_ids = selected_ids | new_ids
+            if selection_tokens is not None:
+                trial_tokens = selection_tokens(trial_ids)
+            else:
+                trial_lines = self._lines_for_selection(ranked_nodes, trial_ids)
+                trial_tokens = self._estimate_tokens(self._render_text(read_lines, trial_lines))
             if trial_tokens <= self.token_budget:
                 selected_ids |= new_ids
 
@@ -757,6 +816,7 @@ class ContextAssemblerService(BaseModel):
         full_lines: dict[Path, list[str]],
         lines_to_keep: dict[Path, set[int]],
         root_lines: dict[Path, set[int]],
+        scopes_by_file: FileScopes | None = None,
     ) -> dict[Path, set[int]]:
         """Make each file's kept-line set structurally coherent (issue D).
 
@@ -764,13 +824,17 @@ class ContextAssemblerService(BaseModel):
         added (so methods/statements never render without their scope); headers of
         scopes with no kept body line are dropped (so no bare ``class X:`` is
         emitted), except lines belonging to a root node, which are always kept.
-        Files that do not parse as Python are returned unchanged.
+        Files that do not parse as Python are returned unchanged. Pass
+        ``scopes_by_file`` (from ``_parse_file_scopes``) to avoid re-parsing files.
         """
 
         completed: dict[Path, set[int]] = {}
         for file_path, kept in lines_to_keep.items():
             raw = full_lines.get(file_path)
-            scopes = cls._parse_file_scopes("\n".join(raw)) if raw else None
+            if scopes_by_file is not None and file_path in scopes_by_file:
+                scopes = scopes_by_file[file_path]
+            else:
+                scopes = cls._parse_file_scopes("\n".join(raw)) if raw else None
             if scopes is None:
                 completed[file_path] = set(kept)
                 continue
@@ -872,14 +936,17 @@ class ContextAssemblerService(BaseModel):
         ``parent[root] = None`` for each seed. For every other reachable node
         the value is the neighbor through which BFS first discovered it — i.e.,
         the next hop on the shortest path back toward the nearest root.
-        Unreachable nodes are absent.
+        Unreachable nodes are absent. Seeds and neighbors are visited in sorted
+        order, so ties resolve to the smallest id instead of following set
+        iteration order, which changes with Python's per-process hash seed.
         """
 
-        parent: dict[NodeID, NodeID | None] = {root_id: None for root_id in root_ids}
-        queue: deque[NodeID] = deque(root_ids)
+        ordered_roots: list[NodeID] = sorted(root_ids)
+        parent: dict[NodeID, NodeID | None] = {root_id: None for root_id in ordered_roots}
+        queue: deque[NodeID] = deque(ordered_roots)
         while queue:
             current = queue.popleft()
-            for neighbor in adjacency.get(current, ()):
+            for neighbor in sorted(adjacency.get(current, ())):
                 if neighbor in parent:
                     continue
                 parent[neighbor] = current
