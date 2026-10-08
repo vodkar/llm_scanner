@@ -9,7 +9,7 @@ _PLUS_FILE_PREFIX: str = "+++ b/"
 _HUNK_RE: re.Pattern[str] = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
-def parse_unified_diff(diff_text: str, repo_root: Path) -> list[FileSpans]:
+def parse_unified_diff(diff_text: str) -> list[FileSpans]:
     """Parse a git unified diff into a list of FileSpans covering added lines.
 
     Only ``+`` (added / modified) lines are captured; deleted lines are ignored
@@ -20,11 +20,10 @@ def parse_unified_diff(diff_text: str, repo_root: Path) -> list[FileSpans]:
 
     Args:
         diff_text: Raw output of ``git diff`` or similar (unified diff format).
-        repo_root: Absolute path to the repository root; used to build absolute
-            file paths within each ``FileSpans`` entry.
 
     Returns:
-        One ``FileSpans`` per changed file; files with no added lines are omitted.
+        One ``FileSpans`` per changed file, keyed by the repo-relative path to
+        match ``file_path`` on CPG nodes; files with no added lines are omitted.
     """
     file_added_lines: dict[Path, list[int]] = {}
     current_file: Path | None = None
@@ -34,8 +33,7 @@ def parse_unified_diff(diff_text: str, repo_root: Path) -> list[FileSpans]:
         # File header: +++ b/<path>  (new file) or +++ /dev/null (deleted file)
         if line.startswith("+++ "):
             if line.startswith(_PLUS_FILE_PREFIX):
-                rel_path = line[len(_PLUS_FILE_PREFIX) :].strip()
-                current_file = repo_root / rel_path
+                current_file = Path(line[len(_PLUS_FILE_PREFIX) :].strip())
                 current_new_line = 0
             else:
                 current_file = None  # deleted file — no added lines to capture

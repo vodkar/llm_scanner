@@ -538,7 +538,7 @@ def scan(  # noqa: C901
                 diff_text = diff_file.read_text(encoding="utf-8")
             else:
                 diff_text = sys.stdin.read()
-            file_spans = parse_unified_diff(diff_text, repo_root=src)
+            file_spans = parse_unified_diff(diff_text)
             report = pipeline.run_diff(
                 file_spans=file_spans,
                 strategy_factory=strategy_factory,

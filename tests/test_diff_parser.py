@@ -55,8 +55,6 @@ diff --git a/deleted.py b/deleted.py
 -removed3
 """
 
-_REPO_ROOT = Path("/repo")
-
 
 # ---------------------------------------------------------------------------
 # _numbers_to_spans
@@ -88,35 +86,35 @@ class TestNumbersToSpans:
 class TestParseUnifiedDiff:
     def test_simple_diff_added_lines(self) -> None:
         """Added lines appear at correct new-file line numbers."""
-        result = parse_unified_diff(_SIMPLE_DIFF, _REPO_ROOT)
+        result = parse_unified_diff(_SIMPLE_DIFF)
         assert len(result) == 1
         span: FileSpans = result[0]
-        assert span.file_path == _REPO_ROOT / "foo.py"
+        assert span.file_path == Path("foo.py")
         # hunk starts at new line 1; line1 is context(1), line2_added(2), line3 context(3),
         # line4_removal skips counter, line4_replacement is added(4)
         assert (2, 2) in span.line_spans
         assert (4, 4) in span.line_spans
 
     def test_multi_file_diff(self) -> None:
-        result = parse_unified_diff(_MULTI_FILE_DIFF, _REPO_ROOT)
+        result = parse_unified_diff(_MULTI_FILE_DIFF)
         assert len(result) == 2
         paths = {r.file_path for r in result}
-        assert _REPO_ROOT / "foo.py" in paths
-        assert _REPO_ROOT / "bar.py" in paths
+        assert Path("foo.py") in paths
+        assert Path("bar.py") in paths
 
     def test_deleted_file_ignored(self) -> None:
         """Files deleted ('+++ /dev/null') produce no FileSpans."""
-        result = parse_unified_diff(_DELETED_FILE_DIFF, _REPO_ROOT)
+        result = parse_unified_diff(_DELETED_FILE_DIFF)
         assert result == []
 
     def test_empty_diff(self) -> None:
-        assert parse_unified_diff("", _REPO_ROOT) == []
+        assert parse_unified_diff("") == []
 
     def test_multi_file_line_numbers(self) -> None:
         """Hunk start offset is respected for each file independently."""
-        result = parse_unified_diff(_MULTI_FILE_DIFF, _REPO_ROOT)
-        foo_spans = next(r for r in result if r.file_path == _REPO_ROOT / "foo.py")
-        bar_spans = next(r for r in result if r.file_path == _REPO_ROOT / "bar.py")
+        result = parse_unified_diff(_MULTI_FILE_DIFF)
+        foo_spans = next(r for r in result if r.file_path == Path("foo.py"))
+        bar_spans = next(r for r in result if r.file_path == Path("bar.py"))
         # foo hunk starts at new line 10; context(10), added(11)
         assert (11, 11) in foo_spans.line_spans
         # bar hunk starts at new line 5; context(5), added(6)
@@ -131,6 +129,6 @@ class TestParseUnifiedDiff:
 +line2
 +line3
 """
-        result = parse_unified_diff(diff, _REPO_ROOT)
+        result = parse_unified_diff(diff)
         assert len(result) == 1
         assert result[0].line_spans == [(1, 3)]

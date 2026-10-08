@@ -37,7 +37,7 @@ class SARIFExporter:
         Returns:
             SARIF 2.1.0 document ready for JSON serialisation.
         """
-        results = [self._finding_to_result(f) for f in report.findings if f.vulnerable]
+        results = [self._finding_to_result(f, report.src) for f in report.findings if f.vulnerable]
         return {
             "$schema": _SARIF_SCHEMA,
             "version": _SARIF_VERSION,
@@ -72,7 +72,13 @@ class SARIFExporter:
         with path.open("w", encoding="utf-8") as f:
             json.dump(self.export(report), f, indent=2)
 
-    def _finding_to_result(self, finding: ScanFinding) -> dict[str, Any]:
+    def _artifact_uri(self, file_path: Path, src: Path) -> str:
+        """Return ``file_path`` relative to ``src`` so it resolves against ``%SRCROOT%``."""
+        if file_path.is_absolute() and file_path.is_relative_to(src):
+            return file_path.relative_to(src).as_posix()
+        return file_path.as_posix()
+
+    def _finding_to_result(self, finding: ScanFinding, src: Path) -> dict[str, Any]:
         level = _SARIF_LEVEL.get(finding.severity or ScanSeverity.MEDIUM, "warning")
         message_text = finding.description or "Potential security vulnerability detected."
         rule_id = f"CWE-{finding.cwe_id}" if finding.cwe_id else "SCANNER/UNKNOWN"
@@ -85,7 +91,7 @@ class SARIFExporter:
                 {
                     "physicalLocation": {
                         "artifactLocation": {
-                            "uri": str(finding.file_path),
+                            "uri": self._artifact_uri(finding.file_path, src),
                             "uriBaseId": "%SRCROOT%",
                         },
                         "region": {

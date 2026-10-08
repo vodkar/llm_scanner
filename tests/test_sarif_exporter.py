@@ -28,10 +28,11 @@ def _make_finding(
     severity: ScanSeverity = ScanSeverity.HIGH,
     cwe_id: int | None = 89,
     description: str | None = "SQL injection",
+    file_path: Path = Path("src/main.py"),
 ) -> ScanFinding:
     return ScanFinding(
         root_id="abc123",
-        file_path=Path("src/main.py"),
+        file_path=file_path,
         line_start=10,
         line_end=15,
         vulnerable=vulnerable,
@@ -99,6 +100,21 @@ class TestSARIFExporter:
         region = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]
         assert region["startLine"] == 10
         assert region["endLine"] == 15
+
+    def test_absolute_location_is_relative_to_src(self) -> None:
+        findings = [_make_finding(file_path=Path("/repo/src/main.py"))]
+        doc = SARIFExporter().export(_make_report(findings))
+        artifact = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+            "artifactLocation"
+        ]
+        assert artifact == {"uri": "src/main.py", "uriBaseId": "%SRCROOT%"}
+
+    def test_relative_location_is_kept(self) -> None:
+        doc = SARIFExporter().export(_make_report([_make_finding()]))
+        artifact = doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+            "artifactLocation"
+        ]
+        assert artifact["uri"] == "src/main.py"
 
     def test_empty_report_yields_empty_results(self) -> None:
         doc = SARIFExporter().export(_make_report([]))
