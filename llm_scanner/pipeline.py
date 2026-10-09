@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from clients.analyzers.semgrep import DEFAULT_SEMGREP_CONFIG
 from clients.neo4j import Neo4jClient
 from models.bandit_report import IssueSeverity
-from models.context import FileSpans
+from models.context import FileSpans, RootContext
 from models.edges.analysis import StaticAnalysisReports
 from models.nodes.finding import (
     BanditFindingNode,
@@ -43,6 +43,25 @@ DIFF_ROOT_TOKEN_SHARE: Final[float] = 0.5
 _SEVERITY_RANK: Final = MappingProxyType(
     {IssueSeverity.LOW: 0, IssueSeverity.MEDIUM: 1, IssueSeverity.HIGH: 2}
 )
+
+
+def _changed_lines(root: RootContext, changed_spans: Sequence[FileSpans]) -> tuple[int, int]:
+    """Return the root's line range narrowed to the changed lines it contains.
+
+    Code scanning attributes an alert to a pull request only when its start line
+    was changed, so a root rendered with unchanged enclosing lines (e.g. its
+    ``def``) must start at its first changed line.
+    """
+    overlaps: list[tuple[int, int]] = [
+        (max(start, root.line_start), min(end, root.line_end))
+        for spans in changed_spans
+        if spans.file_path == root.file_path
+        for start, end in spans.line_spans
+        if start <= root.line_end and end >= root.line_start
+    ]
+    if not overlaps:
+        return root.line_start, root.line_end
+    return min(start for start, _ in overlaps), max(end for _, end in overlaps)
 
 
 class GeneralScannerPipeline(BaseModel):
@@ -143,6 +162,7 @@ class GeneralScannerPipeline(BaseModel):
         root_id_groups: list[list[str]],
         assembler: ContextAssemblerService,
         static_findings: Sequence[FindingNode],
+        changed_spans: Sequence[FileSpans] = (),
     ) -> list[ReviewItem]:
         items: list[ReviewItem] = []
         project_root = self.src.resolve()
@@ -171,9 +191,7 @@ class GeneralScannerPipeline(BaseModel):
                     ),
                     roots=tuple(
                         ReviewRoot(
-                            file_path=project_root / root.file_path,
-                            line_start=root.line_start,
-                            line_end=root.line_end,
+                            project_root / root.file_path, *_changed_lines(root, changed_spans)
                         )
                         for root in context.roots
                     ),
@@ -278,7 +296,7 @@ class GeneralScannerPipeline(BaseModel):
             len(file_spans),
         )
 
-        items = self._build_review_items(root_id_groups, assembler, all_findings)
+        items = self._build_review_items(root_id_groups, assembler, all_findings, file_spans)
         findings = llm_review_service.review(items)
 
         return ScanReport(
