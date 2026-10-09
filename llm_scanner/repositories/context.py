@@ -231,6 +231,9 @@ class ContextRepository(BaseModel):
         Calls the batch BFS query once per configured edge type and merges
         results by node identifier, populating ``edge_depths`` with the
         shallowest depth at which each node is reachable via each edge type.
+        A final BFS over all edge types adds nodes only reachable through
+        mixed-type paths (e.g. ``FLOWS_TO`` into a call site, then ``CALLED_BY``
+        to its callee); those carry no ``edge_depths``.
 
         Args:
             start_node_ids: Identifiers of code nodes to start from.
@@ -271,18 +274,8 @@ class ContextRepository(BaseModel):
                     start_ids_by_node[node_id].add(str(start_id_raw))
                 existing = nodes_by_id.get(node_id)
                 if existing is None:
-                    depths: dict[str, int] = {edge_type: row_depth}
-                    nodes_by_id[node_id] = CodeContextNode(
-                        identifier=node_id,
-                        node_kind=self._coerce_str(row.get("node_kind")),
-                        name=self._coerce_str(row.get("name")),
-                        file_path=Path(str(row.get("node_file_path") or row.get("file_path", ""))),
-                        line_start=int(row["line_start"]),
-                        line_end=int(row["line_end"]),
-                        depth=row_depth,
-                        finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
-                        security_path_score=float(row.get("security_path_score") or 0.0),
-                        edge_depths=depths,
+                    nodes_by_id[node_id] = self._context_node_from_row(
+                        row, edge_depths={edge_type: row_depth}
                     )
                     ordered_node_ids.append(node_id)
                     continue
@@ -293,6 +286,20 @@ class ContextRepository(BaseModel):
                 if existing_edge_depth is None or row_depth < existing_edge_depth:
                     current_edge_depths[edge_type] = row_depth
                 existing.edge_depths = current_edge_depths
+
+        mixed_rows = self.client.run_read(
+            code_bfs_nodes_batch_query(max_depth, self.traversal_relationship_types),
+            {"start_ids": list(unique_start_ids), "max_depth": max_depth},
+        )
+        for row in mixed_rows:
+            node_id = NodeID(str(row["id"]))
+            start_ids_by_node[node_id].add(str(row["start_id"]))
+            existing = nodes_by_id.get(node_id)
+            if existing is not None:
+                existing.depth = min(existing.depth, int(row["depth"]))
+                continue
+            nodes_by_id[node_id] = self._context_node_from_row(row)
+            ordered_node_ids.append(node_id)
 
         # Mirror _build_context_nodes semantics: a node reached from N distinct
         # roots carries repeats = N - 1, feeding the ranking repeat bonus.
@@ -425,20 +432,28 @@ class ContextRepository(BaseModel):
                 existing_node.depth = min(existing_node.depth, row_depth)
                 continue
 
-            nodes_by_id[node_id] = CodeContextNode(
-                identifier=node_id,
-                node_kind=self._coerce_str(row.get("node_kind")),
-                name=self._coerce_str(row.get("name")),
-                file_path=Path(str(row.get("node_file_path") or row.get("file_path", ""))),
-                line_start=int(row["line_start"]),
-                line_end=int(row["line_end"]),
-                depth=row_depth,
-                finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
-                security_path_score=float(row.get("security_path_score") or 0.0),
-            )
+            nodes_by_id[node_id] = self._context_node_from_row(row)
             ordered_node_ids.append(node_id)
 
         return [nodes_by_id[node_id] for node_id in ordered_node_ids]
+
+    def _context_node_from_row(
+        self, row: dict[str, Any], *, edge_depths: dict[str, int] | None = None
+    ) -> CodeContextNode:
+        """Build a context node from a BFS query row."""
+
+        return CodeContextNode(
+            identifier=NodeID(str(row["id"])),
+            node_kind=self._coerce_str(row.get("node_kind")),
+            name=self._coerce_str(row.get("name")),
+            file_path=Path(str(row.get("node_file_path") or row.get("file_path", ""))),
+            line_start=int(row["line_start"]),
+            line_end=int(row["line_end"]),
+            depth=int(row.get("depth", 0)),
+            finding_evidence_score=float(row.get("finding_evidence_score") or 0.0),
+            security_path_score=float(row.get("security_path_score") or 0.0),
+            edge_depths=edge_depths,
+        )
 
     @staticmethod
     def _coerce_str(value: Any | None) -> str | None:

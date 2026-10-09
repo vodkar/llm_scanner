@@ -23,6 +23,7 @@ from models.edges.data_flow import (
 from models.nodes import CallNode, CodeBlockNode, Node, VariableNode
 from models.nodes.base import NodeType
 from models.nodes.code import ClassNode, FunctionNode
+from services.cpg_parser.ts_parser.field_links import FieldAccess, FieldDeclaration
 from services.cpg_parser.ts_parser.project_symbols import (
     COMMON_LIBRARY_METHOD_NAMES,
     ProjectSymbols,
@@ -63,6 +64,10 @@ class NodeProcessor(BaseModel):
     prebound_modules: dict[str, dict[str, NodeID]] = Field(default_factory=dict)
     project_symbols: ProjectSymbols = Field(default_factory=ProjectSymbols)
     visited_node_ids: set[str] = Field(default_factory=set)
+    field_declarations: list[FieldDeclaration] = Field(default_factory=list)
+    """Fields declared in class bodies or assigned on ``self``, for project-wide linking."""
+    field_accesses: list[FieldAccess] = Field(default_factory=list)
+    """Attribute reads and writes, for project-wide linking to declared fields."""
 
     __scope_stack: list[dict[str, NodeID]] = PrivateAttr(default_factory=lambda: [{}])
     __caller_stack: list[NodeID] = PrivateAttr(default_factory=list[NodeID])
@@ -276,6 +281,62 @@ class NodeProcessor(BaseModel):
                 actual_depth = len(self.__scope_stack) - 1 - depth_from_top
                 return node_id, actual_depth
         return None, -1
+
+    def __receiver_class_id(self, object_node: TSNode) -> NodeID | None:
+        """Return the enclosing class for a ``self``/``cls`` receiver, else ``None``."""
+        if not self.__class_stack or object_node.type != "identifier":
+            return None
+        if self.__get_snippet(object_node) not in {"self", "cls"}:
+            return None
+        return self.__class_stack[-1]
+
+    def __record_attribute_access(
+        self, attribute_node: TSNode, site_id: NodeID, *, is_write: bool
+    ) -> None:
+        """Record an ``<expr>.<name>`` access attached to ``site_id``."""
+        name_node = attribute_node.child_by_field_name("attribute")
+        object_node = attribute_node.child_by_field_name("object")
+        if name_node is None or object_node is None:
+            return
+        self.field_accesses.append(
+            FieldAccess(
+                name=self.__get_snippet(name_node),
+                site_id=site_id,
+                is_write=is_write,
+                receiver_class_id=self.__receiver_class_id(object_node),
+            )
+        )
+
+    def __record_assignment_target_field(
+        self, assignment: TSNode, target_node: TSNode, target_name: str, target_id: NodeID
+    ) -> None:
+        """Record a class-body field, a ``self.x`` field, or an attribute write."""
+        if target_node.type == "identifier":
+            if self.__class_stack and self.__is_class_member(assignment):
+                self.field_declarations.append(
+                    FieldDeclaration(self.__class_stack[-1], target_name, target_id)
+                )
+            return
+        if target_node.type != "attribute":
+            return
+        self.__record_attribute_access(target_node, target_id, is_write=True)
+        object_node = target_node.child_by_field_name("object")
+        name_node = target_node.child_by_field_name("attribute")
+        if object_node is None or name_node is None:
+            return
+        receiver_class_id = self.__receiver_class_id(object_node)
+        if receiver_class_id is not None:
+            self.field_declarations.append(
+                FieldDeclaration(receiver_class_id, self.__get_snippet(name_node), target_id)
+            )
+
+    def __is_call_callee(self, node: TSNode) -> bool:
+        parent = node.parent
+        return (
+            parent is not None
+            and parent.type == "call"
+            and parent.child_by_field_name("function") == node
+        )
 
     def __maybe_emit_used_by(
         self,
@@ -596,6 +657,8 @@ class NodeProcessor(BaseModel):
                 continue
 
             source_id: NodeID | None = None
+            if kind == "attribute":
+                self.__record_attribute_access(atom, call_id, is_write=False)
             if kind in {"identifier", "attribute"}:
                 resolved, depth = self.__resolve_symbol_with_depth(text)
                 if resolved is not None:
@@ -819,6 +882,11 @@ class NodeProcessor(BaseModel):
             return self._process_assignment(node)
         if node.type == "call":
             return self._process_call(node)
+
+        if node.type == "attribute" and not self.__is_call_callee(node):
+            reader_id = self.__current_caller_id()
+            if reader_id is not None:
+                self.__record_attribute_access(node, reader_id, is_write=False)
 
         # Track outer-scope variable usage for bare identifier references
         # (e.g. ``return outer_var``, ``if outer_var:``, ``for x in outer_var:``).
@@ -1054,6 +1122,8 @@ class NodeProcessor(BaseModel):
 
         left = node.child_by_field_name("left")
         right = node.child_by_field_name("right")
+        if left and not right:
+            return self.__process_field_annotation(node, left)
         if not left or not right:
             return (nodes, edges)
 
@@ -1068,6 +1138,7 @@ class NodeProcessor(BaseModel):
 
         source_ids: list[NodeID] = []
         seen_source_ids: set[NodeID] = set()
+        read_attributes: list[TSNode] = []
 
         current_caller_id = self.__current_caller_id()
 
@@ -1075,6 +1146,8 @@ class NodeProcessor(BaseModel):
             if not text:
                 continue
 
+            if kind == "attribute":
+                read_attributes.append(atom)
             if kind in {"identifier", "attribute"}:
                 resolved, depth = self.__resolve_symbol_with_depth(text)
                 if resolved and resolved not in seen_source_ids:
@@ -1146,6 +1219,10 @@ class NodeProcessor(BaseModel):
                 nodes[created.identifier] = created
                 self.visited_node_ids.add(created.identifier)
 
+            self.__record_assignment_target_field(node, target_node, target_name, dst_id)
+            for attribute_node in read_attributes:
+                self.__record_attribute_access(attribute_node, dst_id, is_write=False)
+
             for src_id in source_ids:
                 edges.append(
                     DataFlowDefinedBy(
@@ -1157,3 +1234,29 @@ class NodeProcessor(BaseModel):
                 )
 
         return (nodes, edges)
+
+    def __process_field_annotation(self, node: TSNode, left: TSNode) -> ParserResult:
+        """Declare a class-body ``name: Type`` field that has no value (dataclass/ORM style)."""
+
+        nodes: dict[NodeID, Node] = {}
+        annotation = node.child_by_field_name("type")
+        if (
+            left.type != "identifier"
+            or annotation is None
+            or not self.__class_stack
+            or not self.__is_class_member(node)
+        ):
+            return (nodes, [])
+
+        name = self.__normalize_name(self.__get_snippet(left))
+        field_id, created = self.__get_or_create_defined_variable(
+            name=name,
+            node=left,
+            type_hint=self.__normalize_name(self.__get_snippet(annotation)),
+            end_node=node,
+        )
+        if created:
+            nodes[created.identifier] = created
+            self.visited_node_ids.add(created.identifier)
+        self.field_declarations.append(FieldDeclaration(self.__class_stack[-1], name, field_id))
+        return (nodes, [])

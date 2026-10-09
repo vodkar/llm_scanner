@@ -15,6 +15,11 @@ from models.base import NodeID
 from models.edges.base import RelationshipBase
 from models.nodes import Node, VariableNode
 from models.nodes.code import ClassNode, FunctionNode
+from services.cpg_parser.ts_parser.field_links import (
+    FieldAccess,
+    FieldDeclaration,
+    link_field_accesses,
+)
 from services.cpg_parser.ts_parser.node_processor import NodeProcessor
 from services.cpg_parser.ts_parser.project_symbols import ProjectSymbols
 from services.cpg_parser.types import ParserResult
@@ -86,6 +91,16 @@ class CPGFileBuilder(BaseModel):
         """Build a CPG representation from the file."""
 
         return self.__processor.process(self.__tree.root_node)
+
+    @property
+    def field_declarations(self) -> list[FieldDeclaration]:
+        """Class fields declared in this file; populated by ``build``."""
+        return self.__processor.field_declarations
+
+    @property
+    def field_accesses(self) -> list[FieldAccess]:
+        """Attribute reads and writes in this file; populated by ``build``."""
+        return self.__processor.field_accesses
 
 
 @dataclass(frozen=True)
@@ -255,17 +270,20 @@ class CPGDirectoryBuilder(BaseModel):
 
         merged_nodes: dict[NodeID, Node] = {}
         merged_edges: list[RelationshipBase] = []
+        field_declarations: list[FieldDeclaration] = []
+        field_accesses: list[FieldAccess] = []
 
         for file_path in python_files:
             links = links_by_file.get(file_path, _FileLinks(symbols={}, modules={}))
             try:
-                nodes, edges = CPGFileBuilder(
+                file_builder = CPGFileBuilder(
                     path=file_path,
                     root=self.root,
                     prebound_symbols=links.symbols,
                     prebound_modules=links.modules,
                     project_symbols=project_symbols,
-                ).build()
+                )
+                nodes, edges = file_builder.build()
             except Exception:
                 if self.on_error == "raise":
                     raise
@@ -281,6 +299,18 @@ class CPGDirectoryBuilder(BaseModel):
                 merged_nodes[node_id] = node
 
             merged_edges.extend(edges)
+            field_declarations.extend(file_builder.field_declarations)
+            field_accesses.extend(file_builder.field_accesses)
+
+        field_edges = [
+            edge
+            for edge in link_field_accesses(
+                field_declarations, field_accesses, project_symbols.class_bases
+            )
+            if edge.src in merged_nodes and edge.dst in merged_nodes
+        ]
+        merged_edges.extend(field_edges)
+        _LOGGER.info("Linked %d field accesses to declared fields", len(field_edges))
 
         _LOGGER.info(
             "Finished building CPG for directory: %s. Parsed %d files with %d nodes and %d edges.",

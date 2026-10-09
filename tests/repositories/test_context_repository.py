@@ -190,6 +190,7 @@ def test_fetch_with_edge_paths_merges_per_edge_type_depths() -> None:
                 "security_path_score": 0.0,
             },
         ],
+        [],
     ]
 
     repository = ContextRepository(client=client)
@@ -229,6 +230,7 @@ def test_fetch_with_edge_paths_counts_repeats_across_roots() -> None:
         # CALLS rows: "shared" again from root-1 (same root, no extra repeat),
         # "solo" only from root-2.
         [_row("root-1", "shared", 1), _row("root-2", "solo", 1)],
+        [],
     ]
 
     repository = ContextRepository(client=client)
@@ -258,6 +260,7 @@ def test_fetch_with_edge_paths_uses_single_start_query_for_one_root() -> None:
     client.run_write.return_value = None
     client.run_read.side_effect = [
         [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CALLS"}],
+        [],
         [],
         [],
     ]
@@ -386,3 +389,39 @@ def test_fetch_enclosing_class_nodes_skips_query_when_no_root_ids() -> None:
 
     assert repository.fetch_enclosing_class_nodes([]) == []
     assert client.run_read.call_count == 1  # only the startup relationship-types lookup
+
+
+def test_fetch_with_edge_paths_adds_nodes_reachable_only_through_mixed_edge_types() -> None:
+    """A callee behind ``FLOWS_TO`` then ``CALLED_BY`` must be fetched without edge depths."""
+
+    def _row(node_id: str, depth: int) -> dict[str, object]:
+        return {
+            "start_id": "root",
+            "id": node_id,
+            "depth": depth,
+            "file_path": "src/app.py",
+            "line_start": 1,
+            "line_end": 5,
+            "node_kind": "FunctionNode",
+            "name": node_id,
+            "finding_evidence_score": 0.0,
+            "security_path_score": 0.0,
+        }
+
+    client = Mock(spec=Neo4jClient)
+    client.run_write.return_value = None
+    client.run_read.side_effect = [
+        [{"relationshipType": "FLOWS_TO"}, {"relationshipType": "CALLED_BY"}],
+        [_row("root", 0), _row("call", 2)],
+        [_row("root", 0)],
+        [_row("root", 0), _row("call", 1), _row("callee", 2)],
+    ]
+
+    nodes = ContextRepository(client=client).fetch_code_neighborhood_with_edge_paths(["root"], 3)
+
+    nodes_by_id = {str(node.identifier): node for node in nodes}
+    assert list(nodes_by_id) == ["root", "call", "callee"]
+    assert (nodes_by_id["call"].depth, nodes_by_id["call"].edge_depths) == (1, {"FLOWS_TO": 2})
+    assert (nodes_by_id["callee"].depth, nodes_by_id["callee"].edge_depths) == (2, None)
+    mixed_query, _ = client.run_read.call_args_list[3].args
+    assert "FLOWS_TO|CALLED_BY" in mixed_query
