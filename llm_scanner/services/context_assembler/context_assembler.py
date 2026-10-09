@@ -115,6 +115,53 @@ class ContextAssemblerService(BaseModel):
     def fetch_root_ids_for_spans(self, files_spans: list[FileSpans]) -> list[str]:
         """Return unique root node IDs overlapping the supplied file spans."""
 
+        return sorted({str(node.identifier) for node in self._fetch_span_nodes(files_spans)})
+
+    def fetch_root_id_groups_for_spans(
+        self, files_spans: list[FileSpans], max_root_tokens: int
+    ) -> list[list[str]]:
+        """Pack root node IDs overlapping the spans into groups reviewed as one context.
+
+        Roots are taken in file and line order and appended to the current group
+        while the group's rendered root code stays within ``max_root_tokens``; a
+        single root above the limit forms its own group.
+
+        Args:
+            files_spans: Changed file spans.
+            max_root_tokens: Token limit for the root code of one group.
+
+        Returns:
+            Groups of root node IDs, each non-empty.
+        """
+
+        unique_nodes = {node.identifier: node for node in self._fetch_span_nodes(files_spans)}
+        ordered = sorted(
+            unique_nodes.values(),
+            key=lambda node: (
+                str(node.file_path),
+                node.line_start,
+                node.line_end,
+                str(node.identifier),
+            ),
+        )
+        _, read_lines, _ = self._read_node_lines(self.project_root, ordered)
+
+        groups: list[list[CodeContextNode]] = []
+        for node in ordered:
+            if groups and self._roots_tokens(read_lines, [*groups[-1], node]) <= max_root_tokens:
+                groups[-1].append(node)
+            else:
+                groups.append([node])
+        return [[str(node.identifier) for node in group] for group in groups]
+
+    def _roots_tokens(
+        self, read_lines: dict[Path, dict[int, str]], nodes: list[CodeContextNode]
+    ) -> int:
+        selected_ids = {node.identifier for node in nodes}
+        lines = self._lines_for_selection(nodes, selected_ids)
+        return self._estimate_tokens(self._render_text(read_lines, lines))
+
+    def _fetch_span_nodes(self, files_spans: list[FileSpans]) -> list[CodeContextNode]:
         self._validate_file_spans(files_spans)
 
         spans_nodes = self._require_repo().fetch_code_nodes_by_file_spans(
@@ -129,8 +176,7 @@ class ContextAssemblerService(BaseModel):
             ]
         )
         _LOGGER.info("Found %d context nodes overlapping file spans", len(spans_nodes))
-
-        return sorted({str(node.identifier) for node in spans_nodes})
+        return spans_nodes
 
     def fetch_context_nodes_for_root_ids(
         self,

@@ -228,3 +228,41 @@ def test_path_fill_disconnected_node_still_included_when_budget_allows(
 
     assert "def root_anchor" in context.context_text
     assert "def detached" in context.context_text
+
+
+def _make_root_group_service(tmp_path: Path) -> ContextAssemblerService:
+    _write_file(tmp_path, "".join(f"def f{index}(): return {index}\n" for index in range(4)))
+    roots = [
+        _make_node(f"f{index}", line_start=index + 1, line_end=index + 1, depth=0, score=1.0)
+        for index in (2, 0, 3, 1)
+    ]
+    return ContextAssemblerService(
+        project_root=tmp_path,
+        context_repository=_StubRepo.model_construct(
+            client=None,
+            traversal_relationship_types=(),
+            path_fill_edge_types=("CALLS",),
+            nodes=roots,
+            edges=[],
+        ),
+        max_call_depth=4,
+        token_budget=1_000,
+        ranking_strategy=_ScoreSortStrategy(),
+        token_estimator=lambda text: text.count("\n") + 1,
+    )
+
+
+def test_root_groups_pack_roots_in_line_order_within_limit(tmp_path: Path) -> None:
+    groups = _make_root_group_service(tmp_path).fetch_root_id_groups_for_spans(
+        [FileSpans(Path("app.py"), [(1, 4)])], max_root_tokens=2
+    )
+
+    assert groups == [["function:f0", "function:f1"], ["function:f2", "function:f3"]]
+
+
+def test_root_groups_keep_oversized_root_alone(tmp_path: Path) -> None:
+    groups = _make_root_group_service(tmp_path).fetch_root_id_groups_for_spans(
+        [FileSpans(Path("app.py"), [(1, 4)])], max_root_tokens=0
+    )
+
+    assert groups == [["function:f0"], ["function:f1"], ["function:f2"], ["function:f3"]]

@@ -36,6 +36,10 @@ class ScanFinding(BaseModel):
     severity: ScanSeverity | None = None
     description: str | None = None
     cwe_id: int | None = None
+    vulnerable_votes: int = 0
+    """Self-consistency samples that judged the context vulnerable."""
+    total_votes: int = 1
+    """Self-consistency samples drawn for the context."""
     context_text: str
 
 

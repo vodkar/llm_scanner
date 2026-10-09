@@ -30,13 +30,15 @@ from services.analyzer.semgrep import SemgrepAnalyzerService
 from services.benchmark.static_findings import attach_findings
 from services.context_assembler.context_assembler import ContextAssemblerService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
-from services.llm_review import LLMCodeReviewService, ReviewItem
+from services.llm_review import LLMCodeReviewService, ReviewItem, ReviewRoot
 from services.ranking.ranking import NodeRelevanceRankingService
 from services.ranking.strategy_factory import RankingStrategyFactory
 
 _LOGGER: Final[logging.Logger] = logging.getLogger(__name__)
 
 DEFAULT_TOKEN_BUDGET: Final[int] = 4096
+DIFF_ROOT_TOKEN_SHARE: Final[float] = 0.5
+"""Share of the diff-mode token budget given to changed code; the rest is left for context."""
 
 _SEVERITY_RANK: Final = MappingProxyType(
     {IssueSeverity.LOW: 0, IssueSeverity.MEDIUM: 1, IssueSeverity.HIGH: 2}
@@ -138,34 +140,42 @@ class GeneralScannerPipeline(BaseModel):
 
     def _build_review_items(
         self,
-        root_ids: list[str],
+        root_id_groups: list[list[str]],
         assembler: ContextAssemblerService,
         static_findings: Sequence[FindingNode],
     ) -> list[ReviewItem]:
         items: list[ReviewItem] = []
         project_root = self.src.resolve()
-        for root_id in root_ids:
-            context_nodes = assembler.fetch_context_nodes_for_root_ids([root_id])
+        for root_ids in root_id_groups:
+            context_nodes = assembler.fetch_context_nodes_for_root_ids(root_ids)
             if not context_nodes:
-                _LOGGER.warning("No context nodes found for root_id %s; skipping", root_id)
+                _LOGGER.warning("No context nodes found for root_ids %s; skipping", root_ids)
                 continue
             if assembler.ranking_strategy.requires_taint_scores:
-                taint_scores = assembler.fetch_taint_scores([root_id])
+                taint_scores = assembler.fetch_taint_scores(root_ids)
                 context_nodes = assembler.apply_taint_scores(context_nodes, taint_scores)
             context = assembler.assemble_from_nodes(project_root, context_nodes)
             root_node = next(
-                (n for n in context_nodes if str(n.identifier) == root_id), context_nodes[0]
+                (n for n in context_nodes if str(n.identifier) == root_ids[0]), context_nodes[0]
             )
             depth_zero_nodes = [node for node in context_nodes if node.depth == 0]
             items.append(
                 ReviewItem(
-                    root_id=root_id,
+                    root_id=root_ids[0],
                     file_path=project_root / root_node.file_path,
                     line_start=root_node.line_start,
                     line_end=root_node.line_end,
                     context_text=context.context_text,
                     static_findings=attach_findings(
                         static_findings, context.source_map, depth_zero_nodes
+                    ),
+                    roots=tuple(
+                        ReviewRoot(
+                            file_path=project_root / root.file_path,
+                            line_start=root.line_start,
+                            line_end=root.line_end,
+                        )
+                        for root in context.roots
                     ),
                 )
             )
@@ -215,7 +225,9 @@ class GeneralScannerPipeline(BaseModel):
         )
 
         assembler = self._build_context_assembler(strategy_factory, max_call_depth, token_budget)
-        items = self._build_review_items(root_ids, assembler, all_findings)
+        items = self._build_review_items(
+            [[root_id] for root_id in root_ids], assembler, all_findings
+        )
         findings = llm_review_service.review(items)
 
         return ScanReport(
@@ -238,6 +250,9 @@ class GeneralScannerPipeline(BaseModel):
     ) -> ScanReport:
         """Run a diff-mode scan: build CPG, resolve spans to nodes, review.
 
+        Changed root nodes are packed into as few contexts as fit the budget,
+        so a change's sink and the guards it relies on are reviewed together.
+
         Args:
             file_spans: Changed file spans parsed from a git unified diff.
             strategy_factory: Factory producing a ``ContextNodeRankingStrategy``.
@@ -247,18 +262,23 @@ class GeneralScannerPipeline(BaseModel):
             token_budget: Approximate token limit for each assembled context.
 
         Returns:
-            A ``ScanReport`` with one ``ScanFinding`` per reviewed code node.
+            A ``ScanReport`` with one ``ScanFinding`` per reviewed context.
         """
         project_root = self.src.resolve()
         all_findings, _ = self.build_cpg()
 
         assembler = self._build_context_assembler(strategy_factory, max_call_depth, token_budget)
-        root_ids = assembler.fetch_root_ids_for_spans(file_spans)
+        root_id_groups = assembler.fetch_root_id_groups_for_spans(
+            file_spans, int(token_budget * DIFF_ROOT_TOKEN_SHARE)
+        )
         _LOGGER.info(
-            "Diff scan: %d root code nodes from %d file spans", len(root_ids), len(file_spans)
+            "Diff scan: %d root code nodes in %d contexts from %d file spans",
+            sum(len(group) for group in root_id_groups),
+            len(root_id_groups),
+            len(file_spans),
         )
 
-        items = self._build_review_items(root_ids, assembler, all_findings)
+        items = self._build_review_items(root_id_groups, assembler, all_findings)
         findings = llm_review_service.review(items)
 
         return ScanReport(

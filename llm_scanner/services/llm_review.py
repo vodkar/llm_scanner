@@ -1,13 +1,14 @@
 """LLM-based code review service for the CI scanner pipeline."""
 
 import asyncio
+import hashlib
 import json
 import logging
-import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from clients.openai_compatible import ChatMessage, OpenAICompatibleClient
 from models.scan import ScanFinding, ScanSeverity
@@ -53,6 +54,11 @@ _STRICT_EXPLOITABLE_V2_SYSTEM_PROMPT: Final[str] = (
     "- Report a vulnerability ONLY if you can name the flawed line (or the missing "
     "control) and describe a concrete attack: who the attacker is, what input they send, "
     "and the resulting impact.\n"
+    "- A guard performed inside a called library or framework API counts when its "
+    "documented behavior covers the attack (e.g. path-confining file serving, "
+    "parameterized queries, autoescaping templates). An attack that only works if the "
+    'library "fails to sanitize" is not concrete: name the bypass against the API\'s '
+    "actual behavior, or classify the code as not vulnerable.\n"
     "- Attackers include remote users, lower-privileged or other-tenant users, malicious "
     "remote servers and peers, and other local users on a shared machine.\n"
     "- Concrete impacts include code execution, injection, XSS, authentication or "
@@ -63,7 +69,13 @@ _STRICT_EXPLOITABLE_V2_SYSTEM_PROMPT: Final[str] = (
     'vulnerabilities. Calling code a "standard pattern" or "intended functionality" is '
     "not by itself a reason to consider it safe.\n"
     "- If the flaw is not reachable or not attacker-controllable, or the evidence is "
-    "insufficient, classify the code as not vulnerable. False alarms are costly."
+    "insufficient, classify the code as not vulnerable. False alarms are costly.\n\n"
+    "Numeric inputs that change persistent state (quantities, amounts, prices, balances, "
+    "counts, indexes, durations) must be checked for sign and range, not only type. If an "
+    "attacker can send a negative, zero or oversized value that inverts or bypasses the "
+    "intended effect (a negative withdrawal that adds stock, a negative price that credits "
+    "the buyer, an out-of-bounds index), report it and cite the line that should enforce "
+    "the bound; typical CWEs are CWE-20, CWE-1284 and CWE-840."
 )
 
 _SCANNER_OUTPUT_INSTRUCTIONS: Final[str] = (
@@ -75,7 +87,9 @@ _SCANNER_OUTPUT_INSTRUCTIONS: Final[str] = (
     'with exactly these keys: "vulnerable" (bool), "severity" '
     '("LOW", "MEDIUM", "HIGH", or "CRITICAL", or null if not vulnerable), '
     '"description" (string describing the issue, or null if not vulnerable), '
-    '"cwe_id" (integer CWE number, or null).'
+    '"cwe_id" (integer CWE number, or null), '
+    '"root" (integer i of the ROOT i/N section containing the flaw, or null if not '
+    "vulnerable)."
 )
 
 _REVIEW_SYSTEM_PROMPT: Final[str] = (
@@ -95,8 +109,79 @@ _NO_ROOT_FINDINGS_TEXT: Final[str] = (
     "Static analyzer findings in the function under analysis: none reported."
 )
 _ROOT_FINDINGS_SEPARATOR: Final[str] = "\n\n"
+_ROOT_MARKER_PREFIX: Final[str] = "# ===== ROOT "
 
-_JSON_OBJECT_PATTERN: Final[re.Pattern[str]] = re.compile(r"\{[^{}]*\}", re.DOTALL)
+_JSON_DECODER: Final[json.JSONDecoder] = json.JSONDecoder()
+_SAMPLING_SEED: Final[int] = 42
+_SEED_MODULUS: Final[int] = 2**31 - 1
+
+
+def _context_seed(context_text: str) -> int:
+    """Derive a stable per-context sampling seed, so reruns draw the same samples."""
+    digest = hashlib.sha256(f"{_SAMPLING_SEED}|{context_text}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % _SEED_MODULUS
+
+
+def _verdict_candidates(response: str) -> Iterator[dict[str, Any]]:
+    """Yield JSON objects with a ``vulnerable`` key, the last one in ``response`` first.
+
+    Decoding starts at each ``{`` from the end, so code fences, trailing prose and
+    braces quoted inside string values (e.g. ``f"ORDER BY {field}"``) are tolerated.
+    """
+    position = response.rfind("{")
+    while position != -1:
+        try:
+            parsed, _ = _JSON_DECODER.raw_decode(response, position)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and "vulnerable" in parsed:
+            yield parsed
+        position = response.rfind("{", 0, position)
+
+
+def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+def _review_response_format() -> dict[str, Any]:
+    """Return the OpenAI ``response_format`` constraining replies to the review verdict."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "security_review_verdict",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "vulnerable": {"type": "boolean"},
+                    "severity": _nullable(
+                        {"type": "string", "enum": [severity.value for severity in ScanSeverity]}
+                    ),
+                    "description": _nullable({"type": "string"}),
+                    "cwe_id": _nullable({"type": "integer", "minimum": 1, "maximum": 99999}),
+                    "root": _nullable({"type": "integer", "minimum": 1}),
+                },
+                "required": ["vulnerable", "severity", "description", "cwe_id", "root"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+class _Verdict(NamedTuple):
+    vulnerable: bool
+    severity: ScanSeverity | None
+    description: str | None
+    cwe_id: int | None
+    root: int | None
+
+
+class ReviewRoot(NamedTuple):
+    """Location of one ``ROOT i/N`` section of a review context."""
+
+    file_path: Path
+    line_start: int
+    line_end: int
 
 
 class ReviewItem(NamedTuple):
@@ -109,15 +194,18 @@ class ReviewItem(NamedTuple):
     context_text: str
     static_findings: list[StaticFinding]
     """Analyzer findings resolved into ``context_text``; ``is_root`` ones go into the prompt."""
+    roots: tuple[ReviewRoot, ...] = ()
+    """Locations of the context's ROOT sections, in rendered order."""
 
 
 class LLMCodeReviewService(BaseModel):
     """Review assembled code contexts with an LLM and return structured findings.
 
-    Each item in the batch is sent as an independent chat completion request via
-    ``OpenAICompatibleClient.chat_batch()``.  Responses are parsed for a
-    terminal JSON object; on parse failure the finding defaults to
-    ``vulnerable=False`` and a warning is logged.
+    Each item is sent as one chat completion request drawing
+    ``self_consistency_samples`` completions via
+    ``OpenAICompatibleClient.chat_batch_samples()``. Each completion is parsed
+    for a terminal JSON verdict (unparseable ones count as not vulnerable and
+    are logged), and the finding takes the majority verdict.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -125,9 +213,22 @@ class LLMCodeReviewService(BaseModel):
     client: OpenAICompatibleClient
     concurrency: int = 8
     max_response_tokens: int = 2048
+    structured_output: bool = False
+    """Constrain replies to the verdict JSON schema via ``response_format``.
+
+    Needed for models that ignore the answer-format instruction (e.g. agent
+    fine-tunes that reply with tool calls); reasoning still precedes the JSON.
+    """
+    self_consistency_samples: int = Field(default=1, ge=1)
+    """Completions drawn per context; the verdict is their majority vote."""
 
     def review(self, items: list[ReviewItem]) -> list[ScanFinding]:
         """Send all items to the LLM and return a structured ScanFinding for each.
+
+        Each item is one request drawing ``self_consistency_samples`` completions
+        (``n``), so its prompt is encoded once for all draws. Requests are issued
+        in ``context_text`` order: neighbours share the longest prompt prefix and
+        reuse each other's server-side prompt cache.
 
         Args:
             items: One ReviewItem per code context to evaluate.
@@ -138,17 +239,23 @@ class LLMCodeReviewService(BaseModel):
         if not items:
             return []
 
-        batches = [self._build_messages(item) for item in items]
-        responses = asyncio.run(
-            self.client.chat_batch(
-                batches,
+        order = sorted(range(len(items)), key=lambda index: items[index].context_text)
+        ordered_responses = asyncio.run(
+            self.client.chat_batch_samples(
+                [self._build_messages(items[index]) for index in order],
+                samples=self.self_consistency_samples,
+                seeds=[_context_seed(items[index].context_text) for index in order],
+                response_format=_review_response_format() if self.structured_output else None,
                 max_tokens=self.max_response_tokens,
                 concurrency=self.concurrency,
             )
         )
+        responses: list[list[str]] = [[] for _ in items]
+        for index, item_responses in zip(order, ordered_responses, strict=True):
+            responses[index] = item_responses
         return [
-            self._parse_response(item, response)
-            for item, response in zip(items, responses, strict=True)
+            self._build_finding(item, item_responses)
+            for item, item_responses in zip(items, responses, strict=True)
         ]
 
     def _build_messages(self, item: ReviewItem) -> list[ChatMessage]:
@@ -187,33 +294,85 @@ class LLMCodeReviewService(BaseModel):
         return _ROOT_FINDINGS_SEPARATOR + "\n".join(lines)
 
     def _parse_response(self, item: ReviewItem, response: str) -> ScanFinding:
-        """Parse the LLM response JSON into a ScanFinding.
+        """Parse a single LLM response into a ScanFinding."""
+        return self._build_finding(item, [response])
 
-        Falls back to ``vulnerable=False`` when the response contains no usable JSON.
+    def _build_finding(self, item: ReviewItem, responses: list[str]) -> ScanFinding:
+        """Combine sampled responses into one ScanFinding by majority vote.
+
+        Ties go to the label seen first (matching llm4codesec-framework). The
+        severity, description, CWE and reported root come from the first response
+        that agrees with the majority; the root sets the finding's location.
 
         Args:
-            item: The review item this response corresponds to.
-            response: Raw LLM response text.
+            item: The review item these responses correspond to.
+            responses: Raw LLM response texts, one per sample.
 
         Returns:
-            A ScanFinding populated from the parsed JSON verdict.
+            A ScanFinding carrying the majority verdict and its vote counts.
         """
-        snippet = response[-500:] if len(response) > 500 else response
-        matches = _JSON_OBJECT_PATTERN.findall(snippet)
+        verdicts = [self._parse_verdict(item, response) for response in responses]
+        vulnerable_votes = sum(verdict.vulnerable for verdict in verdicts)
+        safe_votes = len(verdicts) - vulnerable_votes
+        majority = (
+            verdicts[0].vulnerable
+            if vulnerable_votes == safe_votes
+            else vulnerable_votes > safe_votes
+        )
+        chosen = next(verdict for verdict in verdicts if verdict.vulnerable == majority)
+        location = self._reported_root(item, chosen) or ReviewRoot(
+            item.file_path, item.line_start, item.line_end
+        )
 
+        return ScanFinding(
+            root_id=item.root_id,
+            file_path=location.file_path,
+            line_start=location.line_start,
+            line_end=location.line_end,
+            static_findings=list(item.static_findings),
+            vulnerable=chosen.vulnerable,
+            severity=chosen.severity,
+            description=chosen.description,
+            cwe_id=chosen.cwe_id,
+            vulnerable_votes=vulnerable_votes,
+            total_votes=len(verdicts),
+            context_text=item.context_text,
+        )
+
+    def _reported_root(self, item: ReviewItem, verdict: _Verdict) -> ReviewRoot | None:
+        """Return the ROOT section the verdict names.
+
+        Falls back to the first root holding an ``is_root`` analyzer finding,
+        else the first root, when the index is missing or out of range.
+        """
+        if not item.roots:
+            return None
+        if verdict.root is not None and 1 <= verdict.root <= len(item.roots):
+            return item.roots[verdict.root - 1]
+        return item.roots[self._flagged_root_index(item) - 1]
+
+    def _flagged_root_index(self, item: ReviewItem) -> int:
+        """Return the 1-based ROOT section of the first ``is_root`` finding, or 1."""
+        flagged = next((finding for finding in item.static_findings if finding.is_root), None)
+        if flagged is None:
+            return 1
+        preceding_lines = item.context_text.split("\n")[: flagged.snippet_line]
+        markers = sum(line.startswith(_ROOT_MARKER_PREFIX) for line in preceding_lines)
+        return min(max(markers, 1), len(item.roots))
+
+    def _parse_verdict(self, item: ReviewItem, response: str) -> _Verdict:
+        """Parse one LLM response into a verdict.
+
+        Uses the last JSON object carrying a ``vulnerable`` key. Falls back to
+        ``vulnerable=False`` when the response contains no usable JSON.
+        """
         vulnerable = False
         severity: ScanSeverity | None = None
         description: str | None = None
         cwe_id: int | None = None
+        root: int | None = None
 
-        for raw in reversed(matches):
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(parsed, dict) or "vulnerable" not in parsed:
-                continue
-
+        for parsed in _verdict_candidates(response):
             raw_vulnerable = parsed.get("vulnerable")
             if isinstance(raw_vulnerable, bool):
                 vulnerable = raw_vulnerable
@@ -246,6 +405,10 @@ class LLMCodeReviewService(BaseModel):
             elif isinstance(raw_cwe, str) and raw_cwe.isdigit():
                 cwe_id = int(raw_cwe)
 
+            raw_root = parsed.get("root")
+            if isinstance(raw_root, int) and not isinstance(raw_root, bool):
+                root = raw_root
+
             break
         else:
             _LOGGER.warning(
@@ -255,15 +418,4 @@ class LLMCodeReviewService(BaseModel):
                 item.line_end,
             )
 
-        return ScanFinding(
-            root_id=item.root_id,
-            file_path=item.file_path,
-            line_start=item.line_start,
-            line_end=item.line_end,
-            static_findings=list(item.static_findings),
-            vulnerable=vulnerable,
-            severity=severity,
-            description=description,
-            cwe_id=cwe_id,
-            context_text=item.context_text,
-        )
+        return _Verdict(vulnerable, severity, description, cwe_id, root)

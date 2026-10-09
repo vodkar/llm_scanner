@@ -22,7 +22,11 @@ if str(_PACKAGE_DIR) not in sys.path:
 
 from clients.analyzers.semgrep import DEFAULT_SEMGREP_CONFIG
 from clients.neo4j import Neo4jConfig, build_client
-from clients.openai_compatible import DEFAULT_REPETITION_PENALTY, OpenAICompatibleClient
+from clients.openai_compatible import (
+    DEFAULT_REPETITION_PENALTY,
+    DEFAULT_TIMEOUT_SECONDS,
+    OpenAICompatibleClient,
+)
 from diff_parser import parse_unified_diff
 from logging_utils import configure_logging
 from models.bandit_report import IssueSeverity
@@ -104,6 +108,7 @@ DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
 )
 DEFAULT_LAST_CPG_STRUCTURAL: Final[Path] = ROOT_DIR / "config" / "best_cpg_structural_last.yaml"
 DEFAULT_LAST_CURRENT: Final[Path] = ROOT_DIR / "config" / "best_current_last.yaml"
+DEFAULT_SCAN_TOKEN_BUDGET: Final[int] = 16384
 DEFAULT_LAST_EVIDENCE_BUDGETED: Final[Path] = (
     ROOT_DIR / "config" / "best_evidence_budgeted_last.yaml"
 )
@@ -449,14 +454,66 @@ def scan(  # noqa: C901
         int,
         typer.Option("--llm-concurrency", help="Concurrent LLM review requests."),
     ] = 8,
+    llm_timeout: Annotated[
+        float,
+        typer.Option("--llm-timeout", help="Seconds to wait for one LLM review request."),
+    ] = DEFAULT_TIMEOUT_SECONDS,
+    llm_temperature: Annotated[
+        float,
+        typer.Option("--llm-temperature", min=0.0, help="Sampling temperature."),
+    ] = 0.0,
+    llm_top_p: Annotated[
+        float | None,
+        typer.Option("--llm-top-p", help="Nucleus sampling top-p (server default if unset)."),
+    ] = None,
+    llm_top_k: Annotated[
+        int | None,
+        typer.Option("--llm-top-k", help="Top-k sampling (server default if unset)."),
+    ] = None,
+    llm_min_p: Annotated[
+        float | None,
+        typer.Option("--llm-min-p", help="Min-p sampling (server default if unset)."),
+    ] = None,
+    llm_repetition_penalty: Annotated[
+        float,
+        typer.Option("--llm-repetition-penalty", help="Repetition penalty (1.0 disables)."),
+    ] = DEFAULT_REPETITION_PENALTY,
+    llm_self_consistency: Annotated[
+        int,
+        typer.Option(
+            "--llm-self-consistency",
+            min=1,
+            help=(
+                "Completions drawn per context (one request with n=N; majority vote). "
+                "Use with --llm-temperature > 0; llama-server needs --parallel >= "
+                "N x --llm-concurrency."
+            ),
+        ),
+    ] = 1,
+    llm_structured_output: Annotated[
+        bool,
+        typer.Option(
+            "--llm-structured-output",
+            help=(
+                "Constrain LLM replies to the verdict JSON schema (response_format); "
+                "for models that ignore the answer-format instruction."
+            ),
+        ),
+    ] = False,
     max_call_depth: Annotated[
         int,
         typer.Option("--max-call-depth", help="Max BFS depth for context neighborhood."),
     ] = 3,
     token_budget: Annotated[
         int,
-        typer.Option("--token-budget", help="Token budget per assembled context."),
-    ] = DEFAULT_TOKEN_BUDGET,
+        typer.Option(
+            "--token-budget",
+            help=(
+                "Token budget per assembled context; in diff mode half of it holds "
+                "the changed code packed into one context."
+            ),
+        ),
+    ] = DEFAULT_SCAN_TOKEN_BUDGET,
     output_json: Annotated[
         Path | None,
         _writable_file_opt("--output-json", "Write the JSON report to this path."),
@@ -508,11 +565,19 @@ def scan(  # noqa: C901
         base_url=llm_base_url,
         api_key=llm_api_key,
         model=llm_model,
+        timeout_seconds=llm_timeout,
+        default_temperature=llm_temperature,
+        default_top_p=llm_top_p,
+        default_top_k=llm_top_k,
+        default_min_p=llm_min_p,
+        default_repetition_penalty=llm_repetition_penalty,
     )
     llm_review_service = LLMCodeReviewService(
         client=llm_client,
         concurrency=llm_concurrency,
         max_response_tokens=llm_max_tokens,
+        structured_output=llm_structured_output,
+        self_consistency_samples=llm_self_consistency,
     )
 
     with build_client(neo4j_config.uri, neo4j_config.user, neo4j_config.password) as neo4j_client:

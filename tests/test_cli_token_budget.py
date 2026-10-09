@@ -1,4 +1,4 @@
-"""Context-assembly token budget defaults to 4096 across commands."""
+"""Context-assembly token budget defaults: 4096 for benchmark commands, 16384 for scan."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -65,7 +65,7 @@ def test_benchmark_commands_default_to_4096(
     assert seen == [4096]
 
 
-def test_scan_defaults_to_4096(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scan_defaults_to_16384(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[object] = []
 
     @contextmanager
@@ -84,4 +84,4 @@ def test_scan_defaults_to_4096(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     result = CliRunner().invoke(cli.app, ["scan", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
-    assert seen == [4096]
+    assert seen == [cli.DEFAULT_SCAN_TOKEN_BUDGET] == [16384]

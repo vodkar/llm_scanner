@@ -21,7 +21,12 @@ def _extract_text(completion: Any) -> str:
     ``reasoning`` may still contain a parseable answer fragment.
     """
 
-    message = completion.choices[0].message
+    return _message_text(completion.choices[0].message)
+
+
+def _message_text(message: Any) -> str:
+    """Return one choice's assistant content, falling back to its reasoning field."""
+
     content = getattr(message, "content", None)
     if content:
         return content
@@ -164,3 +169,68 @@ class OpenAICompatibleClient(BaseModel):
                 return _extract_text(completion)
 
         return await asyncio.gather(*(_one(messages) for messages in batches))
+
+    async def chat_batch_samples(
+        self,
+        batches: list[list[ChatMessage]],
+        *,
+        samples: int,
+        seeds: list[int],
+        response_format: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        concurrency: int = 8,
+    ) -> list[list[str]]:
+        """Draw ``samples`` completions per conversation, one request each.
+
+        Each conversation is sent once with ``n=samples``, so the server encodes
+        the prompt a single time and forks it into ``samples`` generations
+        (llama-server child slots, vLLM prefix sharing) instead of re-encoding
+        it per draw. llama-server caps ``n`` at its slot count (``--parallel``).
+
+        Args:
+            batches: Conversations to complete.
+            samples: Completions to draw per conversation.
+            seeds: Sampling seed per conversation, aligned with ``batches``.
+            response_format: Optional OpenAI ``response_format``.
+            max_tokens: Max tokens per completion; defaults to ``default_max_tokens``.
+            concurrency: Max in-flight requests, each occupying ``samples`` slots.
+
+        Returns:
+            ``samples`` response texts per conversation, in input order.
+
+        Raises:
+            ValueError: If ``samples < 1`` or ``seeds`` and ``batches`` differ in length.
+        """
+
+        if samples < 1:
+            raise ValueError(f"samples must be >= 1, got {samples}")
+        if len(seeds) != len(batches):
+            raise ValueError(f"got {len(seeds)} seeds for {len(batches)} conversations")
+
+        client = AsyncOpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout=self.timeout_seconds,
+        )
+        semaphore = asyncio.Semaphore(concurrency)
+        request_kwargs = self._request_kwargs(response_format=response_format, top_p=None)
+
+        async def _one(messages: list[ChatMessage], seed: int) -> list[str]:
+            async with semaphore:
+                completion = await client.chat.completions.create(
+                    model=self.model,
+                    messages=cast(
+                        list[ChatCompletionMessageParam],
+                        [message.model_dump() for message in messages],
+                    ),
+                    max_tokens=max_tokens or self.default_max_tokens,
+                    temperature=self.default_temperature,
+                    n=samples,
+                    **{**request_kwargs, "seed": seed},
+                )
+                choices = sorted(completion.choices, key=lambda choice: choice.index)
+                return [_message_text(choice.message) for choice in choices]
+
+        return await asyncio.gather(
+            *(_one(messages, seed) for messages, seed in zip(batches, seeds, strict=True))
+        )

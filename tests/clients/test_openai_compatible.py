@@ -127,3 +127,37 @@ def test_chat_batch_runs_concurrent_requests() -> None:
             "repetition_penalty": 1.2,
             "chat_template_kwargs": {"enable_thinking": True},
         }
+
+
+def _make_sampled_completion(texts: list[str]) -> SimpleNamespace:
+    choices = [
+        SimpleNamespace(index=index, message=SimpleNamespace(content=text))
+        for index, text in enumerate(texts)
+    ]
+    return SimpleNamespace(choices=list(reversed(choices)))
+
+
+def test_chat_batch_samples_sends_one_n_request_per_conversation() -> None:
+    """Draws share one request (n) with that conversation's seed, ordered by choice index."""
+
+    fake_async_client = MagicMock()
+    fake_async_client.chat.completions.create = AsyncMock(
+        side_effect=[_make_sampled_completion([f"q{q}-d{d}" for d in range(3)]) for q in range(2)]
+    )
+
+    with patch("clients.openai_compatible.AsyncOpenAI", return_value=fake_async_client):
+        client = OpenAICompatibleClient(model="test-model", default_temperature=1.0)
+        batches = [[ChatMessage(role="user", content=f"question-{idx}")] for idx in range(2)]
+        results = asyncio.run(client.chat_batch_samples(batches, samples=3, seeds=[7, 8]))
+
+    assert results == [["q0-d0", "q0-d1", "q0-d2"], ["q1-d0", "q1-d1", "q1-d2"]]
+    calls = fake_async_client.chat.completions.create.await_args_list
+    assert [call.kwargs["n"] for call in calls] == [3, 3]
+    assert [call.kwargs["seed"] for call in calls] == [7, 8]
+    assert all(call.kwargs["temperature"] == 1.0 for call in calls)
+
+
+def test_chat_batch_samples_rejects_misaligned_seeds() -> None:
+    client = OpenAICompatibleClient(model="test-model")
+    with pytest.raises(ValueError, match="seeds"):
+        asyncio.run(client.chat_batch_samples([[]], samples=3, seeds=[]))
