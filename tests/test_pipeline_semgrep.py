@@ -123,23 +123,3 @@ def _semgrep(severity: IssueSeverity) -> SemgrepFindingNode:
 )
 def test_min_severity_filter_applies_to_semgrep(finding: FindingNode, expected: bool) -> None:
     assert GeneralScannerPipeline._meets_min_severity(finding, IssueSeverity.HIGH) is expected
-
-
-def test_existing_review_messages_are_unchanged() -> None:
-    bandit = BanditFindingNode(
-        file=Path("app.py"), line_number=3, cwe_id=78, severity=IssueSeverity.HIGH
-    )
-    dlint = DlintFindingNode(file=Path("app.py"), line_number=1, issue_id=137)
-
-    assert GeneralScannerPipeline._finding_message(bandit) == (
-        "Bandit [CWE-78] severity=HIGH at app.py:3"
-    )
-    assert GeneralScannerPipeline._finding_message(dlint) == "Dlint [issue=137] at app.py:1"
-
-
-def test_semgrep_review_message_names_rule_and_location() -> None:
-    message = GeneralScannerPipeline._finding_message(_semgrep(IssueSeverity.HIGH))
-
-    assert message == (
-        "Semgrep [python.lang.security.audit.eval-detected] [CWE-95] severity=HIGH at app.py:7"
-    )

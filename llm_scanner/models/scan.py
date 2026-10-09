@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, computed_field
 
+from models.static_finding import StaticFinding
+
 
 class ScanSeverity(StrEnum):
     """Severity levels for scan findings.
@@ -28,8 +30,8 @@ class ScanFinding(BaseModel):
     file_path: Path
     line_start: int
     line_end: int
-    static_tool_messages: list[str] = Field(default_factory=list)
-    """Bandit / Dlint messages that pointed to this root node (empty in diff mode)."""
+    static_findings: list[StaticFinding] = Field(default_factory=list)
+    """Analyzer findings resolved into the reviewed context; ``is_root`` ones were in the prompt."""
     vulnerable: bool
     severity: ScanSeverity | None = None
     description: str | None = None

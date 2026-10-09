@@ -74,10 +74,10 @@ class TestSARIFExporter:
         doc = SARIFExporter().export(_make_report(findings))
         assert doc["runs"][0]["results"][0]["level"] == "error"
 
-    def test_result_level_medium_is_warning(self) -> None:
+    def test_result_level_medium_is_error(self) -> None:
         findings = [_make_finding(severity=ScanSeverity.MEDIUM)]
         doc = SARIFExporter().export(_make_report(findings))
-        assert doc["runs"][0]["results"][0]["level"] == "warning"
+        assert doc["runs"][0]["results"][0]["level"] == "error"
 
     def test_result_level_low_is_note(self) -> None:
         findings = [_make_finding(severity=ScanSeverity.LOW)]

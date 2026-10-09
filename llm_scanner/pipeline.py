@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import MappingProxyType
@@ -13,7 +14,6 @@ from models.context import FileSpans
 from models.edges.analysis import StaticAnalysisReports
 from models.nodes.finding import (
     BanditFindingNode,
-    DlintFindingNode,
     FindingNode,
     SemgrepFindingNode,
 )
@@ -27,6 +27,7 @@ from services.analyzer.bandit import BanditAnalyzerService
 from services.analyzer.base import BaseAnalyzerService
 from services.analyzer.dlint import DlintAnalyzerService
 from services.analyzer.semgrep import SemgrepAnalyzerService
+from services.benchmark.static_findings import attach_findings
 from services.context_assembler.context_assembler import ContextAssemblerService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
 from services.llm_review import LLMCodeReviewService, ReviewItem
@@ -120,20 +121,6 @@ class GeneralScannerPipeline(BaseModel):
             return _SEVERITY_RANK[finding.severity] >= _SEVERITY_RANK[min_severity]
         return True
 
-    @classmethod
-    def _finding_message(cls, finding: FindingNode) -> str:
-        """Return the static-tool message passed to the LLM reviewer for ``finding``."""
-
-        location = f"{finding.file}:{finding.line_number}"
-        if isinstance(finding, BanditFindingNode):
-            return f"Bandit [CWE-{finding.cwe_id}] severity={finding.severity} at {location}"
-        if isinstance(finding, SemgrepFindingNode):
-            cwe = f" [CWE-{finding.cwe_id}]" if finding.cwe_id is not None else ""
-            return f"Semgrep [{finding.rule_id}]{cwe} severity={finding.severity} at {location}"
-        if isinstance(finding, DlintFindingNode):
-            return f"Dlint [issue={finding.issue_id}] at {location}"
-        raise TypeError(f"Unsupported finding type: {type(finding).__name__}")
-
     def _build_context_assembler(
         self,
         strategy_factory: RankingStrategyFactory,
@@ -153,7 +140,7 @@ class GeneralScannerPipeline(BaseModel):
         self,
         root_ids: list[str],
         assembler: ContextAssemblerService,
-        root_to_messages: dict[str, list[str]],
+        static_findings: Sequence[FindingNode],
     ) -> list[ReviewItem]:
         items: list[ReviewItem] = []
         project_root = self.src.resolve()
@@ -169,6 +156,7 @@ class GeneralScannerPipeline(BaseModel):
             root_node = next(
                 (n for n in context_nodes if str(n.identifier) == root_id), context_nodes[0]
             )
+            depth_zero_nodes = [node for node in context_nodes if node.depth == 0]
             items.append(
                 ReviewItem(
                     root_id=root_id,
@@ -176,7 +164,9 @@ class GeneralScannerPipeline(BaseModel):
                     line_start=root_node.line_start,
                     line_end=root_node.line_end,
                     context_text=context.context_text,
-                    static_tool_messages=root_to_messages.get(root_id, []),
+                    static_findings=attach_findings(
+                        static_findings, context.source_map, depth_zero_nodes
+                    ),
                 )
             )
         return items
@@ -216,13 +206,6 @@ class GeneralScannerPipeline(BaseModel):
         kept_ids = {str(f.identifier) for f in filtered_findings}
         filtered_edges = [e for e in all_edges if e.src in kept_ids]
 
-        finding_by_id: dict[str, FindingNode] = {str(f.identifier): f for f in all_findings}
-        root_to_messages: dict[str, list[str]] = {}
-        for edge in filtered_edges:
-            root_to_messages.setdefault(str(edge.dst), []).append(
-                self._finding_message(finding_by_id[edge.src])
-            )
-
         root_ids = list({str(e.dst) for e in filtered_edges})
         _LOGGER.info(
             "Full scan: %d findings → %d unique root code nodes (min severity: %s)",
@@ -232,7 +215,7 @@ class GeneralScannerPipeline(BaseModel):
         )
 
         assembler = self._build_context_assembler(strategy_factory, max_call_depth, token_budget)
-        items = self._build_review_items(root_ids, assembler, root_to_messages)
+        items = self._build_review_items(root_ids, assembler, all_findings)
         findings = llm_review_service.review(items)
 
         return ScanReport(
@@ -267,7 +250,7 @@ class GeneralScannerPipeline(BaseModel):
             A ``ScanReport`` with one ``ScanFinding`` per reviewed code node.
         """
         project_root = self.src.resolve()
-        self.build_cpg()
+        all_findings, _ = self.build_cpg()
 
         assembler = self._build_context_assembler(strategy_factory, max_call_depth, token_budget)
         root_ids = assembler.fetch_root_ids_for_spans(file_spans)
@@ -275,7 +258,7 @@ class GeneralScannerPipeline(BaseModel):
             "Diff scan: %d root code nodes from %d file spans", len(root_ids), len(file_spans)
         )
 
-        items = self._build_review_items(root_ids, assembler, {})
+        items = self._build_review_items(root_ids, assembler, all_findings)
         findings = llm_review_service.review(items)
 
         return ScanReport(

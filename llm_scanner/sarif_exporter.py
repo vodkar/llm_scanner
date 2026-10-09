@@ -16,7 +16,7 @@ _SARIF_LEVEL: Final = MappingProxyType(
     {
         ScanSeverity.CRITICAL: "error",
         ScanSeverity.HIGH: "error",
-        ScanSeverity.MEDIUM: "warning",
+        ScanSeverity.MEDIUM: "error",
         ScanSeverity.LOW: "note",
     }
 )
