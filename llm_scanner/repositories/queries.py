@@ -65,6 +65,14 @@ FINDING_NODE_QUERIES: Final[dict[str, LiteralString]] = {
         "    n.line_number = r.line_number, "
         "    n.issue_id = r.issue_id"
     ),
+    "BugbearFinding": (
+        "UNWIND $rows AS r "
+        "MERGE (n:Finding:BugbearFinding {id: r.id}) "
+        "SET n.file = r.file, "
+        "    n.line_number = r.line_number, "
+        "    n.rule_id = r.rule_id, "
+        "    n.severity = r.severity"
+    ),
     "SemgrepFinding": (
         "UNWIND $rows AS r "
         "MERGE (n:Finding:SemgrepFinding {id: r.id}) "

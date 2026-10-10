@@ -6,6 +6,7 @@ from typing import Final
 from models.context import CodeContextNode, SnippetSegment
 from models.nodes.finding import (
     BanditFindingNode,
+    BugbearFindingNode,
     DlintFindingNode,
     FindingNode,
     SemgrepFindingNode,
@@ -13,9 +14,12 @@ from models.nodes.finding import (
 from models.static_finding import AnalyzerTool, StaticFinding
 from services.context_assembler.source_map import resolve_snippet_line
 
-_SEVERITY_FINDINGS: Final[tuple[type[BanditFindingNode], type[SemgrepFindingNode]]] = (
+_SEVERITY_FINDINGS: Final[
+    tuple[type[BanditFindingNode], type[SemgrepFindingNode], type[BugbearFindingNode]]
+] = (
     BanditFindingNode,
     SemgrepFindingNode,
+    BugbearFindingNode,
 )
 
 
@@ -94,4 +98,6 @@ def _tool_for(finding: FindingNode) -> AnalyzerTool:
         return AnalyzerTool.DLINT
     if isinstance(finding, SemgrepFindingNode):
         return AnalyzerTool.SEMGREP
+    if isinstance(finding, BugbearFindingNode):
+        return AnalyzerTool.BUGBEAR
     raise TypeError(f"Unsupported finding type: {type(finding).__name__}")

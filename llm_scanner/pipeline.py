@@ -19,12 +19,14 @@ from models.nodes.finding import (
 )
 from models.scan import ScanReport
 from repositories.analyzers.bandit import BanditFindingsRepository
+from repositories.analyzers.bugbear import BugbearFindingsRepository
 from repositories.analyzers.dlint import DlintFindingsRepository
 from repositories.analyzers.semgrep import SemgrepFindingsRepository
 from repositories.context import ContextRepository
 from repositories.graph import GraphRepository
 from services.analyzer.bandit import BanditAnalyzerService
 from services.analyzer.base import BaseAnalyzerService
+from services.analyzer.bugbear import BugbearAnalyzerService
 from services.analyzer.dlint import DlintAnalyzerService
 from services.analyzer.semgrep import SemgrepAnalyzerService
 from services.benchmark.static_findings import attach_findings
@@ -121,6 +123,11 @@ class GeneralScannerPipeline(BaseModel):
                 project_root=project_root,
                 graph_repository=graph_repository,
                 findings_repository=BanditFindingsRepository(client=self.neo4j_client),
+            ),
+            BugbearAnalyzerService(
+                project_root=project_root,
+                graph_repository=graph_repository,
+                findings_repository=BugbearFindingsRepository(client=self.neo4j_client),
             ),
         ]
         if self.enable_semgrep:

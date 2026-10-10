@@ -28,6 +28,13 @@ class DlintFindingNode(FindingNode):
     issue_id: int
 
 
+class BugbearFindingNode(FindingNode):
+    """flake8-bugbear report; its rules carry no CWE and default to medium severity."""
+
+    cwe_id: int | None = None
+    severity: IssueSeverity = IssueSeverity.MEDIUM
+
+
 class SemgrepFindingNode(FindingNode):
     cwe_id: int | None = None
     severity: IssueSeverity

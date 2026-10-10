@@ -14,6 +14,7 @@ from models.nodes import Node
 from models.nodes.base import BaseCodeNode
 from models.nodes.finding import (
     BanditFindingNode,
+    BugbearFindingNode,
     DlintFindingNode,
     FindingNode,
     SemgrepFindingNode,
@@ -499,7 +500,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     def _finding_severity(self, finding: FindingNode) -> float:
         """Return a normalized severity score for any finding type."""
 
-        if isinstance(finding, BanditFindingNode | SemgrepFindingNode):
+        if isinstance(finding, BanditFindingNode | SemgrepFindingNode | BugbearFindingNode):
             return self._severity_score(finding.severity)
         if isinstance(finding, DlintFindingNode):
             severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)
@@ -509,7 +510,7 @@ class NodeRelevanceRankingService(BaseModel, ContextNodeRankingStrategy):
     def _finding_confidence(self, finding: FindingNode) -> float:
         """Return a confidence proxy derived from finding severity."""
 
-        if isinstance(finding, BanditFindingNode | SemgrepFindingNode):
+        if isinstance(finding, BanditFindingNode | SemgrepFindingNode | BugbearFindingNode):
             return self._severity_confidence(finding.severity)
         if isinstance(finding, DlintFindingNode):
             severity = NodeRelevanceRankingService._dlint_severity(finding.issue_id)

@@ -13,6 +13,7 @@ class AnalyzerTool(StrEnum):
 
     BANDIT = "bandit"
     DLINT = "dlint"
+    BUGBEAR = "bugbear"
     SEMGREP = "semgrep"
 
 

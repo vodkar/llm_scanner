@@ -18,6 +18,7 @@ from models.nodes.finding import (
 from pipeline import GeneralScannerPipeline
 from repositories.graph import GraphRepository
 from services.analyzer.bandit import BanditAnalyzerService
+from services.analyzer.bugbear import BugbearAnalyzerService
 from services.analyzer.dlint import DlintAnalyzerService
 from services.analyzer.semgrep import SemgrepAnalyzerService
 from services.cpg_parser.ts_parser.cpg_builder import CPGDirectoryBuilder
@@ -44,6 +45,7 @@ def test_semgrep_is_disabled_by_default(tmp_path: Path) -> None:
     assert _service_types(_pipeline(tmp_path), tmp_path) == [
         DlintAnalyzerService,
         BanditAnalyzerService,
+        BugbearAnalyzerService,
     ]
 
 
@@ -55,6 +57,7 @@ def test_enable_semgrep_adds_configured_service(tmp_path: Path) -> None:
     assert [type(service) for service in services] == [
         DlintAnalyzerService,
         BanditAnalyzerService,
+        BugbearAnalyzerService,
         SemgrepAnalyzerService,
     ]
     semgrep = services[-1]
@@ -74,6 +77,7 @@ def test_build_cpg_feeds_semgrep_findings_into_ranking(
     results: dict[type, tuple[list[FindingNode], list[StaticAnalysisReports]]] = {
         DlintAnalyzerService: ([dlint], []),
         BanditAnalyzerService: ([bandit], []),
+        BugbearAnalyzerService: ([], []),
         SemgrepAnalyzerService: ([semgrep], [edge]),
     }
     scored: list[tuple[list[FindingNode], list[StaticAnalysisReports]]] = []
