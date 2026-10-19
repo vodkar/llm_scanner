@@ -1,15 +1,22 @@
 services:
   vllm:
-    image: vllm/vllm-openai:v0.19.1
+    image: vllm/vllm-openai:${VLLM_IMAGE_TAG:-v0.31.0}
     container_name: llm_scanner_vllm
+    # Defaults serve Gemma 4 12B (QAT w4a16) on a 16 GB GPU, tuned for
+    # self-consistency judging: each request asks for n completions, so
+    # prefix caching encodes the prompt once and forks it; max-num-seqs must
+    # cover concurrency * n (8 * 3 = 24); CUDA graphs (no --enforce-eager) speed up decode.
     command: >
-      --model ${MODEL:-Qwen/Qwen3-8B}
-      --reasoning-parser ${REASONING_PARSER:-qwen3}
-      --quantization ${QUANTIZATION:-fp8}
+      --model ${MODEL:-google/gemma-4-12B-it-qat-w4a16-ct}
+      --reasoning-parser ${REASONING_PARSER:-gemma4}
       --kv-cache-dtype ${KV_CACHE_DTYPE:-fp8}
-      --max-model-len ${MAX_MODEL_LEN:-32k}
-      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.88}
-      --enforce-eager
+      --max-model-len ${MAX_MODEL_LEN:-24576}
+      --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION:-0.92}
+      --max-num-seqs ${MAX_NUM_SEQS:-24}
+      --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS:-4096}
+      --enable-prefix-caching
+      --limit-mm-per-prompt '{"image": 0, "audio": 0}'
+      --generation-config auto
       --dtype ${DTYPE:-auto}
     ports:
       - "${VLLM_PORT:-8000}:8000"
@@ -17,6 +24,7 @@ services:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
       - HF_HOME=/app/.cache/huggingface
       - VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-0}
     volumes:
       - huggingface_cache:/app/.cache/huggingface
       - torch_cache:/app/.cache/torch

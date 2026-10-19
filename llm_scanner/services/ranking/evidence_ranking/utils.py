@@ -11,7 +11,7 @@ from models.context_ranking import BudgetedRankingConfig
 from models.ranking_strategy import RankingStrategy
 from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService
 from services.benchmark.llm_judge import LLMJudgeResult, LLMJudgeService
-from services.benchmark.prepared_sample import PreparedSample
+from services.benchmark.prepared_sample import PreparedSample, PreparedSampleRef
 from services.ranking.ranking_config import RankingCoefficients
 from services.ranking.strategy_factory import build_strategy_factories
 
@@ -20,7 +20,7 @@ def build_benchmark_and_score_from_prepared(
     coefficients: RankingCoefficients | BudgetedRankingConfig,
     *,
     strategy: RankingStrategy,
-    prepared_samples: Sequence[PreparedSample],
+    prepared_samples: Sequence[PreparedSample | PreparedSampleRef],
     dataset: Path,
     repo_cache_dir: Path,
     seed: int,
@@ -28,6 +28,7 @@ def build_benchmark_and_score_from_prepared(
     judge: LLMJudgeService,
     work_dir: Path,
     token_budget: int,
+    render_workers: int = 1,
 ) -> LLMJudgeResult:
     """Phase-2 equivalent of ``build_benchmark_and_score`` using prepared samples.
 
@@ -66,6 +67,7 @@ def build_benchmark_and_score_from_prepared(
         token_budget=token_budget,
         strategy_factories=strategy_factories,
         delete_checkouts=False,
+        render_workers=render_workers,
     )
     dataset_paths, _entries = service.build_all_from_prepared(prepared_samples)
 

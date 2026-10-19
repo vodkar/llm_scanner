@@ -26,6 +26,8 @@ from services.ranking.ranking import (
 TokenEstimator = Callable[[str], int]
 _LOGGER = logging.getLogger(__name__)
 
+type NodesById = dict[NodeID, list[tuple[int, CodeContextNode]]]
+
 # Module-level boilerplate whose identical lines recur across files and carry no
 # security signal; only exact-duplicate matches are collapsed during rendering.
 _BOILERPLATE_LINE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
@@ -159,7 +161,7 @@ class ContextAssemblerService(BaseModel):
         self, read_lines: dict[Path, dict[int, str]], nodes: list[CodeContextNode]
     ) -> int:
         selected_ids = {node.identifier for node in nodes}
-        lines = self._lines_for_selection(nodes, selected_ids)
+        lines = self._lines_for_selection(_index_nodes(nodes), selected_ids)
         return self._estimate_tokens(self._render_text(read_lines, lines))
 
     def _fetch_span_nodes(self, files_spans: list[FileSpans]) -> list[CodeContextNode]:
@@ -485,6 +487,7 @@ class ContextAssemblerService(BaseModel):
             return _RenderedContext("", [], [])
 
         full_lines, read_lines, unmappable_files = self._read_node_lines(repo_path, nodes)
+        nodes_by_id = _index_nodes(nodes)
         adjacency = self._build_path_fill_adjacency(nodes)
         groups = self._group_root_nodes(nodes)
         scopes_by_file: FileScopes = {
@@ -494,7 +497,7 @@ class ContextAssemblerService(BaseModel):
 
         def render(selection: set[NodeID]) -> tuple[list[RenderedLine], list[RootContext]]:
             return self._render_selection(
-                nodes, groups, selection, adjacency, full_lines, read_lines, scopes_by_file
+                nodes_by_id, groups, selection, adjacency, full_lines, read_lines, scopes_by_file
             )
 
         def rendered_tokens(selection: set[NodeID]) -> int:
@@ -522,7 +525,7 @@ class ContextAssemblerService(BaseModel):
 
     def _render_selection(
         self,
-        nodes: list[CodeContextNode],
+        nodes_by_id: NodesById,
         groups: list[_RootGroup],
         selected_ids: set[NodeID],
         adjacency: dict[NodeID, set[NodeID]],
@@ -538,10 +541,10 @@ class ContextAssemblerService(BaseModel):
 
         if groups:
             return self._render_root_sections(
-                nodes, groups, selected_ids, adjacency, full_lines, read_lines, scopes_by_file
+                nodes_by_id, groups, selected_ids, adjacency, full_lines, read_lines, scopes_by_file
             )
         lines_to_keep = self._complete_structure(
-            full_lines, self._lines_for_selection(nodes, selected_ids), {}, scopes_by_file
+            full_lines, self._lines_for_selection(nodes_by_id, selected_ids), {}, scopes_by_file
         )
         self._ensure_line_text(read_lines, full_lines, lines_to_keep)
         return self._render_lines(read_lines, lines_to_keep), []
@@ -618,7 +621,7 @@ class ContextAssemblerService(BaseModel):
     @classmethod
     def _assign_root_owners(
         cls,
-        nodes: list[CodeContextNode],
+        nodes_by_id: NodesById,
         groups: list[_RootGroup],
         selected_ids: set[NodeID],
         adjacency: dict[NodeID, set[NodeID]],
@@ -647,9 +650,9 @@ class ContextAssemblerService(BaseModel):
                 owners[neighbor] = owners[current]
                 queue.append(neighbor)
 
-        for node in nodes:
-            if node.identifier in selected_ids and node.identifier not in owners:
-                owners[node.identifier] = cls._closest_group_index(node, groups)
+        for node_id in selected_ids - owners.keys():
+            if node_id in nodes_by_id:
+                owners[node_id] = cls._closest_group_index(nodes_by_id[node_id][0][1], groups)
         return owners
 
     @staticmethod
@@ -663,7 +666,7 @@ class ContextAssemblerService(BaseModel):
 
     def _render_root_sections(
         self,
-        nodes: list[CodeContextNode],
+        nodes_by_id: NodesById,
         groups: list[_RootGroup],
         selected_ids: set[NodeID],
         adjacency: dict[NodeID, set[NodeID]],
@@ -678,16 +681,16 @@ class ContextAssemblerService(BaseModel):
         section is structurally coherent on its own.
         """
 
-        owners = self._assign_root_owners(nodes, groups, selected_ids, adjacency)
+        owners = self._assign_root_owners(nodes_by_id, groups, selected_ids, adjacency)
         all_root_lines = self._lines_for_selection(
-            nodes, {node_id for group in groups for node_id in group.node_ids}
+            nodes_by_id, {node_id for group in groups for node_id in group.node_ids}
         )
 
         rendered: list[RenderedLine] = []
         roots: list[RootContext] = []
         seen_boilerplate: set[str] = set()
         for index, group in enumerate(groups):
-            root_lines = self._lines_for_selection(nodes, set(group.node_ids))
+            root_lines = self._lines_for_selection(nodes_by_id, set(group.node_ids))
             root_lines = self._complete_structure(
                 full_lines, root_lines, root_lines, scopes_by_file
             )
@@ -698,7 +701,7 @@ class ContextAssemblerService(BaseModel):
             }
             context_lines: LinesByFile = {
                 file_path: kept
-                for file_path, lines in self._lines_for_selection(nodes, context_ids).items()
+                for file_path, lines in self._lines_for_selection(nodes_by_id, context_ids).items()
                 if (kept := lines - all_root_lines.get(file_path, set()))
             }
             context_lines = self._complete_structure(full_lines, context_lines, {}, scopes_by_file)
@@ -787,6 +790,7 @@ class ContextAssemblerService(BaseModel):
         _LOGGER.debug("Computed parent_to_root for %d nodes", len(parent_to_root))
 
         selected_ids: set[NodeID] = set(root_ids)
+        nodes_by_id = _index_nodes(ranked_nodes)
 
         for node in ranked_nodes:
             node_id = node.identifier
@@ -802,7 +806,7 @@ class ContextAssemblerService(BaseModel):
             if selection_tokens is not None:
                 trial_tokens = selection_tokens(trial_ids)
             else:
-                trial_lines = self._lines_for_selection(ranked_nodes, trial_ids)
+                trial_lines = self._lines_for_selection(nodes_by_id, trial_ids)
                 trial_tokens = self._estimate_tokens(self._render_text(read_lines, trial_lines))
             if trial_tokens <= self.token_budget:
                 selected_ids |= new_ids
@@ -976,19 +980,27 @@ class ContextAssemblerService(BaseModel):
             cursor = parent_to_root.get(cursor)
         return chain
 
-    @staticmethod
+    @classmethod
     def _lines_for_selection(
-        ranked_nodes: list[CodeContextNode],
-        selected_ids: set[NodeID],
+        cls,
+        nodes_by_id: NodesById,
+        selected_ids: set[NodeID] | frozenset[NodeID],
     ) -> dict[Path, set[int]]:
-        """Return per-file line numbers covered by the selected node set."""
+        """Return per-file line numbers covered by the selected node set.
 
+        Looks the selection up in ``nodes_by_id`` so the cost scales with the
+        selection, not with every ranked node: path-fill calls this once per
+        candidate, which is quadratic over deep neighborhoods otherwise. Nodes
+        are visited in rank order, so files keep their first-ranked order.
+        """
+
+        selected = sorted(
+            (entry for node_id in selected_ids for entry in nodes_by_id.get(node_id, ())),
+            key=lambda entry: entry[0],
+        )
         result: dict[Path, set[int]] = defaultdict(set)
-        for node in ranked_nodes:
-            if node.identifier not in selected_ids:
-                continue
-            for line_number in range(node.line_start, node.line_end + 1):
-                result[node.file_path].add(line_number)
+        for _, node in selected:
+            result[node.file_path].update(range(node.line_start, node.line_end + 1))
         return result
 
     @classmethod
@@ -1076,3 +1088,12 @@ class ContextAssemblerService(BaseModel):
         if estimator is not None:
             return estimator(text)
         return max(1, len(text) // 3)
+
+
+def _index_nodes(nodes: list[CodeContextNode]) -> NodesById:
+    """Group ``nodes`` by identifier with their rank positions, in rank order."""
+
+    nodes_by_id: NodesById = defaultdict(list)
+    for position, node in enumerate(nodes):
+        nodes_by_id[node.identifier].append((position, node))
+    return nodes_by_id

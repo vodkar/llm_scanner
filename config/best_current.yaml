@@ -1,29 +1,29 @@
 combiner:
-  finding_evidence: 0.101293859488118
-  security_path: 0.17448012977430016
-  taint: 0.20672283494696117
-  context: 0.3335905077809865
+  finding_evidence: 0.34474115788895177
+  security_path: 0.15579754426081674
+  taint: 0.21685785941408728
+  context: 0.2465447373174767
 context_breakdown:
-  depth: 0.48952192188174537
-  structure: 0.14075762061249356
-  file_prior: 0.3522852248878294
+  depth: 0.4736419905302216
+  structure: 0.40332918262685613
+  file_prior: 0.1398532019712619
 finding_evidence_breakdown:
-  severity: 0.48297741294459456
-  confidence: 0.33866769725077417
-  agreement: 0.05531710927645275
+  severity: 0.45711721920680576
+  confidence: 0.39620728443102127
+  agreement: 0.07090268572399898
 security_path_breakdown:
-  sink: 0.3005654303079666
-  source: 0.17552503383377704
-  guard: 0.15754928961293238
-  path_evidence: 0.275277442978005
-  high_risk_cwe_evidence_base: 0.8671620219062416
+  sink: 0.34301794076057535
+  source: 0.15115723710618748
+  guard: 0.06626289824631988
+  path_evidence: 0.5769984917639999
+  high_risk_cwe_evidence_base: 0.8793792198447357
 structure_breakdown:
-  render_kind: 0.37099126431568646
-  repeat_bonus: 0.7442709200035168
+  render_kind: 0.4137788066524075
+  repeat_bonus: 0.6523068845866853
 file_prior_breakdown:
-  same_file: 0.5044361103988224
-  same_module: 0.3278238452299434
-  generated_penalty: 0.26462936175321977
+  same_file: 0.35860326840383033
+  same_module: 0.4421165132560785
+  generated_penalty: 0.22007624686980065
 hop_decay_by_depth:
   0: 1.0
   1: 0.85

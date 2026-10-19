@@ -36,6 +36,7 @@ from models.edges import RelationshipBase
 from models.nodes import Node
 from models.ranking_strategy import RankingStrategy
 from models.scan import ScanReport
+from models.tuning_objective import TuningObjective
 from pipeline import DEFAULT_TOKEN_BUDGET, GeneralScannerPipeline
 from repositories.graph import GraphRepository
 from sarif_exporter import SARIFExporter
@@ -63,6 +64,7 @@ from services.ranking.ranking_config import RankingCoefficients
 from services.ranking.strategy_factory import (
     RankingStrategies,
     _build_current_ranking_strategy,
+    build_coefficient_variant_strategy_factories,
     build_combined_strategy_factories,
     build_strategy_factories,
 )
@@ -103,6 +105,7 @@ _STUDY_SEMGREP_ATTR: Final[str] = "semgrep_config"
 DEFAULT_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cvefixes_repos"
 DEFAULT_CLEANVUL_REPO_CACHE_DIR: Final[Path] = Path(gettempdir()) / "cleanvul_repos"
 DEFAULT_STUDY_DIR: Final[Path] = ROOT_DIR / "data" / "tuning_runs"
+DEFAULT_COEFFICIENTS_DIR: Final[Path] = ROOT_DIR / "config"
 DEFAULT_BASE_COEFFICIENTS: Final[Path] = (
     ROOT_DIR / "config" / "ranking_coefficients_cpg_structural.yaml"
 )
@@ -958,6 +961,155 @@ def build_cleanvul_benchmark_compare_rankings_all(
     )
 
 
+@app.command("build-cleanvul-benchmark-coefficient-variants")
+def build_cleanvul_benchmark_coefficient_variants(
+    ctx: typer.Context,
+    dataset_path: Annotated[Path, _readable_file_arg("Path to the CleanVul CSV or Parquet file.")],
+    sample_count: Annotated[
+        int,
+        typer.Option(
+            "-n", "--samples", help="Maximum number of samples; pass a large value for all."
+        ),
+    ] = 50,
+    output_dir: Annotated[
+        Path, _writable_dir_opt("--output-dir", "Directory to write benchmark JSON files.")
+    ] = DEFAULT_BENCHMARK_DIR,
+    repo_cache_dir: Annotated[
+        Path,
+        _writable_dir_opt(
+            "--repo-cache-dir",
+            "Directory to cache cloned repositories; prepared samples live in its "
+            "'prepared_samples' subdirectory.",
+        ),
+    ] = DEFAULT_CLEANVUL_REPO_CACHE_DIR,
+    min_score: Annotated[
+        int,
+        typer.Option(
+            "--min-score", min=0, max=4, help="Minimum CleanVul vulnerability_score to include."
+        ),
+    ] = 4,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Random seed for sampling."),
+    ] = None,
+    max_call_depth: Annotated[
+        int,
+        typer.Option("--max-call-depth", help="Max call depth for context expansion."),
+    ] = 3,
+    token_budget: Annotated[
+        int,
+        typer.Option("--token-budget", help="Token budget for context assembly."),
+    ] = DEFAULT_TOKEN_BUDGET,
+    strategies: Annotated[
+        list[RankingStrategy] | None,
+        typer.Option("--strategy", help="Tunable strategy to build; repeatable. Defaults to all."),
+    ] = None,
+    coefficients_dir: Annotated[
+        Path,
+        _readable_dir_opt(
+            "--coefficients-dir",
+            "Directory holding best_<strategy>.yaml and best_<strategy>_last.yaml.",
+        ),
+    ] = DEFAULT_COEFFICIENTS_DIR,
+    render_workers: Annotated[
+        int,
+        typer.Option(
+            "--render-workers",
+            min=1,
+            help="Processes rendering prepared samples (one repo per worker).",
+        ),
+    ] = 1,
+    include_static_findings: Annotated[
+        bool,
+        typer.Option("--include-static-findings", help=_INCLUDE_STATIC_FINDINGS_HELP),
+    ] = False,
+    enable_semgrep: Annotated[
+        bool,
+        typer.Option("--enable-semgrep", help=_ENABLE_SEMGREP_HELP),
+    ] = False,
+    semgrep_config: Annotated[
+        str,
+        typer.Option("--semgrep-config", help=_SEMGREP_CONFIG_HELP),
+    ] = DEFAULT_SEMGREP_CONFIG,
+    exclude_samples: Annotated[
+        Path | None,
+        _readable_file_opt("--exclude-samples", _EXCLUDE_SAMPLES_HELP),
+    ] = None,
+    exclude_sections: Annotated[
+        list[str] | None,
+        typer.Option("--exclude-section", help=_EXCLUDE_SECTION_HELP),
+    ] = None,
+) -> None:
+    """Build manual, best and last coefficient datasets for each tunable strategy.
+
+    Samples are prepared once (Neo4j is needed only for samples missing from the
+    prepared cache), then every strategy is rendered with its built-in, best-trial
+    and last-trial coefficients from the same samples. Each strategy's three
+    datasets are written as soon as it finishes; strategies whose datasets already
+    exist are skipped, so an interrupted run can be resumed.
+    """
+
+    selected = strategies or list(RankingStrategy)
+    coefficient_paths = {
+        strategy: (
+            coefficients_dir / f"best_{strategy.value}.yaml",
+            coefficients_dir / f"best_{strategy.value}_last.yaml",
+        )
+        for strategy in selected
+    }
+    missing = [
+        str(path) for paths in coefficient_paths.values() for path in paths if not path.is_file()
+    ]
+    if missing:
+        raise typer.BadParameter(f"missing coefficient files: {', '.join(missing)}")
+
+    service = CleanVulBenchmarkService(
+        dataset_path=dataset_path,
+        output_dir=output_dir,
+        repo_cache_dir=repo_cache_dir,
+        sample_count=sample_count,
+        min_score=min_score,
+        seed=seed,
+        neo4j_config=ctx.obj["neo4j"],
+        max_call_depth=max_call_depth,
+        token_budget=token_budget,
+        strategy_factories=build_strategy_factories(
+            token_budget=token_budget, only_strategies=[RankingStrategies.DUMMY]
+        ),
+        delete_checkouts=False,
+        render_workers=render_workers,
+        include_static_findings=include_static_findings,
+        enable_semgrep=enable_semgrep,
+        semgrep_config=semgrep_config,
+        excluded_row_ids=_excluded_row_ids(exclude_samples, dataset_path, exclude_sections),
+    )
+    logger = logging.getLogger(__name__)
+    prepared_samples = service.prepare_samples(repo_cache_dir / "prepared_samples")
+    logger.info("Prepared %d samples", len(prepared_samples))
+    if not prepared_samples:
+        raise typer.BadParameter(
+            f"no samples prepared from {dataset_path} (min score {min_score}); "
+            "check --min-score and exclusions"
+        )
+
+    for strategy, (best, last) in coefficient_paths.items():
+        factories = build_coefficient_variant_strategy_factories(
+            strategy, token_budget=token_budget, best=best, last=last
+        )
+        variant_service = service.model_copy(update={"strategy_factories": factories})
+        expected = [output_dir / f"cleanvul_context_benchmark_{name}.json" for name in factories]
+        if all(path.exists() for path in expected):
+            logger.info("Skipping %s: datasets already exist", strategy.value)
+            continue
+        logger.info("Rendering %s variants %s", strategy.value, list(factories))
+        dataset_paths, entries_path = variant_service.build_all_from_prepared(prepared_samples)
+        typer.secho(
+            f"Wrote {strategy.value} datasets to {list(dataset_paths.values())}, "
+            f"entries to {entries_path}",
+            fg=typer.colors.GREEN,
+        )
+
+
 @app.command("tune-ranking-coefficients")
 def tune_ranking_coefficients(
     ctx: typer.Context,
@@ -1066,6 +1218,30 @@ def tune_ranking_coefficients(
             help="Enable chat-template thinking for Qwen3-family judges.",
         ),
     ] = True,
+    judge_self_consistency: Annotated[
+        int,
+        typer.Option(
+            "--judge-self-consistency",
+            min=1,
+            help="Completions drawn per sample; the judge prediction is their majority vote.",
+        ),
+    ] = 1,
+    objective_metric: Annotated[
+        TuningObjective,
+        typer.Option(
+            "--objective",
+            case_sensitive=False,
+            help="Judge metric to optimize: accuracy (maximized) or fnr (minimized).",
+        ),
+    ] = TuningObjective.FNR,
+    render_workers: Annotated[
+        int,
+        typer.Option(
+            "--render-workers",
+            min=1,
+            help="Processes rendering prepared samples per trial (one repo per worker).",
+        ),
+    ] = 1,
     seed: Annotated[int, typer.Option("--seed", help="Optuna sampler seed.")] = 42,
     enable_semgrep: Annotated[
         bool,
@@ -1114,6 +1290,7 @@ def tune_ranking_coefficients(
         ),
         concurrency=concurrency,
         max_response_tokens=judge_max_tokens,
+        self_consistency_samples=judge_self_consistency,
     )
 
     DEFAULT_STUDY_DIR.mkdir(parents=True, exist_ok=True)
@@ -1121,7 +1298,7 @@ def tune_ranking_coefficients(
     storage_url = f"sqlite:///{DEFAULT_STUDY_DIR / f'{resolved_study_name}.db'}"
 
     study = optuna.create_study(
-        direction="minimize",
+        direction=objective_metric.direction,
         study_name=resolved_study_name,
         storage=storage_url,
         load_if_exists=True,
@@ -1200,16 +1377,25 @@ def tune_ranking_coefficients(
                 judge=judge,
                 work_dir=trial_dir,
                 token_budget=DEFAULT_TOKEN_BUDGET,
+                render_workers=render_workers,
             )
-            return result.fnr
+            trial.set_user_attr("accuracy", result.accuracy)
+            trial.set_user_attr("fnr", result.fnr)
+            return result.accuracy if objective_metric is TuningObjective.ACCURACY else result.fnr
 
         study.optimize(objective, n_trials=trials, show_progress_bar=False)
 
-    logger.info("best FNR=%.4f", study.best_value)
+    if not any(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials):
+        typer.secho(
+            f"No completed trials yet; study persisted to {storage_url}",
+            fg=typer.colors.YELLOW,
+        )
+        return
+    logger.info("best %s=%.4f", objective_metric, study.best_value)
     logger.info("best params=%s", json.dumps(study.best_params, indent=2))
     logger.info("study persisted to %s", storage_url)
     typer.secho(
-        f"Best FNR {study.best_value:.4f}; study persisted to {storage_url}",
+        f"Best {objective_metric} {study.best_value:.4f}; study persisted to {storage_url}",
         fg=typer.colors.GREEN,
     )
 
@@ -1280,8 +1466,9 @@ def export_best_coefficients(
     last_params = study.trials[-1].params if study.trials else {}
     logger = logging.getLogger(__name__)
     logger.info(
-        "loaded study %s (best FNR=%.4f, %d params)",
+        "loaded study %s (%s, best value=%.4f, %d params)",
         study_name,
+        study.direction.name.lower(),
         study.best_value,
         len(best_params),
     )

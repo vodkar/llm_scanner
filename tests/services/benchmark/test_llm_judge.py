@@ -172,3 +172,48 @@ def test_score_dataset_does_not_force_json_response_format() -> None:
     assert "response_format" not in call.kwargs
     assert call.kwargs["concurrency"] == 3
     assert call.kwargs["max_tokens"] == 32
+
+
+def _make_client_with_samples(responses: list[list[str]]) -> OpenAICompatibleClient:
+    client = MagicMock(spec=OpenAICompatibleClient)
+    client.chat_batch_samples = AsyncMock(return_value=responses)
+    return client
+
+
+def test_score_dataset_uses_majority_vote_with_self_consistency() -> None:
+    """Each sample's prediction must be the majority of its sampled verdicts."""
+
+    dataset = _make_dataset([_make_sample("a", label=1), _make_sample("b", label=0)])
+    vulnerable = '{"vulnerable": true}'
+    safe = '{"vulnerable": false}'
+    client = _make_client_with_samples([[safe, vulnerable, vulnerable], [vulnerable, safe, safe]])
+
+    service = LLMJudgeService(client=client, self_consistency_samples=3)
+    result = service.score_dataset(dataset)
+
+    assert result.predictions == {"a": 1, "b": 0}
+    assert result.accuracy == 1.0
+    assert result.fnr == 0.0
+    call = client.chat_batch_samples.await_args
+    assert call is not None
+    assert call.kwargs["samples"] == 3
+    assert len(call.kwargs["seeds"]) == 2
+
+
+def test_score_dataset_ignores_unparseable_votes_and_breaks_ties_by_first_vote() -> None:
+    """Invalid votes are dropped; a tied vote takes the first valid verdict."""
+
+    dataset = _make_dataset([_make_sample("a", label=1), _make_sample("b", label=1, code="y = 1")])
+    client = _make_client_with_samples(
+        [
+            ['{"vulnerable": false}', "no verdict", '{"vulnerable": true}'],
+            ["garbage", "still garbage", "nothing"],
+        ]
+    )
+
+    service = LLMJudgeService(client=client, self_consistency_samples=3)
+    result = service.score_dataset(dataset)
+
+    assert result.predictions == {"a": 0}
+    assert result.invalid_responses == 1
+    assert result.fnr == 0.5

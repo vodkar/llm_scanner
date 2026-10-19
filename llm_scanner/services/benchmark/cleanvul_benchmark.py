@@ -1,7 +1,11 @@
+import hashlib
 import logging
+import multiprocessing
 import random
 import shutil
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Final, NamedTuple
 
@@ -31,8 +35,11 @@ from services.benchmark.dataset_builder import (
 )
 from services.benchmark.prepared_sample import (
     PreparedSample,
+    PreparedSampleRef,
     compute_sample_cache_key,
-    load_prepared_sample,
+    load_prepared_manifest,
+    prepared_sample_path,
+    save_prepared_manifest,
     save_prepared_sample,
 )
 from services.benchmark.repo_checkout import RepoCheckoutService
@@ -56,6 +63,14 @@ class _CleanVulEntryPair(BaseModel):
 
     vulnerable_entry: CleanVulEntry
     fixed_entry: CleanVulEntry
+
+
+class _RenderedPrepared(NamedTuple):
+    """One prepared sample rendered for every configured strategy."""
+
+    entry: CleanVulEntry
+    sample_id: str
+    contexts: dict[str, Context]
 
 
 class _SharedContextInputs(NamedTuple):
@@ -134,6 +149,14 @@ class CleanVulBenchmarkService(BaseModel):
             "Repositories larger than this are skipped before scanning."
         ),
     )
+    render_workers: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Processes rendering prepared samples in Phase 2. Samples sharing a repo "
+            "checkout stay in one worker, so outputs match a single-process render."
+        ),
+    )
     strategy_factories: Mapping[str, RankingStrategyFactory] = Field(
         ...,
         description=(
@@ -192,20 +215,33 @@ class CleanVulBenchmarkService(BaseModel):
         cache_dir: Path,
         *,
         sample_id_prefix: str = "CleanVulContextAssembler",
-    ) -> list[PreparedSample]:
+    ) -> list[PreparedSampleRef]:
         """Phase 1: prepare and cache one ``PreparedSample`` per accepted entry.
 
         For each accepted ``(vulnerable, fixed)`` CleanVul commit, this walks the
         same candidate-row loop as ``_build_datasets`` (so accept/skip decisions
         are identical) and produces two ``PreparedSample`` records — one per
         side. Records are persisted to ``cache_dir`` keyed by repo/commit/spans
-        so reruns are free on cache hit.
+        so reruns are free on cache hit. Only on-disk handles are returned, so
+        memory stays flat however many samples are prepared. The accepted
+        handles are also saved as a manifest; a later call with the same
+        settings returns them directly, skipping checkouts and Neo4j.
 
         The method ignores ``self.delete_checkouts`` and always keeps the
         repos on disk: Phase 2 needs them for file reads during rendering.
         Callers are responsible for cleaning up the cache directory and any
         leftover checkouts at study teardown.
         """
+
+        manifest_key = self._prepared_manifest_key(sample_id_prefix)
+        cached_refs = load_prepared_manifest(cache_dir, manifest_key)
+        if cached_refs is not None:
+            logger.info(
+                "Phase 1 reused manifest %s with %d prepared samples",
+                manifest_key,
+                len(cached_refs),
+            )
+            return cached_refs
 
         self.repo_cache_dir.mkdir(parents=True, exist_ok=True)
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -221,7 +257,7 @@ class CleanVulBenchmarkService(BaseModel):
         vulnerable_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "vulnerable")
         fixed_repo_service = RepoCheckoutService(cache_dir=self.repo_cache_dir / "fixed")
 
-        prepared: list[PreparedSample] = []
+        prepared: list[PreparedSampleRef] = []
         for rows, repo_url, fix_hash in candidate_rows:
             if len(prepared) + 2 > self.sample_count:
                 break
@@ -305,7 +341,28 @@ class CleanVulBenchmarkService(BaseModel):
             prepared.append(fixed_prepared)
 
         logger.info("Phase 1 produced %d prepared samples in %s", len(prepared), cache_dir)
+        save_prepared_manifest(cache_dir, manifest_key, prepared)
         return prepared
+
+    def _prepared_manifest_key(self, sample_id_prefix: str) -> str:
+        """Fingerprint every setting that changes which samples Phase 1 accepts."""
+
+        parts = (
+            str(self.dataset_path.resolve()),
+            str(self.repo_cache_dir.resolve()),
+            repr(sorted(self._cache_loader_options().items())),
+            repr(sorted(self.excluded_row_ids)),
+            f"sample_count={self.sample_count}",
+            f"depth={self.max_call_depth}",
+            f"token_budget={self.token_budget}",
+            f"max_repo_size_bytes={self.max_repo_size_bytes}",
+            f"exclude_test_nodes={self.exclude_test_nodes}",
+            f"damp_call_graph_hubs={self.damp_call_graph_hubs}",
+            f"hub_fanin_threshold={self.hub_fanin_threshold}",
+            f"semgrep_config={self._semgrep_cache_config()}",
+            f"sample_id_prefix={sample_id_prefix}",
+        )
+        return hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()
 
     def _prepare_one_side(
         self,
@@ -315,8 +372,8 @@ class CleanVulBenchmarkService(BaseModel):
         sample_id: str,
         cache_dir: Path,
         loader_options: Mapping[str, object],
-    ) -> PreparedSample:
-        """Build (or load from cache) a ``PreparedSample`` for one side."""
+    ) -> PreparedSampleRef:
+        """Build and cache a ``PreparedSample`` for one side unless already cached."""
 
         cache_key = compute_sample_cache_key(
             repo_url=entry.repo_url,
@@ -330,11 +387,11 @@ class CleanVulBenchmarkService(BaseModel):
             hub_fanin_threshold=self.hub_fanin_threshold,
             semgrep_config=self._semgrep_cache_config(),
         )
-        cached = load_prepared_sample(cache_dir, cache_key)
-        if cached is not None:
-            cached.repo_path = repo_path
-            cached.sample_id = sample_id
-            return cached
+        ref = PreparedSampleRef(
+            cache_dir=cache_dir, cache_key=cache_key, repo_path=repo_path, sample_id=sample_id
+        )
+        if prepared_sample_path(cache_dir, cache_key).exists():
+            return ref
 
         head_resolver = RepoCheckoutService(cache_dir=repo_path.parent)
         target_hash = head_resolver.resolve_head_hash(repo_path)
@@ -385,11 +442,11 @@ class CleanVulBenchmarkService(BaseModel):
             cache_key=cache_key,
         )
         save_prepared_sample(cache_dir, sample)
-        return sample
+        return ref
 
     def build_all_from_prepared(
         self,
-        prepared_samples: Sequence[PreparedSample],
+        prepared_samples: Sequence[PreparedSample | PreparedSampleRef],
         *,
         dataset_path_factory: DatasetPathFactory | None = None,
         metadata_name_factory: MetadataNameFactory | None = None,
@@ -399,6 +456,8 @@ class CleanVulBenchmarkService(BaseModel):
         Uses ``self.strategy_factories`` exactly like ``_build_datasets`` and
         produces the same dataset files. Skips repo checkout, CPG parsing,
         Neo4j ingest, and DB clearing — only ranking + render runs here.
+        ``PreparedSampleRef`` handles are loaded one at a time and released
+        after rendering.
         """
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -409,22 +468,75 @@ class CleanVulBenchmarkService(BaseModel):
         entries_by_sample_id: dict[str, CleanVulEntry] = {}
         entries_path = self.output_dir / "cleanvul_entries.json"
 
+        rendered = (
+            self._render_prepared_group(list(prepared_samples))
+            if self.render_workers == 1
+            else self._render_prepared_in_workers(prepared_samples)
+        )
+        for entry, sample_id, contexts in rendered:
+            entries_by_sample_id[sample_id] = entry
+            for strategy_name in strategy_factories:
+                samples_by_strategy[strategy_name].append(
+                    self._to_sample(entry, contexts[strategy_name], sample_id)
+                )
+
+        dataset_builder = DatasetBuilderService(output_dir=self.output_dir)
+        dataset_paths = dataset_builder.write_datasets(
+            samples_by_strategy=samples_by_strategy,
+            metadata_name_factory=metadata_name_factory,
+            dataset_path_factory=dataset_path_factory,
+        )
+        self._write_entries(entries_by_sample_id, entries_path)
+        return dataset_paths, entries_path
+
+    def _render_prepared_in_workers(
+        self, prepared_samples: Sequence[PreparedSample | PreparedSampleRef]
+    ) -> list[_RenderedPrepared]:
+        """Render ``prepared_samples`` across processes and return them in input order.
+
+        Each worker owns whole repo checkouts (all samples of one ``repo_path``),
+        so no two processes ever check out commits in the same working tree.
+        """
+
+        groups = _group_indices_by_repo(prepared_samples)
+        rendered: list[_RenderedPrepared | None] = [None] * len(prepared_samples)
+        with ProcessPoolExecutor(
+            max_workers=self.render_workers, mp_context=multiprocessing.get_context("spawn")
+        ) as pool:
+            futures = {
+                pool.submit(
+                    _render_prepared_group_in_worker,
+                    self,
+                    [prepared_samples[index] for index in indices],
+                ): indices
+                for indices in groups
+            }
+            for future, indices in futures.items():
+                for index, result in zip(indices, future.result(), strict=True):
+                    rendered[index] = result
+        return [result for result in rendered if result is not None]
+
+    def _render_prepared_group(
+        self, prepared_samples: list[PreparedSample | PreparedSampleRef]
+    ) -> list[_RenderedPrepared]:
+        """Render prepared samples in order, re-aligning each repo checkout as needed."""
+
         # Phase 1 may have checked out many commits into the same shared cache
         # directory; by Phase 2 each repo holds whatever was last checked out.
         # Re-align the working tree per sample (skipping when already aligned)
         # so file reads in `_render_context` match the spans cached at Phase 1.
         checkout_helper = RepoCheckoutService(cache_dir=self.repo_cache_dir)
         currently_checked_out: dict[Path, str] = {}
-
-        for prepared in prepared_samples:
-            current_hash = currently_checked_out.get(prepared.repo_path)
-            if current_hash != prepared.target_hash:
+        rendered: list[_RenderedPrepared] = []
+        for item in prepared_samples:
+            prepared = item.load() if isinstance(item, PreparedSampleRef) else item
+            if currently_checked_out.get(prepared.repo_path) != prepared.target_hash:
                 checkout_helper.checkout_commit(prepared.repo_path, prepared.target_hash)
                 currently_checked_out[prepared.repo_path] = prepared.target_hash
 
             strategies: dict[str, ContextNodeRankingStrategy] = {
                 strategy_name: factory(prepared.repo_path)
-                for strategy_name, factory in strategy_factories.items()
+                for strategy_name, factory in self.strategy_factories.items()
             }
             shared_inputs = _SharedContextInputs(
                 root_ids=prepared.root_ids,
@@ -440,24 +552,8 @@ class CleanVulBenchmarkService(BaseModel):
                 cached_neighborhood_edges=prepared.neighborhood_edges,
                 findings=prepared.static_findings,
             )
-            entries_by_sample_id[prepared.sample_id] = prepared.entry
-            for strategy_name in strategy_factories:
-                samples_by_strategy[strategy_name].append(
-                    self._to_sample(
-                        prepared.entry,
-                        contexts[strategy_name],
-                        prepared.sample_id,
-                    )
-                )
-
-        dataset_builder = DatasetBuilderService(output_dir=self.output_dir)
-        dataset_paths = dataset_builder.write_datasets(
-            samples_by_strategy=samples_by_strategy,
-            metadata_name_factory=metadata_name_factory,
-            dataset_path_factory=dataset_path_factory,
-        )
-        self._write_entries(entries_by_sample_id, entries_path)
-        return dataset_paths, entries_path
+            rendered.append(_RenderedPrepared(prepared.entry, prepared.sample_id, contexts))
+        return rendered
 
     def _build_datasets(
         self,
@@ -1042,3 +1138,26 @@ class CleanVulBenchmarkService(BaseModel):
             for sample_id, entry in entries_by_sample_id.items()
         ]
         DatasetBuilderService.write_json(path, records)
+
+
+def _group_indices_by_repo(
+    prepared_samples: Sequence[PreparedSample | PreparedSampleRef],
+) -> list[list[int]]:
+    """Group sample indices by repo checkout, keeping input order within each group.
+
+    Larger groups come first so the slowest repos start early in the pool.
+    """
+
+    groups: dict[Path, list[int]] = defaultdict(list)
+    for index, item in enumerate(prepared_samples):
+        groups[item.repo_path].append(index)
+    return sorted(groups.values(), key=len, reverse=True)
+
+
+def _render_prepared_group_in_worker(
+    service: CleanVulBenchmarkService,
+    prepared_samples: list[PreparedSample | PreparedSampleRef],
+) -> list[_RenderedPrepared]:
+    """Process-pool entry point: render one repo's samples with ``service``."""
+
+    return service._render_prepared_group(prepared_samples)

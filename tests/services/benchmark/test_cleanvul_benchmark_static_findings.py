@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from clients.analyzers.semgrep import semgrep_rules_fingerprint
 from clients.neo4j import Neo4jClient
 from models.bandit_report import IssueSeverity
@@ -10,10 +12,17 @@ from models.base import NodeID
 from models.benchmark.cleanvul import CleanVulEntry
 from models.context import CodeContextNode, Context, FileSpans
 from models.nodes.finding import BanditFindingNode
-from services.benchmark.cleanvul_benchmark import CleanVulBenchmarkService, _SharedContextInputs
+from services.benchmark.cleanvul_benchmark import (
+    CleanVulBenchmarkService,
+    _group_indices_by_repo,
+    _SharedContextInputs,
+)
 from services.benchmark.prepared_sample import (
     PreparedSample,
+    PreparedSampleRef,
+    load_prepared_manifest,
     load_prepared_sample,
+    save_prepared_manifest,
     save_prepared_sample,
 )
 from services.benchmark.static_findings import attach_findings
@@ -173,3 +182,115 @@ def test_prepared_sample_round_trips_findings(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.static_findings == [_FINDING]
     assert isinstance(loaded.static_findings[0], BanditFindingNode)
+
+
+def test_prepared_sample_ref_loads_with_its_own_repo_path_and_id(tmp_path: Path) -> None:
+    sample = PreparedSample(
+        entry=_entry(),
+        repo_path=tmp_path / "old",
+        target_hash="abc",
+        sample_id="old-id",
+        root_ids=[],
+        plain_context_nodes=[],
+        edge_path_context_nodes=[],
+        taint_scores={},
+        neighborhood_edges=[],
+        path_fill_edge_types=(),
+        traversal_relationship_types=(),
+        static_findings=[_FINDING],
+        cache_key="k",
+    )
+    save_prepared_sample(tmp_path, sample)
+
+    ref = PreparedSampleRef(
+        cache_dir=tmp_path, cache_key="k", repo_path=tmp_path / "new", sample_id="new-id"
+    )
+    loaded = ref.load()
+
+    assert loaded.repo_path == tmp_path / "new"
+    assert loaded.sample_id == "new-id"
+    assert loaded.static_findings == [_FINDING]
+
+
+def test_prepared_sample_ref_load_raises_when_cache_file_is_missing(tmp_path: Path) -> None:
+    ref = PreparedSampleRef(
+        cache_dir=tmp_path, cache_key="missing", repo_path=tmp_path, sample_id="s-1"
+    )
+
+    with pytest.raises(FileNotFoundError):
+        ref.load()
+
+
+def _cached_ref(tmp_path: Path, cache_key: str) -> PreparedSampleRef:
+    save_prepared_sample(
+        tmp_path,
+        PreparedSample(
+            entry=_entry(),
+            repo_path=tmp_path,
+            target_hash="abc",
+            sample_id=cache_key,
+            root_ids=[],
+            plain_context_nodes=[],
+            edge_path_context_nodes=[],
+            taint_scores={},
+            neighborhood_edges=[],
+            path_fill_edge_types=(),
+            traversal_relationship_types=(),
+            cache_key=cache_key,
+        ),
+    )
+    return PreparedSampleRef(
+        cache_dir=tmp_path, cache_key=cache_key, repo_path=tmp_path, sample_id=cache_key
+    )
+
+
+def test_prepared_manifest_round_trips_refs_in_order(tmp_path: Path) -> None:
+    refs = [_cached_ref(tmp_path, "b"), _cached_ref(tmp_path, "a")]
+    save_prepared_manifest(tmp_path, "m", refs)
+
+    assert load_prepared_manifest(tmp_path, "m") == refs
+
+
+def test_prepared_manifest_is_ignored_when_a_listed_sample_is_missing(tmp_path: Path) -> None:
+    present = _cached_ref(tmp_path, "a")
+    missing = PreparedSampleRef(
+        cache_dir=tmp_path, cache_key="gone", repo_path=tmp_path, sample_id="gone"
+    )
+    save_prepared_manifest(tmp_path, "m", [present, missing])
+
+    assert load_prepared_manifest(tmp_path, "m") is None
+    assert load_prepared_manifest(tmp_path, "absent") is None
+
+
+def test_prepare_samples_reuses_manifest_without_walking_the_dataset(tmp_path: Path) -> None:
+    service = _service(tmp_path, include=False)
+    cache_dir = tmp_path / "prepared"
+    refs = [_cached_ref(cache_dir, "a"), _cached_ref(cache_dir, "b")]
+    save_prepared_manifest(cache_dir, service._prepared_manifest_key("p"), refs)
+
+    # The dataset CSV does not exist, so any walk would fail.
+    assert service.prepare_samples(cache_dir, sample_id_prefix="p") == refs
+
+
+def test_prepared_manifest_key_changes_with_sample_count(tmp_path: Path) -> None:
+    service = _service(tmp_path, include=False)
+    larger = service.model_copy(update={"sample_count": 4})
+
+    assert service._prepared_manifest_key("p") != larger._prepared_manifest_key("p")
+
+
+def test_group_indices_by_repo_keeps_order_and_puts_largest_group_first(tmp_path: Path) -> None:
+    def ref(repo: str, key: str) -> PreparedSampleRef:
+        return PreparedSampleRef(
+            cache_dir=tmp_path, cache_key=key, repo_path=tmp_path / repo, sample_id=key
+        )
+
+    refs = [
+        ref("vulnerable/a", "1"),
+        ref("vulnerable/b", "2"),
+        ref("fixed/a", "3"),
+        ref("vulnerable/b", "4"),
+        ref("vulnerable/b", "5"),
+    ]
+
+    assert _group_indices_by_repo(refs) == [[1, 3, 4], [0], [2]]

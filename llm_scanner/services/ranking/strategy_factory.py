@@ -4,6 +4,7 @@ from functools import partial
 from pathlib import Path
 
 from models.context_ranking import BudgetedRankingConfig
+from models.ranking_strategy import RankingStrategy
 from services.ranking.cpg_structural_ranking import CPGStructuralRankingStrategy
 from services.ranking.evidence_ranking.strategy import (
     EvidenceAwareBudgetedNodeRankingStrategy,
@@ -275,3 +276,77 @@ def build_combined_strategy_factories(
         ),
     }
     return {**base, **last}
+
+
+class CoefficientVariant(StrEnum):
+    """Which coefficients a tunable strategy renders with.
+
+    ``MANUAL`` is the built-in hand-set coefficients, ``BEST`` the best tuned
+    trial and ``LAST`` the final tuned trial.
+    """
+
+    MANUAL = "manual"
+    BEST = "best"
+    LAST = "last"
+
+
+def coefficient_variant_name(strategy: RankingStrategy, variant: CoefficientVariant) -> str:
+    """Return the dataset key for ``strategy`` rendered with ``variant`` coefficients."""
+
+    return f"{strategy.value}_{variant.value}"
+
+
+def _tunable_strategy_factory(
+    strategy: RankingStrategy, token_budget: int, coefficients: Path | None
+) -> RankingStrategyFactory:
+    """Return a factory for ``strategy`` using ``coefficients`` (None means built-in)."""
+
+    match strategy:
+        case RankingStrategy.CPG_STRUCTURAL:
+            return partial(
+                _build_cpg_structural_ranking_strategy, cpg_structural_coefficients=coefficients
+            )
+        case RankingStrategy.EVIDENCE_BUDGETED:
+            return partial(
+                _build_evidence_budgeted_strategy,
+                token_budget=token_budget,
+                budgeted_ranking_config_path=coefficients,
+            )
+        case RankingStrategy.MULTIPLICATIVE_AMPLIFICATION:
+            return partial(
+                _build_multiplicative_amplification_ranking_strategy,
+                multiplicative_amplification_coefficients=coefficients,
+            )
+        case RankingStrategy.CURRENT:
+            return partial(_build_current_ranking_strategy, current_coefficients=coefficients)
+
+
+def build_coefficient_variant_strategy_factories(
+    strategy: RankingStrategy,
+    token_budget: int,
+    best: Path,
+    last: Path,
+) -> dict[str, RankingStrategyFactory]:
+    """Build manual, best and last coefficient factories for one tunable strategy.
+
+    Args:
+        strategy: Tunable strategy to render.
+        token_budget: Token budget forwarded to the evidence-budgeted strategy.
+        best: Best-trial coefficients YAML.
+        last: Last-trial coefficients YAML.
+
+    Returns:
+        Dict of ``<strategy>_<variant>`` name to factory, in manual, best, last order.
+    """
+
+    paths: dict[CoefficientVariant, Path | None] = {
+        CoefficientVariant.MANUAL: None,
+        CoefficientVariant.BEST: best,
+        CoefficientVariant.LAST: last,
+    }
+    return {
+        coefficient_variant_name(strategy, variant): _tunable_strategy_factory(
+            strategy, token_budget, path
+        )
+        for variant, path in paths.items()
+    }

@@ -149,6 +149,84 @@ def load_prepared_sample(cache_dir: Path, cache_key: str) -> PreparedSample | No
     return loaded
 
 
+class PreparedSampleRef(BaseModel):
+    """On-disk handle to a cached ``PreparedSample``, loaded only when rendered.
+
+    Prepared samples can hold tens of MB of context nodes each, so Phase 1
+    hands Phase 2 these handles instead of keeping hundreds of samples in memory.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cache_dir: Path
+    cache_key: str
+    repo_path: Path
+    sample_id: str
+
+    def load(self) -> PreparedSample:
+        """Unpickle the sample, re-pointed at this handle's repo path and sample id.
+
+        Raises:
+            FileNotFoundError: If the cache file no longer exists.
+        """
+
+        sample = load_prepared_sample(self.cache_dir, self.cache_key)
+        if sample is None:
+            raise FileNotFoundError(prepared_sample_path(self.cache_dir, self.cache_key))
+        sample.repo_path = self.repo_path
+        sample.sample_id = self.sample_id
+        return sample
+
+
+class PreparedSampleManifest(BaseModel):
+    """Ordered handles from one completed Phase 1 walk over the dataset.
+
+    Persisting the walk's outcome lets later runs reuse the exact same sample
+    set without re-checking out every repo or touching Neo4j.
+    """
+
+    refs: list[PreparedSampleRef]
+
+
+def prepared_manifest_path(cache_dir: Path, manifest_key: str) -> Path:
+    """Return the on-disk path for the Phase 1 manifest with the given key."""
+
+    return cache_dir / f"manifest_{manifest_key}.json"
+
+
+def save_prepared_manifest(
+    cache_dir: Path, manifest_key: str, refs: list[PreparedSampleRef]
+) -> Path:
+    """Persist the ordered Phase 1 handles under ``cache_dir`` and return the file path."""
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = prepared_manifest_path(cache_dir, manifest_key)
+    target.write_text(PreparedSampleManifest(refs=refs).model_dump_json(indent=2))
+    return target
+
+
+def load_prepared_manifest(cache_dir: Path, manifest_key: str) -> list[PreparedSampleRef] | None:
+    """Load the Phase 1 handles for ``manifest_key``.
+
+    Returns None when the manifest is absent or any sample it lists is no
+    longer cached, so the caller falls back to a fresh walk.
+    """
+
+    target = prepared_manifest_path(cache_dir, manifest_key)
+    if not target.exists():
+        return None
+    refs = PreparedSampleManifest.model_validate_json(target.read_text()).refs
+    missing = [
+        ref for ref in refs if not prepared_sample_path(ref.cache_dir, ref.cache_key).exists()
+    ]
+    if missing:
+        _LOGGER.warning(
+            "Ignoring manifest %s: %d of its prepared samples are missing", target, len(missing)
+        )
+        return None
+    return refs
+
+
 def iter_prepared_samples(cache_dir: Path) -> list[PreparedSample]:
     """Load every prepared sample under ``cache_dir`` in file-name order.
 

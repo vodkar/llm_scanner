@@ -2,12 +2,21 @@
 
 from pathlib import Path
 
+import pytest
+
+from models.ranking_strategy import RankingStrategy
 from services.ranking.ranking import (
     MultiplicativeAmplificationNodeRankingStrategy,
     NodeRelevanceRankingService,
 )
 from services.ranking.ranking_config import RankingCoefficients
-from services.ranking.strategy_factory import RankingStrategies, build_strategy_factories
+from services.ranking.strategy_factory import (
+    CoefficientVariant,
+    RankingStrategies,
+    build_coefficient_variant_strategy_factories,
+    build_strategy_factories,
+    coefficient_variant_name,
+)
 
 _BASE_COEFFICIENTS_PATH = (
     Path(__file__).resolve().parents[3] / "config" / "ranking_coefficients_cpg_structural.yaml"
@@ -76,3 +85,46 @@ def test_default_variants_use_builtin_when_no_yaml_supplied(tmp_path: Path) -> N
     assert isinstance(current_tuned, NodeRelevanceRankingService)
     assert isinstance(current_default, NodeRelevanceRankingService)
     assert current_tuned.coefficients == current_default.coefficients
+
+
+@pytest.mark.parametrize("strategy", list(RankingStrategy))
+def test_coefficient_variants_cover_manual_best_and_last(
+    strategy: RankingStrategy, tmp_path: Path
+) -> None:
+    """Each tunable strategy yields manual, best and last factories in that order."""
+
+    best = tmp_path / "best.yaml"
+    last = tmp_path / "last.yaml"
+    factories = build_coefficient_variant_strategy_factories(
+        strategy, token_budget=2048, best=best, last=last
+    )
+
+    assert list(factories) == [
+        coefficient_variant_name(strategy, variant) for variant in CoefficientVariant
+    ]
+
+
+def test_coefficient_variants_load_yaml_only_for_tuned_variants(tmp_path: Path) -> None:
+    """``manual`` keeps built-in coefficients; ``best`` and ``last`` read their own YAML."""
+
+    best = _tuned_yaml(tmp_path)
+    base = RankingCoefficients.from_yaml(_BASE_COEFFICIENTS_PATH)
+    last = tmp_path / "last.yaml"
+    base.model_copy(update={"security_boost_weight": 1.25}).to_yaml(last)
+
+    factories = build_coefficient_variant_strategy_factories(
+        RankingStrategy.CURRENT, token_budget=2048, best=best, last=last
+    )
+    rankers = {name: factory(tmp_path) for name, factory in factories.items()}
+    weights = {
+        name: ranker.coefficients.security_boost_weight
+        for name, ranker in rankers.items()
+        if isinstance(ranker, NodeRelevanceRankingService)
+    }
+
+    builtin = NodeRelevanceRankingService(project_root=tmp_path).coefficients
+    assert weights == {
+        "current_manual": builtin.security_boost_weight,
+        "current_best": 2.75,
+        "current_last": 1.25,
+    }
